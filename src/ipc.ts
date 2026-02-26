@@ -247,15 +247,31 @@ export async function processTaskIpc(
           }
           nextRun = new Date(Date.now() + ms).toISOString();
         } else if (scheduleType === 'once') {
-          const scheduled = new Date(data.schedule_value);
-          if (isNaN(scheduled.getTime())) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid timestamp',
-            );
-            break;
+          // Support relative offsets as a safety net (MCP server should have
+          // already normalized, but handle it here too for robustness)
+          const relMatch = (data.schedule_value as string).match(/^\+(\d+)(s|m|h)$/);
+          if (relMatch) {
+            const amount = parseInt(relMatch[1], 10);
+            const unit = relMatch[2];
+            const multiplier = unit === 's' ? 1000 : unit === 'm' ? 60_000 : 3_600_000;
+            nextRun = new Date(Date.now() + amount * multiplier).toISOString();
+          } else {
+            // Treat bare timestamps (no Z or offset) as UTC — matches how
+            // Claude calculates times and how the MCP server normalizes
+            let value = data.schedule_value as string;
+            if (!/[Zz]$/.test(value) && !/[+-]\d{2}:\d{2}$/.test(value)) {
+              value += 'Z';
+            }
+            const scheduled = new Date(value);
+            if (isNaN(scheduled.getTime())) {
+              logger.warn(
+                { scheduleValue: data.schedule_value },
+                'Invalid timestamp',
+              );
+              break;
+            }
+            nextRun = scheduled.toISOString();
           }
-          nextRun = scheduled.toISOString();
         }
 
         const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

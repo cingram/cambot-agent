@@ -52,6 +52,55 @@ systemctl --user stop cambot-agent
 systemctl --user restart cambot-agent
 ```
 
+## Additional Mounts (Giving Agents Access to Host Directories)
+
+Mounting a host directory into agent containers requires configuration in **two places**:
+
+### 1. Mount Allowlist (security gate)
+
+File: `~/.config/cambot-agent/mount-allowlist.json`
+
+This file lives outside the project root and is never mounted into containers, so agents cannot modify it. All additional mounts must be under an allowed root.
+
+```json
+{
+  "allowedRoots": [
+    {
+      "path": "C:/cambot-folder",
+      "allowReadWrite": true,
+      "description": "Shared folder for agent access"
+    }
+  ],
+  "blockedPatterns": [],
+  "nonMainReadOnly": true
+}
+```
+
+- `allowedRoots`: directories agents are allowed to access
+- `allowReadWrite`: `false` forces read-only regardless of group config
+- `nonMainReadOnly`: when `true`, non-main groups get read-only even if the root allows read-write
+- `blockedPatterns`: additional path patterns to block (merged with built-in list: `.ssh`, `.env`, credentials, etc.)
+
+### 2. Group Container Config (per-group mount assignment)
+
+Stored in the `registered_groups` table in `store/messages.db` as the `container_config` JSON column.
+
+```sql
+UPDATE registered_groups
+SET container_config = json('{"additionalMounts":[{"hostPath":"C:/cambot-folder","containerPath":"cambot-folder","readonly":false}]}')
+WHERE jid = 'web:ui';
+```
+
+- `hostPath`: absolute path on the host
+- `containerPath`: relative name (mounted at `/workspace/extra/{containerPath}` in the container)
+- `readonly`: requested access level (may be overridden by allowlist)
+
+The agent can also configure this through the `register_group` IPC command or by editing its group's config.
+
+### After changing mount config
+
+Restart the agent. The next container spawn will pick up the new mounts.
+
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.

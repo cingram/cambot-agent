@@ -567,6 +567,15 @@ export function setRegisteredGroup(
   if (!isValidGroupFolder(group.folder)) {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
+  // Preserve container_config when re-registering (channels re-register on
+  // every connect without containerConfig). Read existing config first, then
+  // use INSERT OR REPLACE which handles both jid and folder unique constraints.
+  const existingConfig = group.containerConfig
+    ? JSON.stringify(group.containerConfig)
+    : (db.prepare(
+        'SELECT container_config FROM registered_groups WHERE jid = ? OR folder = ?',
+      ).get(jid, group.folder) as { container_config: string | null } | undefined)?.container_config ?? null;
+
   db.prepare(
     `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -576,7 +585,7 @@ export function setRegisteredGroup(
     group.folder,
     group.trigger,
     group.added_at,
-    group.containerConfig ? JSON.stringify(group.containerConfig) : null,
+    existingConfig,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
   );
 }

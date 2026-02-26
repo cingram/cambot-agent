@@ -109,8 +109,10 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     return;
   }
 
-  registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
+  // Re-read from DB so in-memory state includes preserved containerConfig
+  const updated = getAllRegisteredGroups();
+  registeredGroups[jid] = updated[jid] ?? group;
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });

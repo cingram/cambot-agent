@@ -81,14 +81,17 @@ MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It ca
 \u2022 Only send a message when there's something to report (e.g., "notify me if...")
 \u2022 Never send a message (background maintenance tasks)
 
-SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
-\u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
-\u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
-\u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
+SCHEDULE VALUE FORMAT:
+\u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am local time)
+\u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour). Use for recurring tasks.
+\u2022 once: Run once. Accepts either:
+  - A relative offset: "+2m", "+30s", "+1h", "+90m" (minutes, seconds, hours). PREFERRED for "in X minutes" requests.
+  - An absolute local timestamp: "2026-02-01T15:30:00" (interpreted as local timezone, auto-converted to UTC).
+  Timestamps with "Z" or timezone offsets are also accepted.`,
   {
     prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
-    schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
-    schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
+    schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time or after a delay'),
+    schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: relative like "+2m", "+1h", "+30s" OR absolute like "2026-02-01T15:30:00"'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
@@ -112,18 +115,30 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         };
       }
     } else if (args.schedule_type === 'once') {
-      if (/[Zz]$/.test(args.schedule_value) || /[+-]\d{2}:\d{2}$/.test(args.schedule_value)) {
-        return {
-          content: [{ type: 'text' as const, text: `Timestamp must be local time without timezone suffix. Got "${args.schedule_value}" — use format like "2026-02-01T15:30:00".` }],
-          isError: true,
-        };
-      }
-      const date = new Date(args.schedule_value);
-      if (isNaN(date.getTime())) {
-        return {
-          content: [{ type: 'text' as const, text: `Invalid timestamp: "${args.schedule_value}". Use local time format like "2026-02-01T15:30:00".` }],
-          isError: true,
-        };
+      // Support relative offsets: "+2m", "+30s", "+1h"
+      const relMatch = args.schedule_value.match(/^\+(\d+)(s|m|h)$/);
+      if (relMatch) {
+        const amount = parseInt(relMatch[1], 10);
+        const unit = relMatch[2];
+        const multiplier = unit === 's' ? 1000 : unit === 'm' ? 60_000 : 3_600_000;
+        const targetMs = Date.now() + amount * multiplier;
+        // Normalize to UTC ISO — host stores and compares in UTC
+        args.schedule_value = new Date(targetMs).toISOString();
+      } else {
+        // Absolute timestamp — treat bare timestamps (no Z or offset) as UTC,
+        // since Claude typically calculates times in UTC
+        let value = args.schedule_value;
+        if (!/[Zz]$/.test(value) && !/[+-]\d{2}:\d{2}$/.test(value)) {
+          value += 'Z';
+        }
+        const date = new Date(value);
+        if (isNaN(date.getTime())) {
+          return {
+            content: [{ type: 'text' as const, text: `Invalid schedule value: "${args.schedule_value}". Use relative like "+2m", "+1h" or absolute like "2026-02-01T15:30:00Z".` }],
+            isError: true,
+          };
+        }
+        args.schedule_value = date.toISOString();
       }
     }
 
@@ -143,8 +158,13 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 
     const filename = writeIpcFile(TASKS_DIR, data);
 
+    // Show resolved local time for once tasks so the user can verify
+    const displayValue = args.schedule_type === 'once'
+      ? new Date(args.schedule_value).toLocaleString()
+      : args.schedule_value;
+
     return {
-      content: [{ type: 'text' as const, text: `Task scheduled (${filename}): ${args.schedule_type} - ${args.schedule_value}` }],
+      content: [{ type: 'text' as const, text: `Task scheduled (${filename}): ${args.schedule_type} - ${displayValue}` }],
     };
   },
 );
