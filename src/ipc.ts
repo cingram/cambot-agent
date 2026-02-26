@@ -13,9 +13,12 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { MessageBus, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
+  /** EventBus for message routing. When present, outbound messages go through the bus. */
+  messageBus?: MessageBus;
+  /** Fallback: direct send when messageBus is not available. */
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
@@ -79,7 +82,16 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await deps.sendMessage(data.chatJid, data.text);
+                  if (deps.messageBus) {
+                    await deps.messageBus.emitAsync({
+                      type: 'message.outbound',
+                      source: 'ipc',
+                      timestamp: new Date().toISOString(),
+                      data: { jid: data.chatJid, text: data.text, source: 'ipc', groupFolder: sourceGroup },
+                    });
+                  } else {
+                    await deps.sendMessage(data.chatJid, data.text);
+                  }
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',

@@ -76,6 +76,29 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+// --- Event Bus ---
+
+/** Minimal event shape for the message bus. Structurally compatible with cambot-core BusEvent. */
+export interface MessageBusEvent {
+  type: string;
+  source: string;
+  timestamp: string;
+  sessionKey?: string;
+  data: Record<string, unknown>;
+  tags?: string[];
+}
+
+/** Narrow interface exposing only the EventBus methods the agent needs. */
+export interface MessageBus {
+  emit(event: MessageBusEvent): void;
+  emitAsync(event: MessageBusEvent): Promise<void>;
+  on(
+    eventType: string,
+    handler: (event: MessageBusEvent) => void | Promise<void>,
+    options?: { id?: string; priority?: number; source?: string },
+  ): () => void;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {
@@ -95,6 +118,7 @@ export interface ChannelOpts {
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
+  messageBus?: MessageBus;
 }
 
 // Callback type that channels use to deliver inbound messages

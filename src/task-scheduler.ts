@@ -20,13 +20,17 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import { formatOutbound } from './router.js';
+import { MessageBus, RegisteredGroup, ScheduledTask } from './types.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
   onProcess: (groupJid: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
+  /** EventBus for message routing. When present, outbound messages go through the bus. */
+  messageBus?: MessageBus;
+  /** Fallback: direct send when messageBus is not available. */
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
@@ -138,8 +142,20 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          const text = formatOutbound(streamedOutput.result);
+          if (text) {
+            if (deps.messageBus) {
+              // Broadcast task output to ALL connected channels
+              await deps.messageBus.emitAsync({
+                type: 'message.outbound',
+                source: 'task',
+                timestamp: new Date().toISOString(),
+                data: { jid: task.chat_jid, text, source: 'task', broadcast: true, groupFolder: task.group_folder },
+              });
+            } else {
+              await deps.sendMessage(task.chat_jid, text);
+            }
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {

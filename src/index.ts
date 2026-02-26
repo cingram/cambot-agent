@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
@@ -34,9 +35,10 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { createMessageBus } from './message-bus.js';
+import { formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { Channel, MessageBus, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -50,6 +52,21 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+let messageBus: MessageBus | null = null;
+
+/** Persist a bot-generated message so /history includes both sides. */
+function storeBotMessage(chatJid: string, text: string): void {
+  storeMessage({
+    id: `bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    chat_jid: chatJid,
+    sender: `bot:${ASSISTANT_NAME.toLowerCase()}`,
+    sender_name: ASSISTANT_NAME,
+    content: text,
+    timestamp: new Date().toISOString(),
+    is_from_me: true,
+    is_bot_message: true,
+  });
+}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -124,6 +141,21 @@ export function _setRegisteredGroups(groups: Record<string, RegisteredGroup>): v
 }
 
 /**
+ * Clean stale IPC input files (messages + _close sentinel) so a retry
+ * container starts with a clean input directory.
+ */
+function cleanIpcInputDir(groupFolder: string): void {
+  const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+  try {
+    for (const f of fs.readdirSync(inputDir)) {
+      if (f.endsWith('.json') || f === '_close') {
+        try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore — dir may not exist */ }
+}
+
+/**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
  */
@@ -131,13 +163,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const group = registeredGroups[chatJid];
   if (!group) return true;
 
-  const channel = findChannel(channels, chatJid);
-  if (!channel) {
+  // Verify at least one channel can handle this JID
+  const hasChannel = channels.some(ch => ch.ownsJid(chatJid));
+  if (!hasChannel) {
     console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
     return true;
   }
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+
+  // Clean stale IPC input files before spawning
+  cleanIpcInputDir(group.folder);
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
@@ -177,22 +213,69 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  await channel.setTyping?.(chatJid, true);
+  // Typing indicator via bus
+  if (messageBus) {
+    messageBus.emitAsync({
+      type: 'typing.update',
+      source: 'agent',
+      timestamp: new Date().toISOString(),
+      data: { jid: chatJid, isTyping: true },
+    }).catch(() => {});
+  } else {
+    for (const ch of channels) {
+      if (ch.ownsJid(chatJid)) ch.setTyping?.(chatJid, true)?.catch(() => {});
+    }
+  }
+
   let hadError = false;
   let outputSentToUser = false;
+  let lastSentText = '';
+  let lastSentTime = 0;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      const text = formatOutbound(raw);
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+        // Suppress duplicate outputs within a 10-second window
+        const now = Date.now();
+        if (text === lastSentText && (now - lastSentTime) < 10_000) {
+          logger.warn({ group: group.name }, 'Duplicate agent output suppressed');
+        } else {
+          lastSentText = text;
+          lastSentTime = now;
+
+          if (messageBus) {
+            await messageBus.emitAsync({
+              type: 'message.outbound',
+              source: 'agent',
+              timestamp: new Date().toISOString(),
+              data: { jid: chatJid, text, source: 'agent', groupFolder: group.folder },
+            });
+          } else {
+            // Fallback: direct channel delivery
+            for (const ch of channels) {
+              if (ch.ownsJid(chatJid) && ch.isConnected()) {
+                await ch.sendMessage(chatJid, text);
+              }
+            }
+            storeBotMessage(chatJid, text);
+          }
+
+          outputSentToUser = true;
+        }
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
+
+      // Advance cursor to cover any messages piped via IPC
+      const latest = getMessagesSince(chatJid, lastAgentTimestamp[chatJid] || '', ASSISTANT_NAME);
+      if (latest.length > 0) {
+        lastAgentTimestamp[chatJid] = latest[latest.length - 1].timestamp;
+        saveState();
+      }
+
+      // Only reset idle timer on actual results
       resetIdleTimer();
     }
 
@@ -205,13 +288,30 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
-  await channel.setTyping?.(chatJid, false);
+  // Stop typing indicator
+  if (messageBus) {
+    messageBus.emitAsync({
+      type: 'typing.update',
+      source: 'agent',
+      timestamp: new Date().toISOString(),
+      data: { jid: chatJid, isTyping: false },
+    }).catch(() => {});
+  } else {
+    for (const ch of channels) {
+      if (ch.ownsJid(chatJid)) ch.setTyping?.(chatJid, false)?.catch(() => {});
+    }
+  }
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
-    // If we already sent output to the user, don't roll back the cursor —
-    // the user got their response and re-processing would send duplicates.
+    cleanIpcInputDir(group.folder);
     if (outputSentToUser) {
+      // Check for remaining messages before giving up
+      const remaining = getMessagesSince(chatJid, lastAgentTimestamp[chatJid] || '', ASSISTANT_NAME);
+      if (remaining.length > 0) {
+        logger.warn({ group: group.name, count: remaining.length }, 'Agent error after output; unprocessed messages remain, retrying');
+        return false;
+      }
       logger.warn({ group: group.name }, 'Agent error after output was sent, skipping cursor rollback to prevent duplicates');
       return true;
     }
@@ -219,6 +319,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
     logger.warn({ group: group.name }, 'Agent error, rolled back message cursor for retry');
+    return false;
+  }
+
+  // Safety net: detect unprocessed IPC-piped messages
+  const remaining = getMessagesSince(chatJid, lastAgentTimestamp[chatJid] || '', ASSISTANT_NAME);
+  if (remaining.length > 0) {
+    logger.warn(
+      { group: group.name, count: remaining.length },
+      'Unprocessed messages found after container exit, re-queuing',
+    );
+    cleanIpcInputDir(group.folder);
     return false;
   }
 
@@ -340,8 +451,8 @@ async function startMessageLoop(): Promise<void> {
           const group = registeredGroups[chatJid];
           if (!group) continue;
 
-          const channel = findChannel(channels, chatJid);
-          if (!channel) {
+          const hasChannel = channels.some(ch => ch.ownsJid(chatJid));
+          if (!hasChannel) {
             console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
             continue;
           }
@@ -378,12 +489,29 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
-            // Show typing indicator while the container processes the piped message
-            channel.setTyping?.(chatJid, true)?.catch((err) =>
-              logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-            );
+            // Typing indicator via bus
+            if (messageBus) {
+              messageBus.emitAsync({
+                type: 'typing.update',
+                source: 'agent',
+                timestamp: new Date().toISOString(),
+                data: { jid: chatJid, isTyping: true },
+              }).catch(() => {});
+            } else {
+              for (const ch of channels) {
+                if (ch.ownsJid(chatJid)) {
+                  ch.setTyping?.(chatJid, true)?.catch((err) =>
+                    logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
+                  );
+                }
+              }
+            }
           } else {
             // No active container — enqueue for a new one
+            logger.info(
+              { chatJid, count: messagesToSend.length },
+              'No active container, enqueueing for new container',
+            );
             queue.enqueueMessageCheck(chatJid);
           }
         }
@@ -424,6 +552,32 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // ── Initialize Message Bus ───────────────────────────────────────────────
+  const bus = createMessageBus();
+  messageBus = bus;
+
+  // ── Register subscribers ───────────────────────────────────────────────
+
+  // DB storage: inbound messages (priority 100)
+  bus.on('message.inbound', (event) => {
+    const { message } = event.data as { jid: string; message: NewMessage };
+    storeMessage(message);
+  }, { id: 'db-store-inbound', priority: 100, source: 'cambot-agent' });
+
+  // DB storage: outbound messages (priority 100)
+  bus.on('message.outbound', (event) => {
+    const { jid, text } = event.data as { jid: string; text: string };
+    storeBotMessage(jid, text);
+  }, { id: 'db-store-outbound', priority: 100, source: 'cambot-agent' });
+
+  // DB storage: chat metadata (priority 100)
+  bus.on('chat.metadata', (event) => {
+    const { jid, timestamp, name, channel, isGroup } = event.data as {
+      jid: string; timestamp: string; name?: string; channel?: string; isGroup?: boolean;
+    };
+    storeChatMetadata(jid, timestamp, name, channel, isGroup);
+  }, { id: 'db-store-metadata', priority: 100, source: 'cambot-agent' });
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
@@ -435,38 +589,48 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'));
 
   // Channel callbacks (shared by all channels)
+  // When messageBus is present, channels emit events instead of calling these.
+  // These callbacks serve as fallback when bus is not available.
   const channelOpts = {
     onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
     onChatMetadata: (chatJid: string, timestamp: string, name?: string, channel?: string, isGroup?: boolean) =>
       storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
     registerGroup,
+    messageBus: messageBus ?? undefined,
   };
 
   // Create and connect channels
   channels.push(...await loadChannels(channelOpts));
 
-  // Start subsystems (independently of connection handler)
+  // Start subsystems — pass eventBus when available
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    messageBus: messageBus ?? undefined,
     sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
+      // Fallback when no messageBus
+      const text = formatOutbound(rawText);
+      if (!text) return;
+      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
+      if (!ch) {
         console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
         return;
       }
-      const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      await ch.sendMessage(jid, text);
+      storeBotMessage(jid, text);
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+    messageBus: messageBus ?? undefined,
+    sendMessage: async (jid, text) => {
+      // Fallback when no messageBus
+      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
+      if (!ch) throw new Error(`No channel for JID: ${jid}`);
+      await ch.sendMessage(jid, text);
+      storeBotMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
