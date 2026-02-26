@@ -4,6 +4,10 @@
  * Intercepts messages matching a three-gate auth check (JID + trigger + key)
  * before they reach the DB or event bus. Spawns an elevated container and
  * routes responses directly to the admin via DM — invisible to normal flow.
+ *
+ * Works on both paths:
+ * - Callback path (WhatsApp): onMessage interceptor returns true to consume
+ * - Bus path (Web channel): message.inbound subscriber cancels the event
  */
 import fs from 'fs';
 import path from 'path';
@@ -13,7 +17,7 @@ import { runContainerAgent } from './container-runner.js';
 import { getSession, setSession } from './db.js';
 import { formatOutbound } from './router.js';
 import { logger } from './logger.js';
-import { Channel, NewMessage } from './types.js';
+import { Channel, MessageBus, NewMessage } from './types.js';
 
 const SHADOW_FOLDER = 'shadow-admin';
 
@@ -21,6 +25,7 @@ interface ShadowAgentDeps {
   adminJid: string;
   adminTrigger: string;
   channels: Channel[];
+  messageBus?: MessageBus;
 }
 
 /**
@@ -60,26 +65,26 @@ function ensureShadowGroup(): void {
   }
 }
 
-function sendToAdmin(channels: Channel[], adminJid: string, text: string): void {
+function sendReply(channels: Channel[], replyJid: string, text: string): void {
   const formatted = formatOutbound(text);
   if (!formatted) return;
 
   for (const ch of channels) {
-    if (ch.ownsJid(adminJid) && ch.isConnected()) {
-      ch.sendMessage(adminJid, formatted).catch((err) => {
-        logger.error({ err, adminJid }, 'Failed to send shadow admin response');
+    if (ch.ownsJid(replyJid) && ch.isConnected()) {
+      ch.sendMessage(replyJid, formatted).catch((err) => {
+        logger.error({ err, replyJid }, 'Failed to send shadow admin response');
       });
       return;
     }
   }
-  logger.warn({ adminJid }, 'No channel available to deliver shadow admin response');
+  logger.warn({ replyJid }, 'No channel available to deliver shadow admin response');
 }
 
 async function spawnShadowContainer(
   prompt: string,
   sourceChatJid: string,
+  replyJid: string,
   channels: Channel[],
-  adminJid: string,
 ): Promise<void> {
   const sessionId = getSession(SHADOW_FOLDER);
   const wrappedPrompt = `<admin_context source_chat="${sourceChatJid}" />\n\n${prompt}`;
@@ -110,7 +115,7 @@ async function spawnShadowContainer(
           const text = typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-          sendToAdmin(channels, adminJid, text);
+          sendReply(channels, replyJid, text);
         }
       },
     );
@@ -120,66 +125,113 @@ async function spawnShadowContainer(
     }
 
     if (output.status === 'error') {
-      sendToAdmin(channels, adminJid, `Shadow agent error: ${output.error || 'unknown'}`);
+      sendReply(channels, replyJid, `Shadow agent error: ${output.error || 'unknown'}`);
     }
   } catch (err) {
     logger.error({ err }, 'Shadow container spawn failed');
-    sendToAdmin(channels, adminJid, `Shadow agent crashed: ${err instanceof Error ? err.message : String(err)}`);
+    sendReply(channels, replyJid, `Shadow agent crashed: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** Result of the three-gate check. */
+type GateResult =
+  | { action: 'pass' }           // not an admin message — normal flow
+  | { action: 'drop' }           // bad key — silent drop
+  | { action: 'accept'; prompt: string }; // all gates passed
+
+function checkGates(
+  adminPhone: string,
+  triggerPrefix: string,
+  senderJid: string,
+  content: string,
+  requireJid: boolean = true,
+): GateResult {
+  // Gate 1: sender must be the admin (skipped for bus path — key is the auth)
+  if (requireJid && phoneFromJid(senderJid) !== adminPhone) return { action: 'pass' };
+
+  // Gate 2: content must start with the trigger
+  const trimmed = content.trim();
+  if (!trimmed.startsWith(triggerPrefix)) return { action: 'pass' };
+
+  // Strip trigger prefix, extract first token as key candidate
+  const afterTrigger = trimmed.slice(triggerPrefix.length);
+  const spaceIdx = afterTrigger.indexOf(' ');
+  const keyCandidate = spaceIdx === -1 ? afterTrigger : afterTrigger.slice(0, spaceIdx);
+  const prompt = spaceIdx === -1 ? '' : afterTrigger.slice(spaceIdx + 1).trim();
+
+  // Gate 3: key must match — wrong key = silent drop
+  if (keyCandidate !== ADMIN_KEY) {
+    logger.debug('Shadow admin: bad key, silently dropping');
+    return { action: 'drop' };
+  }
+
+  if (!prompt) {
+    logger.debug('Shadow admin: empty prompt after key, dropping');
+    return { action: 'drop' };
+  }
+
+  return { action: 'accept', prompt };
 }
 
 /**
  * Create the shadow agent interceptor.
- * Returns a function that checks each inbound message against the three-gate auth.
- * Returns `true` if the message was consumed (intercepted or silently dropped).
+ *
+ * Returns a function for the callback path (WhatsApp).
+ * If a messageBus is provided, also subscribes at priority 10 to intercept
+ * bus-routed messages (web channel) before the DB store at priority 100.
  */
 export function createShadowAgent(deps: ShadowAgentDeps): (chatJid: string, msg: NewMessage) => boolean {
-  const { adminJid, adminTrigger, channels } = deps;
+  const { adminJid, adminTrigger, channels, messageBus } = deps;
 
-  // Feature disabled — both JID and KEY must be set
-  if (!adminJid || !ADMIN_KEY) {
-    logger.info('Shadow admin disabled (ADMIN_JID or ADMIN_KEY not set)');
+  // Feature disabled — KEY is required; JID is only needed for WhatsApp path
+  if (!ADMIN_KEY) {
+    logger.info('Shadow admin disabled (ADMIN_KEY not set)');
     return () => false;
   }
 
   ensureShadowGroup();
-  const adminPhone = phoneFromJid(adminJid);
+  const adminPhone = adminJid ? phoneFromJid(adminJid) : '';
   const triggerPrefix = adminTrigger + ' ';
 
-  logger.info({ adminPhone: adminPhone.slice(0, 4) + '***' }, 'Shadow admin enabled');
+  logger.info(
+    adminPhone
+      ? { adminPhone: adminPhone.slice(0, 4) + '***' }
+      : { mode: 'bus-only' },
+    'Shadow admin enabled',
+  );
 
+  // Bus path: intercept message.inbound before db-store (priority 10 < 100)
+  if (messageBus) {
+    messageBus.on('message.inbound', (event) => {
+      const { jid, message } = event.data as { jid: string; message: NewMessage };
+      // Bus path: skip JID check — key is sufficient auth for localhost channels
+      const result = checkGates(adminPhone, triggerPrefix, message.sender, message.content, false);
+
+      if (result.action === 'pass') return;
+
+      // Drop or accept — either way, cancel the event so DB never sees it
+      event.cancelled = true;
+
+      if (result.action === 'accept') {
+        logger.info({ sourceChatJid: jid }, 'Shadow admin command accepted (bus)');
+        spawnShadowContainer(result.prompt, jid, jid, channels).catch((err) => {
+          logger.error({ err }, 'Shadow container error');
+        });
+      }
+    }, { id: 'shadow-admin-intercept', priority: 10, source: 'shadow-admin' });
+  }
+
+  // Callback path: for channels that don't use the bus (WhatsApp fallback)
   return (chatJid: string, msg: NewMessage): boolean => {
-    // Gate 1: sender must be the admin
-    const senderPhone = phoneFromJid(msg.sender);
-    if (senderPhone !== adminPhone) return false;
+    const result = checkGates(adminPhone, triggerPrefix, msg.sender, msg.content);
 
-    // Gate 2: content must start with the trigger
-    const content = msg.content.trim();
-    if (!content.startsWith(triggerPrefix)) return false;
+    if (result.action === 'pass') return false;
+    if (result.action === 'drop') return true;
 
-    // Strip trigger prefix, extract first token as key candidate
-    const afterTrigger = content.slice(triggerPrefix.length);
-    const spaceIdx = afterTrigger.indexOf(' ');
-    const keyCandidate = spaceIdx === -1 ? afterTrigger : afterTrigger.slice(0, spaceIdx);
-    const prompt = spaceIdx === -1 ? '' : afterTrigger.slice(spaceIdx + 1).trim();
-
-    // Gate 3: key must match — wrong key = silent drop
-    if (keyCandidate !== ADMIN_KEY) {
-      logger.debug('Shadow admin: bad key, silently dropping');
-      return true;
-    }
-
-    if (!prompt) {
-      logger.debug('Shadow admin: empty prompt after key, dropping');
-      return true;
-    }
-
-    // All gates passed — spawn container (fire-and-forget)
     logger.info({ sourceChatJid: chatJid }, 'Shadow admin command accepted');
-    spawnShadowContainer(prompt, chatJid, channels, adminJid).catch((err) => {
+    spawnShadowContainer(result.prompt, chatJid, adminJid, channels).catch((err) => {
       logger.error({ err }, 'Shadow container error');
     });
-
     return true;
   };
 }

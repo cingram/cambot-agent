@@ -86,6 +86,8 @@ export interface MessageBusEvent {
   sessionKey?: string;
   data: Record<string, unknown>;
   tags?: string[];
+  /** When set to true by a handler, subsequent handlers are skipped. */
+  cancelled?: boolean;
 }
 
 /** Narrow interface exposing only the EventBus methods the agent needs. */

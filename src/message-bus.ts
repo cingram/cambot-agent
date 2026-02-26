@@ -43,6 +43,7 @@ export function createMessageBus(): MessageBus {
         .sort((a, b) => a.priority - b.priority);
 
       for (const registration of matching) {
+        if (event.cancelled) break;
         try {
           await registration.handler(event);
         } catch (err) {

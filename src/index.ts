@@ -610,11 +610,29 @@ async function main(): Promise<void> {
   // Create and connect channels
   channels.push(...await loadChannels(channelOpts));
 
+  // Channel delivery: forward outbound messages to the owning channel (priority 50, after DB storage)
+  bus.on('message.outbound', async (event) => {
+    const { jid, text, broadcast } = event.data as {
+      jid: string; text: string; broadcast?: boolean;
+    };
+    const targets = broadcast
+      ? channels.filter(ch => ch.isConnected())
+      : channels.filter(ch => ch.ownsJid(jid) && ch.isConnected());
+    for (const ch of targets) {
+      try {
+        await ch.sendMessage(jid, text);
+      } catch (err) {
+        logger.error({ channel: ch.name, jid, err }, 'Channel delivery failed');
+      }
+    }
+  }, { id: 'channel-delivery', priority: 50, source: 'cambot-agent' });
+
   // Initialize shadow admin interceptor (must be after channels load)
   shadowInterceptor = createShadowAgent({
     adminJid: ADMIN_JID,
     adminTrigger: ADMIN_TRIGGER,
     channels,
+    messageBus: messageBus ?? undefined,
   });
 
   // Start subsystems — pass eventBus when available
