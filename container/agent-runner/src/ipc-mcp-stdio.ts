@@ -300,6 +300,177 @@ Use available_groups.json to find the JID for a group. The folder name should be
   },
 );
 
+// ── Workflow Tools ────────────────────────────────────────────────────
+
+server.tool(
+  'list_workflows',
+  'List all available workflow definitions. Shows workflow ID, name, description, step count, and schedule.',
+  {},
+  async () => {
+    const workflowsFile = path.join(IPC_DIR, 'current_workflows.json');
+
+    try {
+      if (!fs.existsSync(workflowsFile)) {
+        return { content: [{ type: 'text' as const, text: 'No workflows found.' }] };
+      }
+
+      const workflows = JSON.parse(fs.readFileSync(workflowsFile, 'utf-8'));
+
+      if (workflows.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No workflows found.' }] };
+      }
+
+      const formatted = workflows
+        .map(
+          (w: { id: string; name: string; description: string; version: string; stepCount: number; schedule?: { cron: string } }) =>
+            `- [${w.id}] ${w.name} (v${w.version}) — ${w.description}\n  Steps: ${w.stepCount}${w.schedule ? `, Schedule: ${w.schedule.cron}` : ''}`,
+        )
+        .join('\n');
+
+      return { content: [{ type: 'text' as const, text: `Available workflows:\n${formatted}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading workflows: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
+  'workflow_status',
+  'Get the status of recent workflow runs. Optionally filter by workflow ID or specific run ID.',
+  {
+    workflow_id: z.string().optional().describe('Filter runs by workflow ID'),
+    run_id: z.string().optional().describe('Get status of a specific run'),
+  },
+  async (args) => {
+    const runsFile = path.join(IPC_DIR, 'workflow_runs.json');
+
+    try {
+      if (!fs.existsSync(runsFile)) {
+        return { content: [{ type: 'text' as const, text: 'No workflow run data available.' }] };
+      }
+
+      let runs = JSON.parse(fs.readFileSync(runsFile, 'utf-8')) as Array<{
+        runId: string; workflowId: string; status: string;
+        startedAt: string; completedAt: string | null;
+        error: string | null; totalCostUsd: number;
+      }>;
+
+      if (args.run_id) {
+        runs = runs.filter(r => r.runId === args.run_id);
+      } else if (args.workflow_id) {
+        runs = runs.filter(r => r.workflowId === args.workflow_id);
+      }
+
+      if (runs.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No matching workflow runs found.' }] };
+      }
+
+      const formatted = runs
+        .map(r => {
+          let line = `- [${r.runId.slice(0, 8)}...] ${r.workflowId} — ${r.status}`;
+          line += `\n  Started: ${r.startedAt}`;
+          if (r.completedAt) line += `, Completed: ${r.completedAt}`;
+          if (r.totalCostUsd > 0) line += `, Cost: $${r.totalCostUsd.toFixed(4)}`;
+          if (r.error) line += `\n  Error: ${r.error.slice(0, 200)}`;
+          return line;
+        })
+        .join('\n');
+
+      return { content: [{ type: 'text' as const, text: `Workflow runs:\n${formatted}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading workflow runs: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
+  'run_workflow',
+  'Start a workflow execution. The workflow runs on the host and results are reported back. Main group only.',
+  {
+    workflow_id: z.string().describe('The workflow ID to run (from list_workflows)'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can run workflows.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'run_workflow',
+      workflowId: args.workflow_id,
+      chatJid,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Workflow "${args.workflow_id}" run requested. You'll be notified when it completes.` }],
+    };
+  },
+);
+
+server.tool(
+  'pause_workflow',
+  'Pause a running workflow. It can be resumed later. Main group only.',
+  {
+    run_id: z.string().describe('The run ID to pause (from workflow_status)'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can pause workflows.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'pause_workflow',
+      runId: args.run_id,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `Workflow run ${args.run_id} pause requested.` }] };
+  },
+);
+
+server.tool(
+  'cancel_workflow',
+  'Cancel a running or paused workflow. Main group only.',
+  {
+    run_id: z.string().describe('The run ID to cancel (from workflow_status)'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can cancel workflows.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'cancel_workflow',
+      runId: args.run_id,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `Workflow run ${args.run_id} cancellation requested.` }] };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

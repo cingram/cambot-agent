@@ -609,6 +609,43 @@ export function writeTasksSnapshot(
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
 }
 
+/**
+ * Write workflow definitions and recent runs as snapshot files for the container.
+ * Follows the same pattern as writeTasksSnapshot.
+ */
+export function writeWorkflowsSnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  workflows: Array<{
+    id: string;
+    name: string;
+    description: string;
+    version: string;
+    stepCount: number;
+    schedule?: { cron: string; timezone?: string };
+  }>,
+  runs: Array<{
+    runId: string;
+    workflowId: string;
+    status: string;
+    startedAt: string;
+    completedAt: string | null;
+    error: string | null;
+    totalCostUsd: number;
+  }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  // All groups can see workflow definitions (read-only)
+  const workflowsFile = path.join(groupIpcDir, 'current_workflows.json');
+  fs.writeFileSync(workflowsFile, JSON.stringify(workflows, null, 2));
+
+  // Only main sees run history (non-main gets empty array)
+  const runsFile = path.join(groupIpcDir, 'workflow_runs.json');
+  fs.writeFileSync(runsFile, JSON.stringify(isMain ? runs : [], null, 2));
+}
+
 export interface AvailableGroup {
   jid: string;
   name: string;

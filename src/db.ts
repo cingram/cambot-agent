@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { createWorkflowSchema } from 'cambot-workflows';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -117,6 +118,9 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Workflow tables (cambot-workflows) — uses CREATE IF NOT EXISTS, safe to re-run
+  createWorkflowSchema(database);
 }
 
 export function initDatabase(): void {
@@ -134,6 +138,12 @@ export function initDatabase(): void {
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
   createSchema(db);
+}
+
+/** Expose the database instance for subsystems that need direct access. */
+export function getDatabase(): Database.Database {
+  if (!db) throw new Error('Database not initialized — call initDatabase() first');
+  return db;
 }
 
 /**

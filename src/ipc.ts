@@ -14,6 +14,7 @@ import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { MessageBus, RegisteredGroup } from './types.js';
+import type { WorkflowService } from './workflow-service.js';
 
 export interface IpcDeps {
   /** EventBus for message routing. When present, outbound messages go through the bus. */
@@ -30,6 +31,8 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
+  /** Workflow engine service. When present, workflow IPC commands are handled. */
+  workflowService?: WorkflowService;
 }
 
 let ipcWatcherRunning = false;
@@ -182,6 +185,9 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For workflow commands
+    workflowId?: string;
+    runId?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -406,6 +412,90 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'run_workflow':
+      if (!deps.workflowService) {
+        logger.warn('run_workflow IPC received but workflow service not initialized');
+        break;
+      }
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized run_workflow attempt blocked (main only)');
+        break;
+      }
+      if (data.workflowId) {
+        try {
+          const runId = await deps.workflowService.runWorkflow(data.workflowId);
+          logger.info({ workflowId: data.workflowId, runId, sourceGroup }, 'Workflow started via IPC');
+          if (deps.messageBus && data.chatJid) {
+            await deps.messageBus.emitAsync({
+              type: 'message.outbound',
+              source: 'ipc',
+              timestamp: new Date().toISOString(),
+              data: {
+                jid: data.chatJid,
+                text: `Workflow "${data.workflowId}" started (run: ${runId})`,
+                source: 'workflow',
+                groupFolder: sourceGroup,
+              },
+            });
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ workflowId: data.workflowId, err }, 'Workflow run failed');
+          if (deps.messageBus && data.chatJid) {
+            await deps.messageBus.emitAsync({
+              type: 'message.outbound',
+              source: 'ipc',
+              timestamp: new Date().toISOString(),
+              data: {
+                jid: data.chatJid,
+                text: `Workflow "${data.workflowId}" failed: ${msg}`,
+                source: 'workflow',
+                groupFolder: sourceGroup,
+              },
+            });
+          }
+        }
+      }
+      break;
+
+    case 'pause_workflow':
+      if (!deps.workflowService) {
+        logger.warn('pause_workflow IPC received but workflow service not initialized');
+        break;
+      }
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized pause_workflow attempt blocked (main only)');
+        break;
+      }
+      if (data.runId) {
+        try {
+          deps.workflowService.pauseRun(data.runId);
+          logger.info({ runId: data.runId, sourceGroup }, 'Workflow paused via IPC');
+        } catch (err) {
+          logger.error({ runId: data.runId, err }, 'Workflow pause failed');
+        }
+      }
+      break;
+
+    case 'cancel_workflow':
+      if (!deps.workflowService) {
+        logger.warn('cancel_workflow IPC received but workflow service not initialized');
+        break;
+      }
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized cancel_workflow attempt blocked (main only)');
+        break;
+      }
+      if (data.runId) {
+        try {
+          deps.workflowService.cancelRun(data.runId);
+          logger.info({ runId: data.runId, sourceGroup }, 'Workflow cancelled via IPC');
+        } catch (err) {
+          logger.error({ runId: data.runId, err }, 'Workflow cancel failed');
+        }
       }
       break;
 

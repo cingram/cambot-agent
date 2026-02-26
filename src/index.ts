@@ -10,6 +10,7 @@ import {
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
   TRIGGER_PATTERN,
+  WORKFLOW_CONTAINER_TIMEOUT,
 } from './config.js';
 import { loadChannels } from './channels/registry.js';
 import {
@@ -17,6 +18,7 @@ import {
   runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
+  writeWorkflowsSnapshot,
 } from './container-runner.js';
 import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runtime.js';
 import {
@@ -24,6 +26,7 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getDatabase,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -43,6 +46,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, MessageBus, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { createShadowAgent } from './shadow-agent.js';
+import { createWorkflowService, WorkflowService } from './workflow-service.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -56,6 +60,7 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 let messageBus: MessageBus | null = null;
+let workflowService: WorkflowService | null = null;
 let shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
 
 /** Persist a bot-generated message so /history includes both sides. */
@@ -376,6 +381,28 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
+  // Update workflows snapshot for container to read
+  if (workflowService) {
+    const workflows = workflowService.listWorkflows().map(wf => ({
+      id: wf.id,
+      name: wf.name,
+      description: wf.description,
+      version: wf.version,
+      stepCount: wf.steps.length,
+      schedule: wf.schedule,
+    }));
+    const runs = workflowService.listRuns(undefined, 20).map(r => ({
+      runId: r.runId,
+      workflowId: r.workflowId,
+      status: r.status,
+      startedAt: r.startedAt,
+      completedAt: r.completedAt,
+      error: r.error,
+      totalCostUsd: r.totalCostUsd,
+    }));
+    writeWorkflowsSnapshot(group.folder, isMain, workflows, runs);
+  }
+
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
@@ -558,6 +585,43 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // ── Initialize Workflow Service ──────────────────────────────────────────
+  // Workflow agent steps spawn a container with the existing Agent SDK + OAuth
+  // token, using an extended timeout for long-running operations.
+  const workflowGroup: RegisteredGroup = {
+    name: 'Workflow Agent',
+    folder: '_workflows',
+    trigger: '',
+    added_at: new Date().toISOString(),
+    containerConfig: { timeout: WORKFLOW_CONTAINER_TIMEOUT },
+    requiresTrigger: false,
+  };
+
+  workflowService = createWorkflowService({
+    db: getDatabase(),
+    runAgentContainer: async (prompt: string): Promise<string> => {
+      const output = await runContainerAgent(
+        workflowGroup,
+        {
+          prompt,
+          groupFolder: workflowGroup.folder,
+          chatJid: '_workflows',
+          isMain: true,
+        },
+        (_proc, containerName) => {
+          logger.debug({ containerName }, 'Workflow container spawned');
+        },
+      );
+
+      if (output.status === 'error') {
+        throw new Error(`Workflow container failed: ${output.error || 'unknown error'}`);
+      }
+
+      return output.result || '';
+    },
+  });
+  workflowService.reloadDefinitions();
+
   // ── Initialize Message Bus ───────────────────────────────────────────────
   const bus = createMessageBus();
   messageBus = bus;
@@ -673,6 +737,7 @@ async function main(): Promise<void> {
     },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    workflowService: workflowService ?? undefined,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

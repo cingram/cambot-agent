@@ -52,6 +52,10 @@ export const IDLE_TIMEOUT = parseInt(
   process.env.IDLE_TIMEOUT || '1800000',
   10,
 ); // 30min default — how long to keep container alive after last result
+export const WORKFLOW_CONTAINER_TIMEOUT = parseInt(
+  process.env.WORKFLOW_CONTAINER_TIMEOUT || '3600000',
+  10,
+); // 60min default — workflow agent steps can run longer than regular messages
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
