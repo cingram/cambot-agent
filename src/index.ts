@@ -17,6 +17,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeArchivedTasksSnapshot,
   writeTasksSnapshot,
   writeWorkersSnapshot,
 } from './container-runner.js';
@@ -28,6 +29,7 @@ import {
   getAllSessions,
   getAllTasks,
   getAgentDefinition,
+  getArchivedTasks,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -78,6 +80,20 @@ const channels: Channel[] = [];
 const queue = new GroupQueue();
 let interceptor: LifecycleInterceptor | null = null;
 
+/** Persist a bot-generated message so /history includes both sides. */
+function storeBotMessage(chatJid: string, text: string): void {
+  storeMessage({
+    id: `bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    chat_jid: chatJid,
+    sender: `bot:${ASSISTANT_NAME.toLowerCase()}`,
+    sender_name: ASSISTANT_NAME,
+    content: text,
+    timestamp: new Date().toISOString(),
+    is_from_me: true,
+    is_bot_message: true,
+  });
+}
+
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
@@ -113,6 +129,12 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
       'Rejecting group registration with invalid folder',
     );
     return;
+  }
+
+  // Preserve existing containerConfig when re-registering (e.g., channel reconnect)
+  const existing = registeredGroups[jid];
+  if (existing?.containerConfig && !group.containerConfig) {
+    group.containerConfig = existing.containerConfig;
   }
 
   registeredGroups[jid] = group;
@@ -251,6 +273,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             ? interceptor.restoreOutput(text, piiMappings)
             : text;
           await channel.sendMessage(chatJid, restoredText);
+          storeBotMessage(chatJid, restoredText);
           interceptor?.ingestResponse(group.folder, chatJid, restoredText);
           outputSentToUser = true;
         }
@@ -340,6 +363,21 @@ async function runAgent(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+    })),
+  );
+
+  // Update archived tasks snapshot for container to read
+  const archived = getArchivedTasks();
+  writeArchivedTasksSnapshot(
+    group.folder,
+    isMain,
+    archived.map((t) => ({
+      id: t.id,
+      groupFolder: t.group_folder,
+      prompt: t.prompt,
+      schedule_type: t.schedule_type,
+      schedule_value: t.schedule_value,
+      status: t.status,
     })),
   );
 
@@ -617,25 +655,28 @@ async function main(): Promise<void> {
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
-        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
-        return;
-      }
       const text = formatOutbound(rawText);
-      if (text) {
-        await channel.sendMessage(jid, text);
-        // Ingest scheduled task output for fact extraction
-        const group = registeredGroups[jid];
-        if (group) interceptor?.ingestResponse(group.folder, jid, text);
-      }
+      if (!text) return;
+
+      // Broadcast task output to ALL connected channels so the user sees it
+      // regardless of which channel the task was created from.
+      const deliveries = channels
+        .filter(ch => ch.isConnected())
+        .map(ch => ch.sendMessage(jid, text).catch(() => {}));
+      await Promise.all(deliveries);
+
+      storeBotMessage(jid, text);
+      // Ingest scheduled task output for fact extraction
+      const group = registeredGroups[jid];
+      if (group) interceptor?.ingestResponse(group.folder, jid, text);
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: async (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      await channel.sendMessage(jid, text);
+      storeBotMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
