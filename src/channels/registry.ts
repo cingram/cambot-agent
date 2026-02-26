@@ -42,6 +42,15 @@ const definitions: ChannelDefinition[] = [
       return new CliChannel(opts);
     },
   },
+  {
+    name: 'web',
+    isConfigured: () => getConfiguredChannelNames().has('web'),
+    create: async (opts) => {
+      const { WebChannel } = await import('./web.js');
+      const port = parseInt(process.env.WEB_CHANNEL_PORT || '3100', 10);
+      return new WebChannel(opts, port);
+    },
+  },
 ];
 
 export async function loadChannels(opts: ChannelOpts): Promise<Channel[]> {

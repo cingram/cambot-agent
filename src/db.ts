@@ -329,6 +329,24 @@ export function getMessagesSince(
     .all(chatJid, sinceTimestamp, `${botPrefix}:%`) as NewMessage[];
 }
 
+export function getChatHistory(
+  chatJid: string,
+  limit: number,
+): Array<{ id: string; content: string; sender_name: string; timestamp: string; is_bot_message: number }> {
+  const sql = `
+    SELECT id, content, sender_name, timestamp, is_bot_message
+    FROM messages
+    WHERE chat_jid = ?
+    ORDER BY timestamp DESC
+    LIMIT ?
+  `;
+  const rows = db.prepare(sql).all(chatJid, limit) as Array<{
+    id: string; content: string; sender_name: string; timestamp: string; is_bot_message: number;
+  }>;
+  // Return in chronological order
+  return rows.reverse();
+}
+
 export function createTask(
   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
 ): void {
