@@ -9,6 +9,9 @@ import { readEnvFile } from './env.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'ADMIN_JID',
+  'ADMIN_TRIGGER',
+  'ADMIN_KEY',
 ]);
 
 export const ASSISTANT_NAME =
@@ -57,6 +60,11 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// Shadow admin — both JID and KEY must be set to enable
+export const ADMIN_JID = process.env.ADMIN_JID || envConfig.ADMIN_JID || '';
+export const ADMIN_TRIGGER = process.env.ADMIN_TRIGGER || envConfig.ADMIN_TRIGGER || '!admin';
+export const ADMIN_KEY = process.env.ADMIN_KEY || envConfig.ADMIN_KEY || '';
 
 export const TRIGGER_PATTERN = new RegExp(
   `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
