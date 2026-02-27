@@ -43,6 +43,7 @@ import { startIpcWatcher } from './ipc.js';
 import { createMessageBus } from './message-bus.js';
 import { formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import { startWorkflowSchedulerLoop } from './workflow-scheduler.js';
 import { Channel, MessageBus, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { createShadowAgent } from './shadow-agent.js';
@@ -590,7 +591,7 @@ async function main(): Promise<void> {
   // token, using an extended timeout for long-running operations.
   const workflowGroup: RegisteredGroup = {
     name: 'Workflow Agent',
-    folder: '_workflows',
+    folder: 'workflows',
     trigger: '',
     added_at: new Date().toISOString(),
     containerConfig: { timeout: WORKFLOW_CONTAINER_TIMEOUT },
@@ -600,24 +601,51 @@ async function main(): Promise<void> {
   workflowService = createWorkflowService({
     db: getDatabase(),
     runAgentContainer: async (prompt: string): Promise<string> => {
-      const output = await runContainerAgent(
+      // Use a promise that resolves on the first streamed output marker,
+      // so we don't wait for the container process to exit (the claude
+      // process inside can idle for minutes after the agent-runner finishes).
+      let resolveResult: (value: string) => void;
+      let rejectResult: (err: Error) => void;
+      const resultPromise = new Promise<string>((res, rej) => {
+        resolveResult = res;
+        rejectResult = rej;
+      });
+      let gotStreamedOutput = false;
+
+      const containerPromise = runContainerAgent(
         workflowGroup,
         {
           prompt,
           groupFolder: workflowGroup.folder,
-          chatJid: '_workflows',
+          chatJid: 'workflows',
           isMain: true,
         },
         (_proc, containerName) => {
           logger.debug({ containerName }, 'Workflow container spawned');
         },
+        async (output) => {
+          if (gotStreamedOutput) return; // only use the first marker
+          gotStreamedOutput = true;
+          if (output.status === 'error') {
+            rejectResult(new Error(`Workflow container failed: ${output.error || 'unknown error'}`));
+          } else {
+            resolveResult(output.result || '');
+          }
+        },
       );
 
-      if (output.status === 'error') {
-        throw new Error(`Workflow container failed: ${output.error || 'unknown error'}`);
-      }
+      // If container exits before any streamed output (error case), fall back
+      containerPromise.then((output) => {
+        if (!gotStreamedOutput) {
+          if (output.status === 'error') {
+            rejectResult(new Error(`Workflow container failed: ${output.error || 'unknown error'}`));
+          } else {
+            resolveResult(output.result || '');
+          }
+        }
+      });
 
-      return output.result || '';
+      return resultPromise;
     },
   });
   workflowService.reloadDefinitions();
@@ -671,6 +699,7 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     registerGroup,
     messageBus: messageBus ?? undefined,
+    workflowService: workflowService ?? undefined,
   };
 
   // Create and connect channels
@@ -721,6 +750,7 @@ async function main(): Promise<void> {
       storeBotMessage(jid, text);
     },
   });
+  startWorkflowSchedulerLoop({ workflowService });
   startIpcWatcher({
     messageBus: messageBus ?? undefined,
     sendMessage: async (jid, text) => {

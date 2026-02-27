@@ -121,6 +121,12 @@ export interface ChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   messageBus?: MessageBus;
+  workflowService?: {
+    reloadDefinitions(): void;
+    hasActiveRun(workflowId: string): boolean;
+    runWorkflow(workflowId: string): Promise<string>;
+    cancelRun(runId: string): void;
+  };
 }
 
 // Callback type that channels use to deliver inbound messages

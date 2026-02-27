@@ -125,9 +125,33 @@ export class WebChannel implements Channel {
       this.handleHistory(url, res);
     } else if (req.method === 'POST' && url.pathname === '/message') {
       this.handleMessage(req, res);
+    } else if (req.method === 'POST' && url.pathname === '/reload-workflows') {
+      this.handleReloadWorkflows(res);
+    } else if (req.method === 'POST' && url.pathname === '/run-workflow') {
+      this.handleBody(req, res, (body) => this.handleRunWorkflow(body, res));
+    } else if (req.method === 'POST' && url.pathname === '/cancel-workflow-run') {
+      this.handleBody(req, res, (body) => this.handleCancelWorkflowRun(body, res));
     } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
+    }
+  }
+
+  private handleReloadWorkflows(res: http.ServerResponse): void {
+    const svc = this.opts.workflowService;
+    if (!svc) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workflow service not available' }));
+      return;
+    }
+    try {
+      svc.reloadDefinitions();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      logger.error({ err }, 'Failed to reload workflow definitions');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Reload failed' }));
     }
   }
 
@@ -146,6 +170,85 @@ export class WebChannel implements Channel {
       logger.error({ err }, 'Failed to fetch conversation history');
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to fetch history' }));
+    }
+  }
+
+  // ── Generic body parser ──
+  private handleBody(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    handler: (body: Record<string, unknown>) => void,
+  ): void {
+    let raw = '';
+    req.on('data', (chunk: Buffer) => { raw += chunk; });
+    req.on('end', () => {
+      try {
+        handler(JSON.parse(raw));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+  }
+
+  // ── Run workflow (fire-and-forget) ──
+  private handleRunWorkflow(body: Record<string, unknown>, res: http.ServerResponse): void {
+    const svc = this.opts.workflowService;
+    if (!svc) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workflow service not available' }));
+      return;
+    }
+
+    const workflowId = body.workflowId as string | undefined;
+    if (!workflowId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'workflowId is required' }));
+      return;
+    }
+
+    // Always reload definitions so we run the latest YAML
+    svc.reloadDefinitions();
+
+    if (svc.hasActiveRun(workflowId)) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workflow already has an active run' }));
+      return;
+    }
+
+    // Fire-and-forget — don't await
+    svc.runWorkflow(workflowId).catch((err) => {
+      logger.error({ err, workflowId }, 'Workflow run failed');
+    });
+
+    res.writeHead(202, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ accepted: true, workflowId }));
+  }
+
+  // ── Cancel workflow run ──
+  private handleCancelWorkflowRun(body: Record<string, unknown>, res: http.ServerResponse): void {
+    const svc = this.opts.workflowService;
+    if (!svc) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Workflow service not available' }));
+      return;
+    }
+
+    const runId = body.runId as string | undefined;
+    if (!runId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'runId is required' }));
+      return;
+    }
+
+    try {
+      svc.cancelRun(runId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      logger.error({ err, runId }, 'Failed to cancel workflow run');
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Cancel failed' }));
     }
   }
 
