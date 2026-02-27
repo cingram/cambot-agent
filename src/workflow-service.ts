@@ -41,6 +41,7 @@ export interface WorkflowService {
   reloadDefinitions(): void;
   listWorkflows(): WorkflowDefinition[];
   getWorkflow(id: string): WorkflowDefinition | undefined;
+  hasActiveRun(workflowId: string): boolean;
   runWorkflow(workflowId: string): Promise<string>;
   resumeWorkflow(runId: string, workflowId: string): Promise<string>;
   getRunStatus(runId: string): WorkflowRun | null;
@@ -210,6 +211,11 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
 
     getWorkflow(id: string): WorkflowDefinition | undefined {
       return definitions.get(id);
+    },
+
+    hasActiveRun(workflowId: string): boolean {
+      const recent = runStore.listByWorkflow(db, workflowId, 10);
+      return recent.some(r => r.status === 'running' || r.status === 'pending');
     },
 
     async runWorkflow(workflowId: string): Promise<string> {
