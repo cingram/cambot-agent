@@ -17,10 +17,13 @@ import {
   createWorkflowRunner,
   createPolicyEngine,
   createAgentHandler,
-  createToolHandler,
+  createToolDispatcher,
+  createDefaultToolRegistry,
   createMemoryHandler,
   createMessageHandler,
   createGateHandler,
+  createParallelHandler,
+  createSyncHandler,
 } from 'cambot-workflows';
 import type {
   WorkflowDefinition,
@@ -33,6 +36,8 @@ import type {
 } from 'cambot-workflows';
 
 import { DATA_DIR } from './config.js';
+import type { ContainerInput } from './container-runner.js';
+import { getCustomAgent } from './db.js';
 import { logger } from './logger.js';
 
 // ── Public interface ─────────────────────────────────────────────────
@@ -51,11 +56,21 @@ export interface WorkflowService {
 }
 
 /**
+ * Input for the agent container callback.
+ * When customAgent is present, the container forks to the custom-agent-runner
+ * using the specified provider (OpenAI, XAI, etc.) instead of Claude.
+ */
+export interface AgentStepInput {
+  prompt: string;
+  customAgent?: ContainerInput['customAgent'];
+}
+
+/**
  * Callback that runs a prompt through a container-based agent.
  * Returns the agent's text response. Spawns a real container using
- * the existing OAuth token + Agent SDK.
+ * the existing OAuth token + Agent SDK (or a custom provider when customAgent is set).
  */
-export type RunAgentContainerFn = (prompt: string) => Promise<string>;
+export type RunAgentContainerFn = (input: AgentStepInput) => Promise<string>;
 
 export interface WorkflowServiceDeps {
   db: Database.Database;
@@ -105,6 +120,78 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
 
   // ── Agent step: spawns a container via the Agent SDK ───────────────
 
+  /**
+   * Resolve a customAgent payload from step config.
+   *
+   * Three modes:
+   * 1. agentId only → look up custom_agents table, use its provider config
+   * 2. Inline provider fields (provider, model, apiKeyEnvVar) → build directly
+   * 3. agentId + inline overrides → start from DB row, overlay overrides
+   * 4. Neither → return undefined (default Claude container)
+   */
+  function resolveCustomAgent(
+    config: Record<string, unknown>,
+  ): ContainerInput['customAgent'] | undefined {
+    const agentId = config.agentId as string | undefined;
+    const inlineProvider = config.provider as string | undefined;
+
+    // Mode 4: no custom agent config — default Claude behavior
+    if (!agentId && !inlineProvider) return undefined;
+
+    // Start from DB row if agentId is present
+    let base: ContainerInput['customAgent'] | undefined;
+    if (agentId) {
+      const row = getCustomAgent(agentId);
+      if (!row) {
+        logger.warn({ agentId }, 'Custom agent not found, falling back to default');
+        // If there's no inline provider either, fall back to default
+        if (!inlineProvider) return undefined;
+      } else {
+        base = {
+          agentId: row.id,
+          provider: row.provider as 'openai' | 'xai' | 'anthropic' | 'google',
+          model: row.model,
+          baseUrl: row.base_url ?? undefined,
+          apiKeyEnvVar: row.api_key_env_var,
+          systemPrompt: row.system_prompt,
+          tools: JSON.parse(row.tools) as string[],
+          maxTokens: row.max_tokens ?? undefined,
+          temperature: row.temperature ?? undefined,
+          maxIterations: row.max_iterations,
+          timeoutMs: row.timeout_ms,
+        };
+      }
+    }
+
+    // Mode 2: pure inline config (no agentId or agentId not found)
+    if (!base) {
+      return {
+        agentId: agentId ?? `inline-${Date.now()}`,
+        provider: inlineProvider as 'openai' | 'xai' | 'anthropic' | 'google',
+        model: String(config.model ?? ''),
+        baseUrl: config.baseUrl as string | undefined,
+        apiKeyEnvVar: String(config.apiKeyEnvVar ?? ''),
+        systemPrompt: String(config.systemPrompt ?? ''),
+        tools: (config.tools as string[]) ?? [],
+        maxTokens: config.maxTokens as number | undefined,
+        temperature: config.temperature as number | undefined,
+        maxIterations: (config.maxIterations as number) ?? 10,
+        timeoutMs: (config.timeoutMs as number) ?? 120_000,
+      };
+    }
+
+    // Mode 3: agentId + inline overrides
+    if (inlineProvider) base.provider = inlineProvider as typeof base.provider;
+    if (config.model) base.model = String(config.model);
+    if (config.baseUrl !== undefined) base.baseUrl = config.baseUrl as string | undefined;
+    if (config.apiKeyEnvVar) base.apiKeyEnvVar = String(config.apiKeyEnvVar);
+    if (config.systemPrompt) base.systemPrompt = String(config.systemPrompt);
+    if (config.temperature !== undefined) base.temperature = config.temperature as number;
+    if (config.maxTokens !== undefined) base.maxTokens = config.maxTokens as number;
+
+    return base;
+  }
+
   async function runAgentPrompt(
     config: Record<string, unknown>,
     previousOutputs: Record<string, unknown>,
@@ -120,13 +207,19 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
       prompt += '</previous_step_outputs>';
     }
 
+    // Resolve custom agent (if agentId or inline provider fields are present)
+    const customAgent = resolveCustomAgent(config);
+
     logger.info(
-      { promptLength: prompt.length },
+      {
+        promptLength: prompt.length,
+        customAgent: customAgent ? { agentId: customAgent.agentId, provider: customAgent.provider, model: customAgent.model } : undefined,
+      },
       'Workflow agent step: spawning container',
     );
 
     const startTime = Date.now();
-    const result = await deps.runAgentContainer(prompt);
+    const result = await deps.runAgentContainer({ prompt, customAgent });
     const durationMs = Date.now() - startTime;
 
     logger.info(
@@ -141,23 +234,23 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
       tokensIn: 0,
       tokensOut: 0,
       costUsd: 0,
-      metadata: { durationMs },
+      metadata: { durationMs, customAgent: customAgent?.agentId },
     };
   }
 
   // Step handler registry
+  const toolRegistry = createDefaultToolRegistry();
   const handlers = new Map<string, StepHandler>();
   handlers.set('agent', createAgentHandler(runAgentPrompt));
-  handlers.set('tool', createToolHandler(async (config, _prev) => {
-    logger.info({ tool: config.tool }, 'Workflow tool step (stub)');
-    return { data: { status: 'ok', tool: config.tool }, tokensIn: 0, tokensOut: 0, costUsd: 0 };
-  }));
+  handlers.set('tool', createToolDispatcher(toolRegistry));
   handlers.set('memory', createMemoryHandler(async (query, _config) => {
     logger.info({ query }, 'Workflow memory step (stub)');
     return { data: { results: [] }, tokensIn: 0, tokensOut: 0, costUsd: 0 };
   }));
   handlers.set('message', createMessageHandler());
   handlers.set('gate', createGateHandler());
+  handlers.set('parallel', createParallelHandler());
+  handlers.set('sync', createSyncHandler());
 
   // In-memory workflow definition cache
   let definitions = new Map<string, WorkflowDefinition>();
