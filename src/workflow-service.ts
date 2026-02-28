@@ -120,14 +120,24 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
 
   // ── Agent step: spawns a container via the Agent SDK ───────────────
 
+  /** Default env var name for each provider's API key. */
+  const DEFAULT_API_KEY_ENV: Record<string, string> = {
+    openai: 'OPENAI_API_KEY',
+    xai: 'XAI_API_KEY',
+    anthropic: 'ANTHROPIC_API_KEY',
+    google: 'GOOGLE_API_KEY',
+  };
+
   /**
    * Resolve a customAgent payload from step config.
    *
    * Three modes:
    * 1. agentId only → look up custom_agents table, use its provider config
-   * 2. Inline provider fields (provider, model, apiKeyEnvVar) → build directly
+   * 2. Inline provider fields (provider, model) → build directly
    * 3. agentId + inline overrides → start from DB row, overlay overrides
    * 4. Neither → return undefined (default Claude container)
+   *
+   * apiKeyEnvVar is optional — defaults to the standard env var for the provider.
    */
   function resolveCustomAgent(
     config: Record<string, unknown>,
@@ -165,12 +175,13 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
 
     // Mode 2: pure inline config (no agentId or agentId not found)
     if (!base) {
+      const provider = inlineProvider as 'openai' | 'xai' | 'anthropic' | 'google';
       return {
         agentId: agentId ?? `inline-${Date.now()}`,
-        provider: inlineProvider as 'openai' | 'xai' | 'anthropic' | 'google',
+        provider,
         model: String(config.model ?? ''),
         baseUrl: config.baseUrl as string | undefined,
-        apiKeyEnvVar: String(config.apiKeyEnvVar ?? ''),
+        apiKeyEnvVar: String(config.apiKeyEnvVar || DEFAULT_API_KEY_ENV[provider] || ''),
         systemPrompt: String(config.systemPrompt ?? ''),
         tools: (config.tools as string[]) ?? [],
         maxTokens: config.maxTokens as number | undefined,
@@ -247,7 +258,13 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     logger.info({ query }, 'Workflow memory step (stub)');
     return { data: { results: [] }, tokensIn: 0, tokensOut: 0, costUsd: 0 };
   }));
-  handlers.set('message', createMessageHandler());
+  handlers.set('message', createMessageHandler(async (prompt, model) => {
+    logger.info({ model, promptLength: prompt.length }, 'Message AI compose: starting');
+    const customAgent = resolveCustomAgent(model ? { provider: 'anthropic', model } : {});
+    const result = await deps.runAgentContainer({ prompt, customAgent });
+    logger.info({ resultLength: result.length }, 'Message AI compose: complete');
+    return { data: result, tokensIn: 0, tokensOut: 0, costUsd: 0 };
+  }));
   handlers.set('gate', createGateHandler());
   handlers.set('parallel', createParallelHandler());
   handlers.set('sync', createSyncHandler());
