@@ -75,13 +75,9 @@ Run `npx tsx setup/index.ts --step container -- --runtime <chosen>` and parse th
 
 ## 4. Claude Authentication (No Script)
 
-If HAS_ENV=true from step 2, read `.env` and check for `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. If present, confirm with user: keep or reconfigure?
+If HAS_ENV=true from step 2, read `.env` and check for `ANTHROPIC_API_KEY`. If present, confirm with user: keep or reconfigure?
 
-AskUserQuestion: Claude subscription (Pro/Max) vs Anthropic API key?
-
-**Subscription:** Tell user to run `claude setup-token` in another terminal, copy the token, add `CLAUDE_CODE_OAUTH_TOKEN=<token>` to `.env`. Do NOT collect the token in chat.
-
-**API key:** Tell user to add `ANTHROPIC_API_KEY=<key>` to `.env`.
+Tell user to get an API key from https://console.anthropic.com/settings/keys and add `ANTHROPIC_API_KEY=<key>` to `.env`. Do NOT collect the key in chat.
 
 ## 5. WhatsApp Authentication
 

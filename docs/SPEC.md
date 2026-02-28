@@ -227,20 +227,15 @@ Additional mounts appear at `/workspace/extra/{containerPath}` inside the contai
 
 ### Claude Authentication
 
-Configure authentication in a `.env` file in the project root. Two options:
+Configure authentication in a `.env` file in the project root:
 
-**Option 1: Claude Subscription (OAuth token)**
-```bash
-CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
-```
-The token can be extracted from `~/.claude/.credentials.json` if you're logged in to Claude Code.
-
-**Option 2: Pay-per-use API Key**
 ```bash
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) are extracted from `.env` and written to `data/env/env`, then mounted into the container at `/workspace/env-dir/env` and sourced by the entrypoint script. This ensures other environment variables in `.env` are not exposed to the agent. This workaround is needed because some container runtimes lose `-e` environment variables when using `-i` (interactive mode with piped stdin).
+Get an API key from https://console.anthropic.com/settings/keys.
+
+Only allowed secret variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `GOOGLE_API_KEY`) are read from `.env` and passed to the container via stdin JSON. They are injected into the SDK's `env` dict but never written to disk or set in `process.env`, so Bash subprocesses cannot see them.
 
 ### Changing the Assistant Name
 

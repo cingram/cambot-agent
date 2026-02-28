@@ -37,19 +37,20 @@ WORKDIR /app
 
 # Copy cambot-agents package (local dependency for custom agent support)
 COPY cambot-agents/ /cambot-agents/
-RUN cd /cambot-agents && npm install && npm run build
+RUN cd /cambot-agents && npm install --legacy-peer-deps && npm run build
 
-# Copy package files first for better caching
-COPY agent-runner/package*.json ./
+# Copy package.json only (not lockfile — it has stale file: paths from local dev)
+COPY agent-runner/package.json ./
 
 # Fix cambot-agents path for container context (local dev uses ../../../cambot-agents)
 RUN sed -i 's|"cambot-agents": "file:../../../cambot-agents"|"cambot-agents": "file:/cambot-agents"|' package.json
 
-# Install dependencies
-RUN npm install
+# Install dependencies (fresh resolve, no stale lockfile)
+RUN npm install --legacy-peer-deps
 
-# Copy source code
-COPY agent-runner/ ./
+# Copy source code and config (not package.json — already sed-fixed above)
+COPY agent-runner/src/ ./src/
+COPY agent-runner/tsconfig.json ./
 
 # Build TypeScript
 RUN npm run build

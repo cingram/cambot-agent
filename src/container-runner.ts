@@ -195,13 +195,21 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile([
-    'CLAUDE_CODE_OAUTH_TOKEN',
+  const secrets = readEnvFile([
     'ANTHROPIC_API_KEY',
     'OPENAI_API_KEY',
     'XAI_API_KEY',
     'GOOGLE_API_KEY',
   ]);
+  // Alias: cambot-core uses GEMINI_API_KEY, custom agents use GOOGLE_API_KEY.
+  // If GOOGLE_API_KEY is not set but GEMINI_API_KEY is, use GEMINI_API_KEY.
+  if (!secrets['GOOGLE_API_KEY']) {
+    const gemini = readEnvFile(['GEMINI_API_KEY']);
+    if (gemini['GEMINI_API_KEY']) {
+      secrets['GOOGLE_API_KEY'] = gemini['GEMINI_API_KEY'];
+    }
+  }
+  return secrets;
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {

@@ -10,6 +10,18 @@ IMAGE_NAME="cambot-agent-agent"
 TAG="${1:-latest}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 
+# Verify container runtime is available
+if ! command -v "$CONTAINER_RUNTIME" &>/dev/null; then
+  # On Windows, docker.exe may not be on bash's PATH — try the common location
+  if [ -x "/c/Program Files/Docker/Docker/resources/bin/docker.exe" ]; then
+    CONTAINER_RUNTIME="/c/Program Files/Docker/Docker/resources/bin/docker.exe"
+  else
+    echo "Error: '$CONTAINER_RUNTIME' not found in PATH." >&2
+    echo "Make sure Docker Desktop is running and docker is on your PATH." >&2
+    exit 1
+  fi
+fi
+
 echo "Building CamBot-Agent agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
