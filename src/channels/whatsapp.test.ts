@@ -97,8 +97,13 @@ vi.mock('@whiskeysockets/baileys', () => {
 
 import { WhatsAppChannel, WhatsAppChannelOpts } from './whatsapp.js';
 import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db.js';
+import { MessageBus } from '../types.js';
 
 // --- Test helpers ---
+
+function stubBus(): MessageBus {
+  return { emit: vi.fn(), emitAsync: vi.fn(), on: vi.fn(() => () => {}) };
+}
 
 function createTestOpts(overrides?: Partial<WhatsAppChannelOpts>): WhatsAppChannelOpts {
   return {
@@ -113,6 +118,7 @@ function createTestOpts(overrides?: Partial<WhatsAppChannelOpts>): WhatsAppChann
       },
     })),
     registerGroup: vi.fn(),
+    messageBus: stubBus(),
     ...overrides,
   };
 }

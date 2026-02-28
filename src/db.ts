@@ -142,6 +142,15 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_custom_agents_group ON custom_agents(group_folder);
   `);
 
+  // Email channel state tracking (poll timestamps, etc.)
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS email_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
   // Workflow tables (cambot-workflows) — uses CREATE IF NOT EXISTS, safe to re-run
   createWorkflowSchema(database);
 }
@@ -756,6 +765,21 @@ export function findCustomAgentByTrigger(messageContent: string): CustomAgentRow
     }
   }
   return undefined;
+}
+
+// --- Email state accessors ---
+
+export function getEmailState(key: string): string | null {
+  const row = db
+    .prepare('SELECT value FROM email_state WHERE key = ?')
+    .get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setEmailState(key: string, value: string): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO email_state (key, value, updated_at) VALUES (?, ?, ?)`,
+  ).run(key, value, new Date().toISOString());
 }
 
 // --- JSON migration ---

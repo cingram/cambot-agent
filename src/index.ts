@@ -12,8 +12,10 @@ import {
   POLL_INTERVAL,
   TRIGGER_PATTERN,
   WORKFLOW_CONTAINER_TIMEOUT,
+  WORKSPACE_MCP_PORT,
 } from './config.js';
 import { loadChannels } from './channels/registry.js';
+import { readEnvFile } from './env.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -53,6 +55,7 @@ import { logger } from './logger.js';
 import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
 import { createShadowAgent } from './shadow-agent.js';
 import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
+import { createWorkspaceMcpService, WorkspaceMcpService } from './workspace-mcp-service.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -65,10 +68,11 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-let messageBus: MessageBus | null = null;
+let messageBus!: MessageBus;
 let workflowService: WorkflowService | null = null;
 let customAgentService: CustomAgentService | null = null;
 let shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
+let workspaceMcpService: WorkspaceMcpService | null = null;
 
 /** Persist a bot-generated message so /history includes both sides. */
 function storeBotMessage(chatJid: string, text: string): void {
@@ -260,18 +264,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   // Typing indicator via bus
-  if (messageBus) {
-    messageBus.emitAsync({
-      type: 'typing.update',
-      source: 'agent',
-      timestamp: new Date().toISOString(),
-      data: { jid: chatJid, isTyping: true },
-    }).catch(() => {});
-  } else {
-    for (const ch of channels) {
-      if (ch.ownsJid(chatJid)) ch.setTyping?.(chatJid, true)?.catch(() => {});
-    }
-  }
+  messageBus.emitAsync({
+    type: 'typing.update',
+    source: 'agent',
+    timestamp: new Date().toISOString(),
+    data: { jid: chatJid, isTyping: true },
+  }).catch(() => {});
 
   let hadError = false;
   let outputSentToUser = false;
@@ -293,22 +291,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           lastSentText = text;
           lastSentTime = now;
 
-          if (messageBus) {
-            await messageBus.emitAsync({
-              type: 'message.outbound',
-              source: 'agent',
-              timestamp: new Date().toISOString(),
-              data: { jid: chatJid, text, source: 'agent', groupFolder: group.folder },
-            });
-          } else {
-            // Fallback: direct channel delivery
-            for (const ch of channels) {
-              if (ch.ownsJid(chatJid) && ch.isConnected()) {
-                await ch.sendMessage(chatJid, text);
-              }
-            }
-            storeBotMessage(chatJid, text);
-          }
+          await messageBus.emitAsync({
+            type: 'message.outbound',
+            source: 'agent',
+            timestamp: new Date().toISOString(),
+            data: { jid: chatJid, text, source: 'agent', groupFolder: group.folder },
+          });
 
           outputSentToUser = true;
         }
@@ -335,18 +323,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   });
 
   // Stop typing indicator
-  if (messageBus) {
-    messageBus.emitAsync({
-      type: 'typing.update',
-      source: 'agent',
-      timestamp: new Date().toISOString(),
-      data: { jid: chatJid, isTyping: false },
-    }).catch(() => {});
-  } else {
-    for (const ch of channels) {
-      if (ch.ownsJid(chatJid)) ch.setTyping?.(chatJid, false)?.catch(() => {});
-    }
-  }
+  messageBus.emitAsync({
+    type: 'typing.update',
+    source: 'agent',
+    timestamp: new Date().toISOString(),
+    data: { jid: chatJid, isTyping: false },
+  }).catch(() => {});
   if (idleTimer) clearTimeout(idleTimer);
 
   if (output === 'error' || hadError) {
@@ -474,6 +456,9 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        workspaceMcpUrl: workspaceMcpService?.isRunning()
+          ? workspaceMcpService.getUrl()
+          : undefined,
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -574,22 +559,12 @@ async function startMessageLoop(): Promise<void> {
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
             // Typing indicator via bus
-            if (messageBus) {
-              messageBus.emitAsync({
-                type: 'typing.update',
-                source: 'agent',
-                timestamp: new Date().toISOString(),
-                data: { jid: chatJid, isTyping: true },
-              }).catch(() => {});
-            } else {
-              for (const ch of channels) {
-                if (ch.ownsJid(chatJid)) {
-                  ch.setTyping?.(chatJid, true)?.catch((err) =>
-                    logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-                  );
-                }
-              }
-            }
+            messageBus.emitAsync({
+              type: 'typing.update',
+              source: 'agent',
+              timestamp: new Date().toISOString(),
+              data: { jid: chatJid, isTyping: true },
+            }).catch(() => {});
           } else {
             // No active container — enqueue for a new one
             logger.info(
@@ -636,6 +611,34 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // ── Initialize Google Workspace MCP Service ─────────────────────────────
+  // Runs workspace-mcp as a persistent HTTP service on the host. Docker
+  // containers connect via host.docker.internal. Only starts if OAuth
+  // credentials are configured.
+  const googleEnv = readEnvFile([
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
+    'USER_GOOGLE_EMAIL',
+  ]);
+  const hasGoogleCreds = !!(
+    googleEnv.GOOGLE_OAUTH_CLIENT_ID &&
+    googleEnv.GOOGLE_OAUTH_CLIENT_SECRET &&
+    googleEnv.USER_GOOGLE_EMAIL
+  );
+
+  if (hasGoogleCreds) {
+    workspaceMcpService = createWorkspaceMcpService({
+      port: WORKSPACE_MCP_PORT,
+      googleOAuthClientId: googleEnv.GOOGLE_OAUTH_CLIENT_ID,
+      googleOAuthClientSecret: googleEnv.GOOGLE_OAUTH_CLIENT_SECRET,
+      userGoogleEmail: googleEnv.USER_GOOGLE_EMAIL,
+    });
+    await workspaceMcpService.start();
+    logger.info({ port: WORKSPACE_MCP_PORT }, 'Google Workspace MCP service started');
+  } else {
+    logger.debug('Google Workspace MCP not configured (missing OAuth credentials)');
+  }
+
   // ── Initialize Workflow Service ──────────────────────────────────────────
   // Workflow agent steps spawn a container with the existing Agent SDK + OAuth
   // token, using an extended timeout for long-running operations.
@@ -676,6 +679,9 @@ async function main(): Promise<void> {
           chatJid: 'workflows',
           isMain: true,
           customAgent: input.customAgent,
+          workspaceMcpUrl: workspaceMcpService?.isRunning()
+            ? workspaceMcpService.getUrl()
+            : undefined,
         },
         (_proc, containerName) => {
           spawnedContainerName = containerName;
@@ -727,13 +733,7 @@ async function main(): Promise<void> {
       }
       return undefined;
     },
-    messageBus: undefined, // Set after bus is created below
-    sendMessage: async (jid, text) => {
-      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
-      if (!ch) throw new Error(`No channel for JID: ${jid}`);
-      await ch.sendMessage(jid, text);
-      storeBotMessage(jid, text);
-    },
+    messageBus: bus,
     onProcess: (proc, containerName, groupFolder) => {
       // Custom agent containers don't register in the queue
       logger.debug({ containerName, groupFolder }, 'Custom agent container spawned');
@@ -770,6 +770,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+    if (workspaceMcpService) await workspaceMcpService.stop();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -787,7 +788,7 @@ async function main(): Promise<void> {
       storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
     registerGroup,
-    messageBus: messageBus ?? undefined,
+    messageBus,
     workflowService: workflowService ?? undefined,
     channelNames: () => channels.map(ch => ch.name),
   };
@@ -817,39 +818,20 @@ async function main(): Promise<void> {
     adminJid: ADMIN_JID,
     adminTrigger: ADMIN_TRIGGER,
     channels,
-    messageBus: messageBus ?? undefined,
+    messageBus,
   });
 
-  // Start subsystems — pass eventBus when available
+  // Start subsystems
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    messageBus: messageBus ?? undefined,
-    sendMessage: async (jid, rawText) => {
-      // Fallback when no messageBus
-      const text = formatOutbound(rawText);
-      if (!text) return;
-      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
-      if (!ch) {
-        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
-        return;
-      }
-      await ch.sendMessage(jid, text);
-      storeBotMessage(jid, text);
-    },
+    messageBus,
   });
   startWorkflowSchedulerLoop({ workflowService });
   startIpcWatcher({
-    messageBus: messageBus ?? undefined,
-    sendMessage: async (jid, text) => {
-      // Fallback when no messageBus
-      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
-      if (!ch) throw new Error(`No channel for JID: ${jid}`);
-      await ch.sendMessage(jid, text);
-      storeBotMessage(jid, text);
-    },
+    messageBus,
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroupMetadata: async (force) => {

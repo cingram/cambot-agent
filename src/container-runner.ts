@@ -34,6 +34,8 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  /** URL for the host-side Google Workspace MCP server (streamable-http) */
+  workspaceMcpUrl?: string;
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';

@@ -27,6 +27,8 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  /** URL for the host-side Google Workspace MCP server (streamable-http) */
+  workspaceMcpUrl?: string;
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';
@@ -444,7 +446,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__cambot-agent__*'
+        'mcp__cambot-agent__*',
+        ...(containerInput.workspaceMcpUrl ? ['mcp__google-workspace__*'] : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -460,6 +463,12 @@ async function runQuery(
             CAMBOT_AGENT_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(containerInput.workspaceMcpUrl ? {
+          'google-workspace': {
+            type: 'http' as const,
+            url: containerInput.workspaceMcpUrl,
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook()] }],

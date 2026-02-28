@@ -18,10 +18,7 @@ import type { WorkflowService } from './workflow-service.js';
 import type { CustomAgentService } from './custom-agent-service.js';
 
 export interface IpcDeps {
-  /** EventBus for message routing. When present, outbound messages go through the bus. */
-  messageBus?: MessageBus;
-  /** Fallback: direct send when messageBus is not available. */
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  messageBus: MessageBus;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroupMetadata: (force: boolean) => Promise<void>;
@@ -88,16 +85,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  if (deps.messageBus) {
-                    await deps.messageBus.emitAsync({
-                      type: 'message.outbound',
-                      source: 'ipc',
-                      timestamp: new Date().toISOString(),
-                      data: { jid: data.chatJid, text: data.text, source: 'ipc', groupFolder: sourceGroup },
-                    });
-                  } else {
-                    await deps.sendMessage(data.chatJid, data.text);
-                  }
+                  await deps.messageBus.emitAsync({
+                    type: 'message.outbound',
+                    source: 'ipc',
+                    timestamp: new Date().toISOString(),
+                    data: { jid: data.chatJid, text: data.text, source: 'ipc', groupFolder: sourceGroup },
+                  });
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -436,7 +429,7 @@ export async function processTaskIpc(
         try {
           const runId = await deps.workflowService.runWorkflow(data.workflowId);
           logger.info({ workflowId: data.workflowId, runId, sourceGroup }, 'Workflow started via IPC');
-          if (deps.messageBus && data.chatJid) {
+          if (data.chatJid) {
             await deps.messageBus.emitAsync({
               type: 'message.outbound',
               source: 'ipc',
@@ -452,7 +445,7 @@ export async function processTaskIpc(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.error({ workflowId: data.workflowId, err }, 'Workflow run failed');
-          if (deps.messageBus && data.chatJid) {
+          if (data.chatJid) {
             await deps.messageBus.emitAsync({
               type: 'message.outbound',
               source: 'ipc',
@@ -594,7 +587,7 @@ export async function processTaskIpc(
           logger.error({ agentId: data.agentId, err }, 'Custom agent invocation failed');
           // Notify the user of the failure
           const errorText = `Custom agent invocation failed: ${err instanceof Error ? err.message : String(err)}`;
-          if (deps.messageBus && targetJid) {
+          if (targetJid) {
             deps.messageBus.emitAsync({
               type: 'message.outbound',
               source: 'ipc',

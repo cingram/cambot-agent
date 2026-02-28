@@ -40,8 +40,7 @@ export interface CustomAgentService {
 
 export interface CustomAgentServiceDeps {
   getRegisteredGroup: (groupFolder: string) => RegisteredGroup | undefined;
-  messageBus?: MessageBus;
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  messageBus: MessageBus;
   onProcess: (proc: ChildProcess, containerName: string, groupFolder: string) => void;
 }
 
@@ -130,22 +129,18 @@ export function createCustomAgentService(deps: CustomAgentServiceDeps): CustomAg
         async (result) => {
           if (result.result) {
             finalResult = result.result;
-            if (deps.messageBus) {
-              await deps.messageBus.emitAsync({
-                type: 'message.outbound',
+            await deps.messageBus.emitAsync({
+              type: 'message.outbound',
+              source: 'custom-agent',
+              timestamp: new Date().toISOString(),
+              data: {
+                jid: chatJid,
+                text: result.result,
                 source: 'custom-agent',
-                timestamp: new Date().toISOString(),
-                data: {
-                  jid: chatJid,
-                  text: result.result,
-                  source: 'custom-agent',
-                  groupFolder,
-                  agentId,
-                },
-              });
-            } else {
-              await deps.sendMessage(chatJid, result.result);
-            }
+                groupFolder,
+                agentId,
+              },
+            });
           }
           // Stop the container after delivering the first result
           if (!gotFirstResult) {

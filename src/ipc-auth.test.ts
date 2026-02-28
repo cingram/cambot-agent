@@ -9,6 +9,7 @@ import {
   setRegisteredGroup,
 } from './db.js';
 import { processTaskIpc, IpcDeps } from './ipc.js';
+import { createMessageBus } from './message-bus.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -51,7 +52,7 @@ beforeEach(() => {
   setRegisteredGroup('third@g.us', THIRD_GROUP);
 
   deps = {
-    sendMessage: async () => {},
+    messageBus: createMessageBus(),
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;

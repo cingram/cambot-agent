@@ -76,7 +76,7 @@ export type RunAgentContainerFn = (input: AgentStepInput) => Promise<string>;
 export interface WorkflowServiceDeps {
   db: Database.Database;
   runAgentContainer: RunAgentContainerFn;
-  messageBus?: MessageBus;
+  messageBus: MessageBus;
 }
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -271,7 +271,7 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
   // Wrap the message handler to emit outbound delivery via the bus
   const messageHandlerWithBus: StepHandler = async (ctx) => {
     const output = await baseMessageHandler(ctx);
-    if (deps.messageBus && output.data && output.metadata) {
+    if (output.data && output.metadata) {
       const meta = output.metadata as Record<string, unknown>;
       const channel = meta.channel as string | undefined;
       if (channel) {

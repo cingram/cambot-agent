@@ -12,6 +12,7 @@ const envConfig = readEnvFile([
   'ADMIN_JID',
   'ADMIN_TRIGGER',
   'ADMIN_KEY',
+  'WORKSPACE_MCP_PORT',
 ]);
 
 export const ASSISTANT_NAME =
@@ -73,6 +74,12 @@ export const ADMIN_KEY = process.env.ADMIN_KEY || envConfig.ADMIN_KEY || '';
 export const TRIGGER_PATTERN = new RegExp(
   `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
   'i',
+);
+
+// Google Workspace MCP server port (host-side HTTP service)
+export const WORKSPACE_MCP_PORT = parseInt(
+  process.env.WORKSPACE_MCP_PORT || envConfig.WORKSPACE_MCP_PORT || '8000',
+  10,
 );
 
 // Timezone for scheduled tasks (cron expressions, etc.)
