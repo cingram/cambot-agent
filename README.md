@@ -56,6 +56,7 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 - **Web access** - Search and fetch content
 - **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks (first personal AI assistant to support this)
+- **Custom Agents** - Create agents on any LLM provider (OpenAI, Grok, Gemini, Anthropic) with their own tools, memory, and trigger patterns. See [docs/CUSTOM-AGENTS.md](docs/CUSTOM-AGENTS.md)
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
@@ -133,9 +134,11 @@ Key files:
 - `src/router.ts` - Message formatting and outbound routing
 - `src/group-queue.ts` - Per-group queue with global concurrency limit
 - `src/container-runner.ts` - Spawns streaming agent containers
+- `src/custom-agent-service.ts` - Custom agent CRUD and invocation
 - `src/task-scheduler.ts` - Runs scheduled tasks
-- `src/db.ts` - SQLite operations (messages, groups, sessions, state)
+- `src/db.ts` - SQLite operations (messages, groups, sessions, agents, state)
 - `groups/*/CLAUDE.md` - Per-group memory
+- `../cambot-agents/` - Multi-provider agent framework (providers, tools, executor, memory)
 
 ## FAQ
 

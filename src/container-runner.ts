@@ -34,6 +34,19 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  customAgent?: {
+    agentId: string;
+    provider: 'openai' | 'xai' | 'anthropic' | 'google';
+    model: string;
+    baseUrl?: string;
+    apiKeyEnvVar: string;
+    systemPrompt: string;
+    tools: string[];
+    maxTokens?: number;
+    temperature?: number;
+    maxIterations?: number;
+    timeoutMs?: number;
+  };
 }
 
 export interface ContainerOutput {
@@ -182,7 +195,13 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  return readEnvFile([
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'OPENAI_API_KEY',
+    'XAI_API_KEY',
+    'GOOGLE_API_KEY',
+  ]);
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
@@ -644,6 +663,33 @@ export function writeWorkflowsSnapshot(
   // Only main sees run history (non-main gets empty array)
   const runsFile = path.join(groupIpcDir, 'workflow_runs.json');
   fs.writeFileSync(runsFile, JSON.stringify(isMain ? runs : [], null, 2));
+}
+
+/**
+ * Write custom agents snapshot for the container to read.
+ */
+export function writeCustomAgentsSnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  agents: Array<{
+    id: string;
+    name: string;
+    description: string;
+    provider: string;
+    model: string;
+    trigger_pattern: string | null;
+    group_folder: string;
+  }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const filteredAgents = isMain
+    ? agents
+    : agents.filter((a) => a.group_folder === groupFolder);
+
+  const agentsFile = path.join(groupIpcDir, 'custom_agents.json');
+  fs.writeFileSync(agentsFile, JSON.stringify(filteredAgents, null, 2));
 }
 
 export interface AvailableGroup {

@@ -74,3 +74,42 @@ export function cleanupOrphans(): void {
     logger.warn({ err }, 'Failed to clean up orphaned containers');
   }
 }
+
+/**
+ * Stop containers older than maxAgeMs.
+ * Container names encode their spawn timestamp: cambot-agent-{name}-{timestamp}
+ * This is safe to run periodically — it only kills stale containers.
+ */
+export function cleanupStaleContainers(maxAgeMs: number): void {
+  try {
+    const output = execSync(
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=cambot-agent- --format '{{.Names}}'`,
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+    );
+    const containers = output.trim().split('\n').filter(Boolean);
+    const now = Date.now();
+    const stale: string[] = [];
+
+    for (const name of containers) {
+      // Extract timestamp from the last segment: cambot-agent-{name}-{timestamp}
+      const match = name.match(/-(\d{13,})$/);
+      if (!match) continue;
+      const spawnedAt = parseInt(match[1], 10);
+      if (now - spawnedAt > maxAgeMs) {
+        stale.push(name);
+      }
+    }
+
+    for (const name of stale) {
+      try {
+        execSync(stopContainer(name), { stdio: 'pipe' });
+      } catch { /* already stopped */ }
+    }
+
+    if (stale.length > 0) {
+      logger.info({ count: stale.length, names: stale, maxAgeMs }, 'Stopped stale containers');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to clean up stale containers');
+  }
+}

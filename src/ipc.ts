@@ -15,6 +15,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { MessageBus, RegisteredGroup } from './types.js';
 import type { WorkflowService } from './workflow-service.js';
+import type { CustomAgentService } from './custom-agent-service.js';
 
 export interface IpcDeps {
   /** EventBus for message routing. When present, outbound messages go through the bus. */
@@ -33,6 +34,8 @@ export interface IpcDeps {
   ) => void;
   /** Workflow engine service. When present, workflow IPC commands are handled. */
   workflowService?: WorkflowService;
+  /** Custom agent service. When present, custom agent IPC commands are handled. */
+  customAgentService?: CustomAgentService;
 }
 
 let ipcWatcherRunning = false;
@@ -188,6 +191,11 @@ export async function processTaskIpc(
     // For workflow commands
     workflowId?: string;
     runId?: string;
+    // For custom agent commands
+    agent?: Record<string, unknown>;
+    agentId?: string;
+    updates?: Record<string, unknown>;
+    cleanupMemory?: boolean;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -496,6 +504,106 @@ export async function processTaskIpc(
         } catch (err) {
           logger.error({ runId: data.runId, err }, 'Workflow cancel failed');
         }
+      }
+      break;
+
+    case 'create_custom_agent':
+      if (!deps.customAgentService) {
+        logger.warn('create_custom_agent IPC received but custom agent service not initialized');
+        break;
+      }
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized create_custom_agent attempt blocked (main only)');
+        break;
+      }
+      if (data.agent) {
+        try {
+          deps.customAgentService.createAgent(data.agent as unknown as Parameters<typeof deps.customAgentService.createAgent>[0]);
+          logger.info({ agentId: (data.agent as { id: string }).id, sourceGroup }, 'Custom agent created via IPC');
+        } catch (err) {
+          logger.error({ err }, 'Failed to create custom agent');
+        }
+      }
+      break;
+
+    case 'update_custom_agent':
+      if (!deps.customAgentService) {
+        logger.warn('update_custom_agent IPC received but custom agent service not initialized');
+        break;
+      }
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized update_custom_agent attempt blocked (main only)');
+        break;
+      }
+      if (data.agentId && data.updates) {
+        try {
+          deps.customAgentService.updateAgent(data.agentId, data.updates as Parameters<typeof deps.customAgentService.updateAgent>[1]);
+          logger.info({ agentId: data.agentId, sourceGroup }, 'Custom agent updated via IPC');
+        } catch (err) {
+          logger.error({ agentId: data.agentId, err }, 'Failed to update custom agent');
+        }
+      }
+      break;
+
+    case 'delete_custom_agent':
+      if (!deps.customAgentService) {
+        logger.warn('delete_custom_agent IPC received but custom agent service not initialized');
+        break;
+      }
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized delete_custom_agent attempt blocked (main only)');
+        break;
+      }
+      if (data.agentId) {
+        try {
+          deps.customAgentService.deleteAgent(data.agentId);
+          logger.info({ agentId: data.agentId, sourceGroup }, 'Custom agent deleted via IPC');
+        } catch (err) {
+          logger.error({ agentId: data.agentId, err }, 'Failed to delete custom agent');
+        }
+      }
+      break;
+
+    case 'invoke_custom_agent':
+      if (!deps.customAgentService) {
+        logger.warn('invoke_custom_agent IPC received but custom agent service not initialized');
+        break;
+      }
+      if (data.agentId && data.prompt) {
+        // Authorization: verify the agent belongs to this group or invoker is main
+        const agentDef = deps.customAgentService.getAgent(data.agentId);
+        if (!agentDef) {
+          logger.warn({ agentId: data.agentId }, 'invoke_custom_agent: agent not found');
+          break;
+        }
+        if (!isMain && agentDef.group_folder !== sourceGroup) {
+          logger.warn({ agentId: data.agentId, sourceGroup }, 'Unauthorized invoke_custom_agent attempt blocked');
+          break;
+        }
+        const targetJid = data.chatJid || data.targetJid || '';
+        const targetGroup = data.groupFolder || sourceGroup;
+
+        // Fire and forget — the agent runs asynchronously and sends results via IPC
+        deps.customAgentService.invokeAgent(
+          data.agentId,
+          data.prompt as string,
+          targetJid as string,
+          targetGroup as string,
+          isMain,
+        ).catch((err) => {
+          logger.error({ agentId: data.agentId, err }, 'Custom agent invocation failed');
+          // Notify the user of the failure
+          const errorText = `Custom agent invocation failed: ${err instanceof Error ? err.message : String(err)}`;
+          if (deps.messageBus && targetJid) {
+            deps.messageBus.emitAsync({
+              type: 'message.outbound',
+              source: 'ipc',
+              timestamp: new Date().toISOString(),
+              data: { jid: targetJid, text: errorText, source: 'custom-agent', groupFolder: targetGroup },
+            }).catch(() => {});
+          }
+        });
+        logger.info({ agentId: data.agentId, sourceGroup }, 'Custom agent invocation dispatched');
       }
       break;
 

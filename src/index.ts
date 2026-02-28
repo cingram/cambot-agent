@@ -1,3 +1,4 @@
+import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -16,13 +17,15 @@ import { loadChannels } from './channels/registry.js';
 import {
   ContainerOutput,
   runContainerAgent,
+  writeCustomAgentsSnapshot,
   writeGroupsSnapshot,
   writeTasksSnapshot,
   writeWorkflowsSnapshot,
 } from './container-runner.js';
-import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runtime.js';
+import { cleanupOrphans, cleanupStaleContainers, ensureContainerRuntimeRunning, stopContainer } from './container-runtime.js';
 import {
   getAllChats,
+  getAllCustomAgents,
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
@@ -30,6 +33,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  findCustomAgentByTrigger,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -46,8 +50,9 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { startWorkflowSchedulerLoop } from './workflow-scheduler.js';
 import { Channel, MessageBus, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
 import { createShadowAgent } from './shadow-agent.js';
-import { createWorkflowService, WorkflowService } from './workflow-service.js';
+import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -62,6 +67,7 @@ const channels: Channel[] = [];
 const queue = new GroupQueue();
 let messageBus: MessageBus | null = null;
 let workflowService: WorkflowService | null = null;
+let customAgentService: CustomAgentService | null = null;
 let shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
 
 /** Persist a bot-generated message so /history includes both sides. */
@@ -191,6 +197,34 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const missedMessages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
 
   if (missedMessages.length === 0) return true;
+
+  // Check for custom agent trigger BEFORE normal trigger check
+  if (customAgentService) {
+    for (const msg of missedMessages) {
+      const matchedAgent = findCustomAgentByTrigger(msg.content);
+      if (matchedAgent && matchedAgent.group_folder === group.folder) {
+        const agentPrompt = formatMessages(missedMessages);
+        logger.info(
+          { agentId: matchedAgent.id, agentName: matchedAgent.name, group: group.name },
+          'Custom agent trigger matched',
+        );
+        // Advance cursor
+        lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+        saveState();
+        // Invoke custom agent asynchronously
+        customAgentService.invokeAgent(
+          matchedAgent.id,
+          agentPrompt,
+          chatJid,
+          group.folder,
+          isMainGroup,
+        ).catch((err) => {
+          logger.error({ agentId: matchedAgent.id, err }, 'Custom agent trigger invocation failed');
+        });
+        return true; // consumed
+      }
+    }
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -380,6 +414,22 @@ async function runAgent(
     isMain,
     availableGroups,
     new Set(Object.keys(registeredGroups)),
+  );
+
+  // Update custom agents snapshot for container to read
+  const customAgents = getAllCustomAgents();
+  writeCustomAgentsSnapshot(
+    group.folder,
+    isMain,
+    customAgents.map((a) => ({
+      id: a.id,
+      name: a.name,
+      description: a.description,
+      provider: a.provider,
+      model: a.model,
+      trigger_pattern: a.trigger_pattern,
+      group_folder: a.group_folder,
+    })),
   );
 
   // Update workflows snapshot for container to read
@@ -600,7 +650,7 @@ async function main(): Promise<void> {
 
   workflowService = createWorkflowService({
     db: getDatabase(),
-    runAgentContainer: async (prompt: string): Promise<string> => {
+    runAgentContainer: async (input: AgentStepInput): Promise<string> => {
       // Use a promise that resolves on the first streamed output marker,
       // so we don't wait for the container process to exit (the claude
       // process inside can idle for minutes after the agent-runner finishes).
@@ -611,16 +661,19 @@ async function main(): Promise<void> {
         rejectResult = rej;
       });
       let gotStreamedOutput = false;
+      let spawnedContainerName: string | null = null;
 
       const containerPromise = runContainerAgent(
         workflowGroup,
         {
-          prompt,
+          prompt: input.prompt,
           groupFolder: workflowGroup.folder,
           chatJid: 'workflows',
           isMain: true,
+          customAgent: input.customAgent,
         },
         (_proc, containerName) => {
+          spawnedContainerName = containerName;
           logger.debug({ containerName }, 'Workflow container spawned');
         },
         async (output) => {
@@ -630,6 +683,13 @@ async function main(): Promise<void> {
             rejectResult(new Error(`Workflow container failed: ${output.error || 'unknown error'}`));
           } else {
             resolveResult(output.result || '');
+          }
+          // Stop the container now — we have the result and don't need it running
+          if (spawnedContainerName) {
+            const name = spawnedContainerName;
+            exec(stopContainer(name), { timeout: 15_000 }, (err) => {
+              if (err) logger.debug({ containerName: name, err }, 'Workflow container stop (may already be exiting)');
+            });
           }
         },
       );
@@ -643,12 +703,37 @@ async function main(): Promise<void> {
             resolveResult(output.result || '');
           }
         }
+      }).catch((err) => {
+        if (!gotStreamedOutput) {
+          rejectResult(err instanceof Error ? err : new Error(String(err)));
+        }
       });
 
       return resultPromise;
     },
   });
   workflowService.reloadDefinitions();
+
+  // ── Initialize Custom Agent Service ─────────────────────────────────────
+  customAgentService = createCustomAgentService({
+    getRegisteredGroup: (groupFolder: string) => {
+      for (const group of Object.values(registeredGroups)) {
+        if (group.folder === groupFolder) return group;
+      }
+      return undefined;
+    },
+    messageBus: undefined, // Set after bus is created below
+    sendMessage: async (jid, text) => {
+      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
+      if (!ch) throw new Error(`No channel for JID: ${jid}`);
+      await ch.sendMessage(jid, text);
+      storeBotMessage(jid, text);
+    },
+    onProcess: (proc, containerName, groupFolder) => {
+      // Custom agent containers don't register in the queue
+      logger.debug({ containerName, groupFolder }, 'Custom agent container spawned');
+    },
+  });
 
   // ── Initialize Message Bus ───────────────────────────────────────────────
   const bus = createMessageBus();
@@ -768,9 +853,20 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
     workflowService: workflowService ?? undefined,
+    customAgentService: customAgentService ?? undefined,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
+
+  // Periodic stale container cleanup: catch containers that slip through
+  // normal cleanup (e.g. process restart losing timeout timers, edge cases).
+  // Uses age-based filtering so active containers aren't affected.
+  const STALE_CLEANUP_INTERVAL = 5 * 60_000; // check every 5 minutes
+  const STALE_MAX_AGE = 90 * 60_000; // kill containers older than 90 minutes
+  setInterval(() => {
+    cleanupStaleContainers(STALE_MAX_AGE);
+  }, STALE_CLEANUP_INTERVAL);
+
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);

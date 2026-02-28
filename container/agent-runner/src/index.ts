@@ -27,6 +27,19 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  customAgent?: {
+    agentId: string;
+    provider: 'openai' | 'xai' | 'anthropic' | 'google';
+    model: string;
+    baseUrl?: string;
+    apiKeyEnvVar: string;
+    systemPrompt: string;
+    tools: string[];
+    maxTokens?: number;
+    temperature?: number;
+    maxIterations?: number;
+    timeoutMs?: number;
+  };
 }
 
 interface ContainerOutput {
@@ -505,6 +518,17 @@ async function main(): Promise<void> {
       error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
     });
     process.exit(1);
+  }
+
+  // Fork: custom agent path vs Claude SDK path
+  if (containerInput.customAgent) {
+    const { runCustomAgent } = await import('./custom-agent-runner.js');
+    await runCustomAgent(
+      containerInput as Required<Pick<ContainerInput, 'customAgent'>> & ContainerInput,
+      writeOutput,
+      log,
+    );
+    return;
   }
 
   // Build SDK env: merge secrets into process.env for the SDK only.

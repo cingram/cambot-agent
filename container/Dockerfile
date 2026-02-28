@@ -35,8 +35,15 @@ RUN npm install -g agent-browser @anthropic-ai/claude-code
 # Create app directory
 WORKDIR /app
 
+# Copy cambot-agents package (local dependency for custom agent support)
+COPY cambot-agents/ /cambot-agents/
+RUN cd /cambot-agents && npm install && npm run build
+
 # Copy package files first for better caching
 COPY agent-runner/package*.json ./
+
+# Fix cambot-agents path for container context (local dev uses ../../../cambot-agents)
+RUN sed -i 's|"cambot-agents": "file:../../../cambot-agents"|"cambot-agents": "file:/cambot-agents"|' package.json
 
 # Install dependencies
 RUN npm install

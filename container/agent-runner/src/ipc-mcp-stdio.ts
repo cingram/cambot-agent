@@ -300,6 +300,223 @@ Use available_groups.json to find the JID for a group. The folder name should be
   },
 );
 
+// ── Custom Agent Tools ────────────────────────────────────────────────
+
+server.tool(
+  'create_custom_agent',
+  `Create a new custom agent that uses a specific LLM provider. The agent gets its own container, memory, and can be invoked by name or trigger pattern.
+
+PROVIDERS:
+• "openai" — OpenAI models (gpt-4o, gpt-4o-mini, etc.)
+• "xai" — XAI/Grok models (grok-3, grok-3-mini, etc.) — uses OpenAI-compatible API
+• "anthropic" — Anthropic models (claude-sonnet-4-6, etc.)
+• "google" — Google Gemini models (gemini-2.0-flash, gemini-1.5-pro, etc.)
+
+TOOLS available to agents: "bash", "file_read", "file_write", "file_list", "web_fetch", "mcp:*" (all MCP tools including send_message, schedule_task)
+
+TRIGGER PATTERN: regex pattern that routes user messages directly to this agent (e.g., "^@grok\\\\b" for messages starting with "@grok").`,
+  {
+    name: z.string().describe('Display name (e.g., "Grok Researcher")'),
+    description: z.string().default('').describe('What this agent does'),
+    provider: z.enum(['openai', 'xai', 'anthropic', 'google']).describe('LLM provider'),
+    model: z.string().describe('Model ID (e.g., "grok-3", "gpt-4o", "gemini-2.0-flash")'),
+    api_key_env_var: z.string().describe('Environment variable name for the API key (e.g., "XAI_API_KEY")'),
+    base_url: z.string().optional().describe('Custom API base URL (required for XAI: "https://api.x.ai/v1")'),
+    system_prompt: z.string().describe('System prompt for the agent'),
+    tools: z.array(z.string()).default(['bash', 'file_read', 'file_write', 'file_list', 'web_fetch', 'mcp:*']).describe('Tools to enable'),
+    trigger_pattern: z.string().optional().describe('Regex pattern for direct trigger routing (e.g., "^@grok\\\\b")'),
+    max_iterations: z.number().default(25).describe('Max ReAct loop iterations'),
+    timeout_ms: z.number().default(120000).describe('Execution timeout in ms'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can create custom agents.' }],
+        isError: true,
+      };
+    }
+
+    const agentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+
+    const data = {
+      type: 'create_custom_agent',
+      agent: {
+        id: agentId,
+        name: args.name,
+        description: args.description,
+        provider: args.provider,
+        model: args.model,
+        api_key_env_var: args.api_key_env_var,
+        base_url: args.base_url || null,
+        system_prompt: args.system_prompt,
+        tools: JSON.stringify(args.tools),
+        trigger_pattern: args.trigger_pattern || null,
+        group_folder: groupFolder,
+        max_tokens: null,
+        temperature: null,
+        max_iterations: args.max_iterations,
+        timeout_ms: args.timeout_ms,
+        created_at: now,
+        updated_at: now,
+      },
+      timestamp: now,
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Custom agent "${args.name}" created (ID: ${agentId}). Provider: ${args.provider}, Model: ${args.model}${args.trigger_pattern ? `, Trigger: ${args.trigger_pattern}` : ''}` }],
+    };
+  },
+);
+
+server.tool(
+  'list_custom_agents',
+  'List all custom agents. From main: shows all agents. From other groups: shows only that group\'s agents.',
+  {},
+  async () => {
+    const agentsFile = path.join(IPC_DIR, 'custom_agents.json');
+
+    try {
+      if (!fs.existsSync(agentsFile)) {
+        return { content: [{ type: 'text' as const, text: 'No custom agents found.' }] };
+      }
+
+      const allAgents = JSON.parse(fs.readFileSync(agentsFile, 'utf-8'));
+      const agents = isMain
+        ? allAgents
+        : allAgents.filter((a: { group_folder: string }) => a.group_folder === groupFolder);
+
+      if (agents.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No custom agents found.' }] };
+      }
+
+      const formatted = agents
+        .map(
+          (a: { id: string; name: string; provider: string; model: string; trigger_pattern: string | null; description: string }) =>
+            `- [${a.id}] ${a.name} (${a.provider}/${a.model})${a.trigger_pattern ? ` trigger: ${a.trigger_pattern}` : ''}\n  ${a.description || 'No description'}`,
+        )
+        .join('\n');
+
+      return { content: [{ type: 'text' as const, text: `Custom agents:\n${formatted}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading agents: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
+  'invoke_custom_agent',
+  'Delegate a task to a custom agent. The agent runs in a separate container with its configured LLM provider and tools. Returns the agent\'s response.',
+  {
+    agent_id: z.string().describe('The custom agent ID (from list_custom_agents)'),
+    prompt: z.string().describe('The task/prompt to send to the agent'),
+  },
+  async (args) => {
+    const data = {
+      type: 'invoke_custom_agent',
+      agentId: args.agent_id,
+      prompt: args.prompt,
+      chatJid,
+      groupFolder,
+      isMain,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Custom agent ${args.agent_id} invocation requested with prompt: "${args.prompt.slice(0, 100)}..."` }],
+    };
+  },
+);
+
+server.tool(
+  'update_custom_agent',
+  'Update an existing custom agent\'s configuration. Only the fields you provide will be updated.',
+  {
+    agent_id: z.string().describe('The agent ID to update'),
+    name: z.string().optional().describe('New display name'),
+    description: z.string().optional().describe('New description'),
+    provider: z.enum(['openai', 'xai', 'anthropic', 'google']).optional().describe('New LLM provider'),
+    model: z.string().optional().describe('New model ID'),
+    api_key_env_var: z.string().optional().describe('New API key env var'),
+    base_url: z.string().optional().describe('New API base URL'),
+    system_prompt: z.string().optional().describe('New system prompt'),
+    tools: z.array(z.string()).optional().describe('New tools list'),
+    trigger_pattern: z.string().optional().describe('New trigger pattern (empty string to remove)'),
+    max_iterations: z.number().optional().describe('New max iterations'),
+    timeout_ms: z.number().optional().describe('New timeout'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can update custom agents.' }],
+        isError: true,
+      };
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (args.name !== undefined) updates.name = args.name;
+    if (args.description !== undefined) updates.description = args.description;
+    if (args.provider !== undefined) updates.provider = args.provider;
+    if (args.model !== undefined) updates.model = args.model;
+    if (args.api_key_env_var !== undefined) updates.api_key_env_var = args.api_key_env_var;
+    if (args.base_url !== undefined) updates.base_url = args.base_url || null;
+    if (args.system_prompt !== undefined) updates.system_prompt = args.system_prompt;
+    if (args.tools !== undefined) updates.tools = JSON.stringify(args.tools);
+    if (args.trigger_pattern !== undefined) updates.trigger_pattern = args.trigger_pattern || null;
+    if (args.max_iterations !== undefined) updates.max_iterations = args.max_iterations;
+    if (args.timeout_ms !== undefined) updates.timeout_ms = args.timeout_ms;
+
+    const data = {
+      type: 'update_custom_agent',
+      agentId: args.agent_id,
+      updates,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Custom agent ${args.agent_id} update requested.` }],
+    };
+  },
+);
+
+server.tool(
+  'delete_custom_agent',
+  'Delete a custom agent and optionally clean up its memory.',
+  {
+    agent_id: z.string().describe('The agent ID to delete'),
+    cleanup_memory: z.boolean().default(true).describe('Also delete the agent\'s memory files'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can delete custom agents.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'delete_custom_agent',
+      agentId: args.agent_id,
+      cleanupMemory: args.cleanup_memory,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Custom agent ${args.agent_id} deletion requested.` }],
+    };
+  },
+);
+
 // ── Workflow Tools ────────────────────────────────────────────────────
 
 server.tool(
