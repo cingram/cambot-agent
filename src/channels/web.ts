@@ -119,7 +119,9 @@ export class WebChannel implements Channel {
 
     const url = new URL(req.url || '/', 'http://localhost');
 
-    if (req.method === 'GET' && url.pathname === '/health') {
+    if (req.method === 'GET' && url.pathname === '/channels') {
+      this.handleChannels(res);
+    } else if (req.method === 'GET' && url.pathname === '/health') {
       this.handleHealth(res);
     } else if (req.method === 'GET' && url.pathname === '/history') {
       this.handleHistory(url, res);
@@ -158,6 +160,12 @@ export class WebChannel implements Channel {
   private handleHealth(res: http.ServerResponse): void {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', channel: 'web', connected: this.connected }));
+  }
+
+  private handleChannels(res: http.ServerResponse): void {
+    const names = this.opts.channelNames?.() ?? [];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ channels: names }));
   }
 
   private handleHistory(url: URL, res: http.ServerResponse): void {

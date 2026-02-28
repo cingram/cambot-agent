@@ -648,8 +648,13 @@ async function main(): Promise<void> {
     requiresTrigger: false,
   };
 
+  // Create message bus early — workflow service needs it for delivery
+  const bus = createMessageBus();
+  messageBus = bus;
+
   workflowService = createWorkflowService({
     db: getDatabase(),
+    messageBus: bus,
     runAgentContainer: async (input: AgentStepInput): Promise<string> => {
       // Use a promise that resolves on the first streamed output marker,
       // so we don't wait for the container process to exit (the claude
@@ -735,11 +740,7 @@ async function main(): Promise<void> {
     },
   });
 
-  // ── Initialize Message Bus ───────────────────────────────────────────────
-  const bus = createMessageBus();
-  messageBus = bus;
-
-  // ── Register subscribers ───────────────────────────────────────────────
+  // ── Register bus subscribers ────────────────────────────────────────────
 
   // DB storage: inbound messages (priority 100)
   bus.on('message.inbound', (event) => {
@@ -749,7 +750,10 @@ async function main(): Promise<void> {
 
   // DB storage: outbound messages (priority 100)
   bus.on('message.outbound', (event) => {
-    const { jid, text } = event.data as { jid: string; text: string };
+    const { jid, text, source } = event.data as { jid: string; text: string; source?: string };
+    if (jid.startsWith('file:')) return; // file writes aren't chat messages
+    // Ensure chat row exists before inserting message (workflows may use JIDs not yet in chats table)
+    storeChatMetadata(jid, new Date().toISOString(), jid, source);
     storeBotMessage(jid, text);
   }, { id: 'db-store-outbound', priority: 100, source: 'cambot-agent' });
 
@@ -785,6 +789,7 @@ async function main(): Promise<void> {
     registerGroup,
     messageBus: messageBus ?? undefined,
     workflowService: workflowService ?? undefined,
+    channelNames: () => channels.map(ch => ch.name),
   };
 
   // Create and connect channels

@@ -127,6 +127,8 @@ export interface ChannelOpts {
     runWorkflow(workflowId: string): Promise<string>;
     cancelRun(runId: string): void;
   };
+  /** Returns the names of all loaded channels. Used by the web channel to expose GET /channels. */
+  channelNames?: () => string[];
 }
 
 // Callback type that channels use to deliver inbound messages

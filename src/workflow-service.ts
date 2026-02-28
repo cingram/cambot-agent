@@ -39,6 +39,7 @@ import { DATA_DIR } from './config.js';
 import type { ContainerInput } from './container-runner.js';
 import { getCustomAgent } from './db.js';
 import { logger } from './logger.js';
+import type { MessageBus } from './types.js';
 
 // ── Public interface ─────────────────────────────────────────────────
 
@@ -75,6 +76,7 @@ export type RunAgentContainerFn = (input: AgentStepInput) => Promise<string>;
 export interface WorkflowServiceDeps {
   db: Database.Database;
   runAgentContainer: RunAgentContainerFn;
+  messageBus?: MessageBus;
 }
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -258,13 +260,41 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     logger.info({ query }, 'Workflow memory step (stub)');
     return { data: { results: [] }, tokensIn: 0, tokensOut: 0, costUsd: 0 };
   }));
-  handlers.set('message', createMessageHandler(async (prompt, model) => {
+  const baseMessageHandler = createMessageHandler(async (prompt, model) => {
     logger.info({ model, promptLength: prompt.length }, 'Message AI compose: starting');
     const customAgent = resolveCustomAgent(model ? { provider: 'anthropic', model } : {});
     const result = await deps.runAgentContainer({ prompt, customAgent });
     logger.info({ resultLength: result.length }, 'Message AI compose: complete');
     return { data: result, tokensIn: 0, tokensOut: 0, costUsd: 0 };
-  }));
+  });
+
+  // Wrap the message handler to emit outbound delivery via the bus
+  const messageHandlerWithBus: StepHandler = async (ctx) => {
+    const output = await baseMessageHandler(ctx);
+    if (deps.messageBus && output.data && output.metadata) {
+      const meta = output.metadata as Record<string, unknown>;
+      const channel = meta.channel as string | undefined;
+      if (channel) {
+        const jid = channel === 'file'
+          ? `file:${meta.filePath as string}`
+          : `${channel}:default`;
+        const text = typeof output.data === 'string'
+          ? output.data
+          : JSON.stringify(output.data);
+        deps.messageBus.emitAsync({
+          type: 'message.outbound',
+          source: 'workflow',
+          timestamp: new Date().toISOString(),
+          data: { jid, text, source: 'workflow' },
+        }).catch((err) => {
+          logger.error({ err, channel }, 'Workflow message bus delivery failed');
+        });
+      }
+    }
+    return output;
+  };
+
+  handlers.set('message', messageHandlerWithBus);
   handlers.set('gate', createGateHandler());
   handlers.set('parallel', createParallelHandler());
   handlers.set('sync', createSyncHandler());

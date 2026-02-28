@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { STORE_DIR } from '../config.js';
+import { DATA_DIR, STORE_DIR } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
@@ -49,6 +49,14 @@ const definitions: ChannelDefinition[] = [
       const { WebChannel } = await import('./web.js');
       const port = parseInt(process.env.WEB_CHANNEL_PORT || '3100', 10);
       return new WebChannel(opts, port);
+    },
+  },
+  {
+    name: 'file',
+    isConfigured: () => true, // always available — zero runtime cost, needed for workflow delivery
+    create: async () => {
+      const { FileChannel } = await import('./file.js');
+      return new FileChannel({ baseDir: path.join(DATA_DIR, 'workflows') });
     },
   },
 ];
