@@ -30,7 +30,11 @@ vi.mock('readline', () => ({
 }));
 
 import { CliChannel } from './cli.js';
-import { ChannelOpts } from '../types.js';
+import { ChannelOpts, MessageBus } from '../types.js';
+
+function stubBus(): MessageBus {
+  return { emit: vi.fn(), emitAsync: vi.fn(), on: vi.fn(() => () => {}) };
+}
 
 function createTestOpts(overrides?: Partial<ChannelOpts>): ChannelOpts {
   return {
@@ -38,6 +42,7 @@ function createTestOpts(overrides?: Partial<ChannelOpts>): ChannelOpts {
     onChatMetadata: vi.fn(),
     registeredGroups: vi.fn(() => ({})),
     registerGroup: vi.fn(),
+    messageBus: stubBus(),
     ...overrides,
   };
 }

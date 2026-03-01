@@ -25,7 +25,7 @@ interface ShadowAgentDeps {
   adminJid: string;
   adminTrigger: string;
   channels: Channel[];
-  messageBus?: MessageBus;
+  messageBus: MessageBus;
 }
 
 /**
@@ -201,25 +201,23 @@ export function createShadowAgent(deps: ShadowAgentDeps): (chatJid: string, msg:
   );
 
   // Bus path: intercept message.inbound before db-store (priority 10 < 100)
-  if (messageBus) {
-    messageBus.on('message.inbound', (event) => {
-      const { jid, message } = event.data as { jid: string; message: NewMessage };
-      // Bus path: skip JID check — key is sufficient auth for localhost channels
-      const result = checkGates(adminPhone, triggerPrefix, message.sender, message.content, false);
+  messageBus.on('message.inbound', (event) => {
+    const { jid, message } = event.data as { jid: string; message: NewMessage };
+    // Bus path: skip JID check — key is sufficient auth for localhost channels
+    const result = checkGates(adminPhone, triggerPrefix, message.sender, message.content, false);
 
-      if (result.action === 'pass') return;
+    if (result.action === 'pass') return;
 
-      // Drop or accept — either way, cancel the event so DB never sees it
-      event.cancelled = true;
+    // Drop or accept — either way, cancel the event so DB never sees it
+    event.cancelled = true;
 
-      if (result.action === 'accept') {
-        logger.info({ sourceChatJid: jid }, 'Shadow admin command accepted (bus)');
-        spawnShadowContainer(result.prompt, jid, jid, channels).catch((err) => {
-          logger.error({ err }, 'Shadow container error');
-        });
-      }
-    }, { id: 'shadow-admin-intercept', priority: 10, source: 'shadow-admin' });
-  }
+    if (result.action === 'accept') {
+      logger.info({ sourceChatJid: jid }, 'Shadow admin command accepted (bus)');
+      spawnShadowContainer(result.prompt, jid, jid, channels).catch((err) => {
+        logger.error({ err }, 'Shadow container error');
+      });
+    }
+  }, { id: 'shadow-admin-intercept', priority: 10, source: 'shadow-admin' });
 
   // Callback path: for channels that don't use the bus (WhatsApp fallback)
   return (chatJid: string, msg: NewMessage): boolean => {

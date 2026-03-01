@@ -72,8 +72,8 @@ Main has read-only access to the project and read-write access to its group fold
 | `/workspace/group` | `groups/main/` | read-write |
 
 Key paths inside the container:
-- `/workspace/project/store/messages.db` - SQLite database
-- `/workspace/project/store/messages.db` (registered_groups table) - Group config
+- `/workspace/project/store/cambot.sqlite` - SQLite database
+- `/workspace/project/store/cambot.sqlite` (registered_groups table) - Group config
 - `/workspace/project/groups/` - All group folders
 
 ---
@@ -111,7 +111,7 @@ Then wait a moment and re-read `available_groups.json`.
 **Fallback**: Query the SQLite database directly:
 
 ```bash
-sqlite3 /workspace/project/store/messages.db "
+sqlite3 /workspace/project/store/cambot.sqlite "
   SELECT jid, name, last_message_time
   FROM chats
   WHERE jid LIKE '%@g.us' AND jid != '__group_sync__'

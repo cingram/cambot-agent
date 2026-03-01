@@ -17,12 +17,10 @@ import { logger } from './logger.js';
 import { MessageBus, RegisteredGroup, WorkerDefinition } from './types.js';
 import type { WorkflowService } from './workflow-service.js';
 import type { CustomAgentService } from './custom-agent-service.js';
+import type { IntegrationManager } from './integrations/types.js';
 
 export interface IpcDeps {
-  /** EventBus for message routing. When present, outbound messages go through the bus. */
-  messageBus?: MessageBus;
-  /** Fallback: direct send when messageBus is not available. */
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  messageBus: MessageBus;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroupMetadata: (force: boolean) => Promise<void>;
@@ -39,6 +37,8 @@ export interface IpcDeps {
   customAgentService?: CustomAgentService;
   resolveAgentImage: (agentId: string) => AgentOptions;
   getAgentDefinition: (id: string) => WorkerDefinition | undefined;
+  /** Integration manager. When present, integration IPC commands are handled. */
+  integrationManager?: IntegrationManager;
 }
 
 let ipcWatcherRunning = false;
@@ -91,16 +91,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  if (deps.messageBus) {
-                    await deps.messageBus.emitAsync({
-                      type: 'message.outbound',
-                      source: 'ipc',
-                      timestamp: new Date().toISOString(),
-                      data: { jid: data.chatJid, text: data.text, source: 'ipc', groupFolder: sourceGroup },
-                    });
-                  } else {
-                    await deps.sendMessage(data.chatJid, data.text);
-                  }
+                  await deps.messageBus.emitAsync({
+                    type: 'message.outbound',
+                    source: 'ipc',
+                    timestamp: new Date().toISOString(),
+                    data: { jid: data.chatJid, text: data.text, source: 'ipc', groupFolder: sourceGroup },
+                  });
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -457,7 +453,7 @@ export async function processTaskIpc(
         try {
           const runId = await deps.workflowService.runWorkflow(data.workflowId);
           logger.info({ workflowId: data.workflowId, runId, sourceGroup }, 'Workflow started via IPC');
-          if (deps.messageBus && data.chatJid) {
+          if (data.chatJid) {
             await deps.messageBus.emitAsync({
               type: 'message.outbound',
               source: 'ipc',
@@ -473,7 +469,7 @@ export async function processTaskIpc(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           logger.error({ workflowId: data.workflowId, err }, 'Workflow run failed');
-          if (deps.messageBus && data.chatJid) {
+          if (data.chatJid) {
             await deps.messageBus.emitAsync({
               type: 'message.outbound',
               source: 'ipc',
@@ -615,7 +611,7 @@ export async function processTaskIpc(
           logger.error({ agentId: data.agentId, err }, 'Custom agent invocation failed');
           // Notify the user of the failure
           const errorText = `Custom agent invocation failed: ${err instanceof Error ? err.message : String(err)}`;
-          if (deps.messageBus && targetJid) {
+          if (targetJid) {
             deps.messageBus.emitAsync({
               type: 'message.outbound',
               source: 'ipc',
@@ -693,6 +689,100 @@ export async function processTaskIpc(
         });
       break;
     }
+
+    case 'list_integrations':
+      if (!deps.integrationManager) {
+        logger.warn('list_integrations IPC received but integration manager not initialized');
+        break;
+      }
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized list_integrations attempt blocked (main only)');
+        break;
+      }
+      if (data.chatJid) {
+        const integrations = deps.integrationManager.list();
+        const lines = integrations.map(i => `${i.id}: ${i.status} (${i.enabled ? 'enabled' : 'disabled'})`);
+        await deps.messageBus.emitAsync({
+          type: 'message.outbound',
+          source: 'ipc',
+          timestamp: new Date().toISOString(),
+          data: { jid: data.chatJid, text: `Integrations:\n${lines.join('\n')}`, source: 'integration', groupFolder: sourceGroup },
+        });
+      }
+      break;
+
+    case 'enable_integration':
+      if (!deps.integrationManager) break;
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized enable_integration attempt blocked (main only)');
+        break;
+      }
+      if (data.targetJid) {
+        try {
+          const info = await deps.integrationManager.enable(data.targetJid as string);
+          logger.info({ id: data.targetJid, status: info.status, sourceGroup }, 'Integration enabled via IPC');
+        } catch (err) {
+          logger.error({ id: data.targetJid, err }, 'Integration enable failed');
+        }
+      }
+      break;
+
+    case 'disable_integration':
+      if (!deps.integrationManager) break;
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized disable_integration attempt blocked (main only)');
+        break;
+      }
+      if (data.targetJid) {
+        try {
+          const info = await deps.integrationManager.disable(data.targetJid as string);
+          logger.info({ id: data.targetJid, status: info.status, sourceGroup }, 'Integration disabled via IPC');
+        } catch (err) {
+          logger.error({ id: data.targetJid, err }, 'Integration disable failed');
+        }
+      }
+      break;
+
+    case 'add_mcp_server':
+      if (!deps.integrationManager) break;
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized add_mcp_server attempt blocked (main only)');
+        break;
+      }
+      if (data.name) {
+        try {
+          const info = await deps.integrationManager.addMcpServer({
+            name: data.name as string,
+            transport: (data as Record<string, unknown>).transport as 'http' | 'sse' | 'stdio',
+            url: (data as Record<string, unknown>).url as string | undefined,
+            command: (data as Record<string, unknown>).command as string | undefined,
+            args: (data as Record<string, unknown>).args as string[] | undefined,
+            envVars: (data as Record<string, unknown>).envVars as string[] | undefined,
+            description: (data as Record<string, unknown>).description as string | undefined,
+            port: (data as Record<string, unknown>).port as number | undefined,
+          });
+          logger.info({ id: info.id, sourceGroup }, 'MCP server added via IPC');
+        } catch (err) {
+          logger.error({ name: data.name, err }, 'MCP server add failed');
+        }
+      }
+      break;
+
+    case 'remove_mcp_server':
+      if (!deps.integrationManager) break;
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized remove_mcp_server attempt blocked (main only)');
+        break;
+      }
+      if (data.targetJid) {
+        try {
+          await deps.integrationManager.removeMcpServer(data.targetJid as string);
+          logger.info({ id: data.targetJid, sourceGroup }, 'MCP server removed via IPC');
+        } catch (err) {
+          logger.error({ id: data.targetJid, err }, 'MCP server remove failed');
+        }
+      }
+      break;
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

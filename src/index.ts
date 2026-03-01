@@ -16,7 +16,8 @@ import {
   WORKFLOW_CONTAINER_TIMEOUT,
 } from './config.js';
 import { getLeadAgentId, loadAgentsConfig, resolveAgentImage } from './agents.js';
-import { loadChannels } from './channels/registry.js';
+import { buildIntegrationDefinitions, createIntegrationManager } from './integrations/index.js';
+import type { IntegrationManager } from './integrations/index.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -59,6 +60,7 @@ import { startWorkflowSchedulerLoop } from './workflow-scheduler.js';
 import { Channel, MessageBus, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
+import { buildMemoryContext } from './memory-context.js';
 import { createShadowAgent } from './shadow-agent.js';
 import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
 import { createCamBotCore, createStandaloneConfig } from 'cambot-core';
@@ -75,28 +77,14 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-/**
- * Remove orphaned IPC input files (messages + _close sentinel) so a retry
- * container starts with a clean input directory.
- */
-function cleanIpcInputDir(groupFolder: string): void {
-  const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
-  try {
-    for (const f of fs.readdirSync(inputDir)) {
-      if (f.endsWith('.json') || f === '_close') {
-        try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
-      }
-    }
-  } catch { /* ignore — dir may not exist */ }
-}
-
-const channels: Channel[] = [];
+let channels: Channel[] = [];
 const queue = new GroupQueue();
-let messageBus: MessageBus | null = null;
+let messageBus!: MessageBus;
 let workflowService: WorkflowService | null = null;
 let customAgentService: CustomAgentService | null = null;
 let shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
 let interceptor: LifecycleInterceptor | null = null;
+let integrationMgr: IntegrationManager | null = null;
 
 /** Persist a bot-generated message so /history includes both sides. */
 function storeBotMessage(chatJid: string, text: string): void {
@@ -194,7 +182,7 @@ function cleanIpcInputDir(groupFolder: string): void {
   const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
   try {
     for (const f of fs.readdirSync(inputDir)) {
-      if (f.endsWith('.json') || f === '_close') {
+      if (f.endsWith('.json') || f === '_close' || f === '_memory_context.md') {
         try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
       }
     }
@@ -277,6 +265,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     : { redacted: fullRawPrompt, mappings: [] };
   interceptor?.startSession(group.folder, chatJid);
 
+  // Build query-relevant memory context from the last user message
+  const lastMessageContent = missedMessages[missedMessages.length - 1].content;
+  const memoryContext = await buildMemoryContext(lastMessageContent);
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -301,18 +293,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   // Typing indicator via bus
-  if (messageBus) {
-    messageBus.emitAsync({
-      type: 'typing.update',
-      source: 'agent',
-      timestamp: new Date().toISOString(),
-      data: { jid: chatJid, isTyping: true },
-    }).catch(() => {});
-  } else {
-    for (const ch of channels) {
-      if (ch.ownsJid(chatJid)) ch.setTyping?.(chatJid, true)?.catch(() => {});
-    }
-  }
+  messageBus.emitAsync({
+    type: 'typing.update',
+    source: 'agent',
+    timestamp: new Date().toISOString(),
+    data: { jid: chatJid, isTyping: true },
+  }).catch(() => {});
 
   let hadError = false;
   let outputSentToUser = false;
@@ -343,22 +329,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             ? interceptor.restoreOutput(text, piiMappings)
             : text;
 
-          if (messageBus) {
-            await messageBus.emitAsync({
-              type: 'message.outbound',
-              source: 'agent',
-              timestamp: new Date().toISOString(),
-              data: { jid: chatJid, text: restoredText, source: 'agent', groupFolder: group.folder },
-            });
-          } else {
-            // Fallback: direct channel delivery
-            for (const ch of channels) {
-              if (ch.ownsJid(chatJid) && ch.isConnected()) {
-                await ch.sendMessage(chatJid, restoredText);
-              }
-            }
-            storeBotMessage(chatJid, restoredText);
-          }
+          await messageBus.emitAsync({
+            type: 'message.outbound',
+            source: 'agent',
+            timestamp: new Date().toISOString(),
+            data: { jid: chatJid, text: restoredText, source: 'agent', groupFolder: group.folder },
+          });
           interceptor?.ingestResponse(group.folder, chatJid, restoredText);
 
           outputSentToUser = true;
@@ -385,21 +361,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
-  });
+  }, memoryContext);
 
   // Stop typing indicator
-  if (messageBus) {
-    messageBus.emitAsync({
-      type: 'typing.update',
-      source: 'agent',
-      timestamp: new Date().toISOString(),
-      data: { jid: chatJid, isTyping: false },
-    }).catch(() => {});
-  } else {
-    for (const ch of channels) {
-      if (ch.ownsJid(chatJid)) ch.setTyping?.(chatJid, false)?.catch(() => {});
-    }
-  }
+  messageBus.emitAsync({
+    type: 'typing.update',
+    source: 'agent',
+    timestamp: new Date().toISOString(),
+    data: { jid: chatJid, isTyping: false },
+  }).catch(() => {});
   if (idleTimer) clearTimeout(idleTimer);
   interceptor?.endSession(group.folder, output !== 'error' && !hadError);
 
@@ -444,6 +414,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  memoryContext?: string | null,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
@@ -553,6 +524,8 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        mcpServers: integrationMgr?.getActiveMcpServers(),
+        memoryContext: memoryContext ?? undefined,
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -660,23 +633,27 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
-            // Typing indicator via bus
-            if (messageBus) {
-              messageBus.emitAsync({
-                type: 'typing.update',
-                source: 'agent',
-                timestamp: new Date().toISOString(),
-                data: { jid: chatJid, isTyping: true },
-              }).catch(() => {});
-            } else {
-              for (const ch of channels) {
-                if (ch.ownsJid(chatJid)) {
-                  ch.setTyping?.(chatJid, true)?.catch((err) =>
-                    logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-                  );
+
+            // Write refreshed memory context for the follow-up message
+            const lastContent = messagesToSend[messagesToSend.length - 1].content;
+            buildMemoryContext(lastContent).then((ctx) => {
+              if (ctx) {
+                const ipcInputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+                try {
+                  fs.writeFileSync(path.join(ipcInputDir, '_memory_context.md'), ctx);
+                } catch (err) {
+                  logger.warn({ err, group: group.folder }, 'Failed to write _memory_context.md');
                 }
               }
-            }
+            }).catch(() => {});
+
+            // Typing indicator via bus
+            messageBus.emitAsync({
+              type: 'typing.update',
+              source: 'agent',
+              timestamp: new Date().toISOString(),
+              data: { jid: chatJid, isTyping: true },
+            }).catch(() => {});
           } else {
             // No active container — enqueue for a new one
             logger.info(
@@ -790,6 +767,8 @@ async function main(): Promise<void> {
   workflowService = createWorkflowService({
     db: getDatabase(),
     messageBus: bus,
+    getChannels: () => channels,
+    adminJid: ADMIN_JID,
     runAgentContainer: async (input: AgentStepInput): Promise<string> => {
       // Use a promise that resolves on the first streamed output marker,
       // so we don't wait for the container process to exit (the claude
@@ -811,6 +790,7 @@ async function main(): Promise<void> {
           chatJid: 'workflows',
           isMain: true,
           customAgent: input.customAgent,
+          mcpServers: integrationMgr?.getActiveMcpServers(),
         },
         (_proc, containerName) => {
           spawnedContainerName = containerName;
@@ -862,13 +842,7 @@ async function main(): Promise<void> {
       }
       return undefined;
     },
-    messageBus: undefined, // Set after bus is created below
-    sendMessage: async (jid, text) => {
-      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
-      if (!ch) throw new Error(`No channel for JID: ${jid}`);
-      await ch.sendMessage(jid, text);
-      storeBotMessage(jid, text);
-    },
+    messageBus: bus,
     onProcess: (proc, containerName, groupFolder) => {
       // Custom agent containers don't register in the queue
       logger.debug({ containerName, groupFolder }, 'Custom agent container spawned');
@@ -905,7 +879,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     if (interceptor) await interceptor.close();
     await queue.shutdown(10000);
-    for (const ch of channels) await ch.disconnect();
+    if (integrationMgr) await integrationMgr.shutdown();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -924,22 +898,27 @@ async function main(): Promise<void> {
       storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
     registerGroup,
-    messageBus: messageBus ?? undefined,
+    messageBus,
     workflowService: workflowService ?? undefined,
     channelNames: () => channels.map(ch => ch.name),
   };
 
-  // Create and connect channels
-  channels.push(...await loadChannels(channelOpts));
+  // ── Initialize Integration Manager ────────────────────────────────────
+  // Replaces manual Google Workspace MCP init + loadChannels().
+  // All channels and MCP servers are now managed as integrations.
+  integrationMgr = createIntegrationManager(buildIntegrationDefinitions());
+  await integrationMgr.initialize({ messageBus: bus, channelOpts });
+  channels = integrationMgr.getActiveChannels();
 
   // Channel delivery: forward outbound messages to the owning channel (priority 50, after DB storage)
   bus.on('message.outbound', async (event) => {
     const { jid, text, broadcast } = event.data as {
       jid: string; text: string; broadcast?: boolean;
     };
+    const activeChannels = integrationMgr?.getActiveChannels() ?? channels;
     const targets = broadcast
-      ? channels.filter(ch => ch.isConnected())
-      : channels.filter(ch => ch.ownsJid(jid) && ch.isConnected());
+      ? activeChannels.filter(ch => ch.isConnected())
+      : activeChannels.filter(ch => ch.ownsJid(jid) && ch.isConnected());
     for (const ch of targets) {
       try {
         await ch.sendMessage(jid, text);
@@ -949,53 +928,30 @@ async function main(): Promise<void> {
     }
   }, { id: 'channel-delivery', priority: 50, source: 'cambot-agent' });
 
-  // Initialize shadow admin interceptor (must be after channels load)
+  // Initialize shadow admin interceptor (must be after integration manager init)
   shadowInterceptor = createShadowAgent({
     adminJid: ADMIN_JID,
     adminTrigger: ADMIN_TRIGGER,
-    channels,
-    messageBus: messageBus ?? undefined,
+    channels: integrationMgr?.getActiveChannels() ?? channels,
+    messageBus,
   });
 
-  // Start subsystems — pass eventBus when available
+  // Start subsystems
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    messageBus: messageBus ?? undefined,
-    sendMessage: async (jid, rawText) => {
-      // Fallback when no messageBus
-      const text = formatOutbound(rawText);
-      if (!text) return;
-
-      // Broadcast task output to ALL connected channels so the user sees it
-      // regardless of which channel the task was created from.
-      const deliveries = channels
-        .filter(ch => ch.isConnected())
-        .map(ch => ch.sendMessage(jid, text).catch(() => {}));
-      await Promise.all(deliveries);
-
-      storeBotMessage(jid, text);
-      // Ingest scheduled task output for fact extraction
-      const group = registeredGroups[jid];
-      if (group) interceptor?.ingestResponse(group.folder, jid, text);
-    },
+    messageBus,
   });
   startWorkflowSchedulerLoop({ workflowService });
   startIpcWatcher({
-    messageBus: messageBus ?? undefined,
-    sendMessage: async (jid, text) => {
-      // Fallback when no messageBus
-      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
-      if (!ch) throw new Error(`No channel for JID: ${jid}`);
-      await ch.sendMessage(jid, text);
-      storeBotMessage(jid, text);
-    },
+    messageBus,
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroupMetadata: async (force) => {
-      for (const ch of channels) await ch.syncMetadata?.(force);
+      const activeChannels = integrationMgr?.getActiveChannels() ?? channels;
+      for (const ch of activeChannels) await ch.syncMetadata?.(force);
     },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
@@ -1003,6 +959,7 @@ async function main(): Promise<void> {
     customAgentService: customAgentService ?? undefined,
     resolveAgentImage,
     getAgentDefinition,
+    integrationManager: integrationMgr ?? undefined,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

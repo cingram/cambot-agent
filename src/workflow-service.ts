@@ -8,8 +8,10 @@
 import fs from 'fs';
 import path from 'path';
 import type Database from 'better-sqlite3';
-import { createEventBus } from 'cambot-core';
+import { createEventBus, createBackupService, loadConfig } from 'cambot-core';
 import type { EventBus } from 'cambot-core';
+import { execSync } from 'child_process';
+import { statSync, readdirSync, unlinkSync, existsSync } from 'fs';
 import {
   loadWorkflow,
   createWorkflowRunStore,
@@ -24,6 +26,29 @@ import {
   createGateHandler,
   createParallelHandler,
   createSyncHandler,
+  createContainerCleanupTool,
+  createMcpHealthTool,
+  createChannelCheckTool,
+  createDiskSpaceTool,
+  createWalCheckpointTool,
+  createStuckWorkflowsTool,
+  createIpcCleanupTool,
+  createStaleTasksTool,
+  createMessageBacklogTool,
+  createCostSummaryTool,
+  createChainVerifyTool,
+  // Maintenance tools
+  createNightlyBackupTool,
+  createDecayUpdateTool,
+  createTelemetryPruneTool,
+  createFullBackupTool,
+  createQualityPurgeTool,
+  createOrphanCleanupTool,
+  createFtsCheckTool,
+  createSqliteOptimizeTool,
+  createHardDeleteTool,
+  createMessageArchiveTool,
+  createDedupRunTool,
 } from 'cambot-workflows';
 import type {
   WorkflowDefinition,
@@ -33,6 +58,7 @@ import type {
   StepOutput,
   WorkflowRunStore,
   WorkflowStepRunStore,
+  ChannelProbe,
 } from 'cambot-workflows';
 
 import { DATA_DIR } from './config.js';
@@ -40,6 +66,19 @@ import type { ContainerInput } from './container-runner.js';
 import { getCustomAgent } from './db.js';
 import { logger } from './logger.js';
 import type { MessageBus } from './types.js';
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Strip markdown code fences from LLM responses.
+ * Handles ```json ... ```, ```...```, and plain text.
+ * @internal Exported for testing.
+ */
+export function stripCodeFences(text: string): string {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/);
+  return match ? match[1].trim() : trimmed;
+}
 
 // ── Public interface ─────────────────────────────────────────────────
 
@@ -76,7 +115,151 @@ export type RunAgentContainerFn = (input: AgentStepInput) => Promise<string>;
 export interface WorkflowServiceDeps {
   db: Database.Database;
   runAgentContainer: RunAgentContainerFn;
-  messageBus?: MessageBus;
+  messageBus: MessageBus;
+  /** Optional: provides channel connectivity info for heartbeat checks. */
+  getChannels?: () => ChannelProbe[];
+  /** Admin JID — used to resolve `channel: main` in workflow message steps. */
+  adminJid?: string;
+}
+
+// ── Heartbeat tool registration ──────────────────────────────────────
+
+function execAsync(cmd: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    try {
+      const stdout = execSync(cmd, { encoding: 'utf-8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'] });
+      resolve({ stdout, stderr: '' });
+    } catch (err: any) {
+      if (err.stdout || err.stderr) {
+        resolve({ stdout: err.stdout ?? '', stderr: err.stderr ?? '' });
+      } else {
+        reject(err);
+      }
+    }
+  });
+}
+
+function getDirSizeRecursive(dirPath: string): number {
+  const resolved = path.resolve(dirPath);
+  if (!existsSync(resolved)) return 0;
+  let total = 0;
+  for (const entry of readdirSync(resolved, { withFileTypes: true })) {
+    const full = path.join(resolved, entry.name);
+    if (entry.isFile()) {
+      total += statSync(full).size;
+    } else if (entry.isDirectory()) {
+      total += getDirSizeRecursive(full);
+    }
+  }
+  return total;
+}
+
+function listJsonFiles(dir: string): Array<{ path: string; mtimeMs: number }> {
+  const resolved = path.resolve(dir);
+  if (!existsSync(resolved)) return [];
+  const results: Array<{ path: string; mtimeMs: number }> = [];
+  for (const entry of readdirSync(resolved, { withFileTypes: true })) {
+    const full = path.join(resolved, entry.name);
+    if (entry.isFile() && entry.name.endsWith('.json')) {
+      results.push({ path: full, mtimeMs: statSync(full).mtimeMs });
+    } else if (entry.isDirectory()) {
+      results.push(...listJsonFiles(full));
+    }
+  }
+  return results;
+}
+
+function hasCostLedgerTable(db: Database.Database): boolean {
+  const row = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='cost_ledger'",
+  ).get() as { name: string } | undefined;
+  return !!row;
+}
+
+function registerHeartbeatTools(
+  registry: Map<string, any>,
+  deps: WorkflowServiceDeps,
+): void {
+  registry.set('heartbeat-container-cleanup', createContainerCleanupTool({
+    exec: execAsync,
+  }));
+
+  registry.set('heartbeat-mcp-health', createMcpHealthTool({
+    fetchFn: globalThis.fetch,
+  }));
+
+  registry.set('heartbeat-channel-check', createChannelCheckTool({
+    getChannels: deps.getChannels ?? (() => []),
+  }));
+
+  registry.set('heartbeat-disk-space', createDiskSpaceTool({
+    getDirSize: async (dirPath: string) => getDirSizeRecursive(dirPath),
+  }));
+
+  registry.set('heartbeat-wal-checkpoint', createWalCheckpointTool({
+    getDb: () => deps.db,
+  }));
+
+  registry.set('heartbeat-stuck-workflows', createStuckWorkflowsTool({
+    getDb: () => deps.db,
+  }));
+
+  registry.set('heartbeat-ipc-cleanup', createIpcCleanupTool({
+    listFiles: async (dir: string) => listJsonFiles(dir),
+    deleteFile: async (filePath: string) => unlinkSync(filePath),
+    dirExists: async (dir: string) => existsSync(path.resolve(dir)),
+  }));
+
+  registry.set('heartbeat-stale-tasks', createStaleTasksTool({
+    getDb: () => deps.db,
+  }));
+
+  registry.set('heartbeat-message-backlog', createMessageBacklogTool({
+    getDb: () => deps.db,
+  }));
+
+  registry.set('heartbeat-cost-summary', createCostSummaryTool({
+    getDb: () => deps.db,
+    hasCostLedger: hasCostLedgerTable(deps.db),
+  }));
+
+  registry.set('heartbeat-chain-verify', createChainVerifyTool({
+    getDb: () => deps.db,
+  }));
+}
+
+// ── Maintenance tool registration ─────────────────────────────────────
+
+function registerMaintenanceTools(
+  registry: Map<string, any>,
+  deps: WorkflowServiceDeps,
+): void {
+  const getDb = () => deps.db;
+  const config = loadConfig({});
+  const backupService = createBackupService(config, null);
+
+  // Nightly
+  registry.set('maintenance-nightly-backup', createNightlyBackupTool({ getDb, backupService }));
+  registry.set('maintenance-decay-update', createDecayUpdateTool({ getDb }));
+  registry.set('maintenance-telemetry-prune', createTelemetryPruneTool({ getDb }));
+
+  // Weekly
+  registry.set('maintenance-full-backup', createFullBackupTool({ getDb, backupService }));
+  registry.set('maintenance-quality-purge', createQualityPurgeTool({ getDb }));
+  registry.set('maintenance-orphan-cleanup', createOrphanCleanupTool({ getDb }));
+  registry.set('maintenance-fts-check', createFtsCheckTool({ getDb }));
+
+  // Monthly
+  registry.set('maintenance-sqlite-optimize', createSqliteOptimizeTool({ getDb }));
+  registry.set('maintenance-hard-delete', createHardDeleteTool({ getDb }));
+  registry.set('maintenance-message-archive', createMessageArchiveTool({
+    getDb,
+    archiveDir: path.join(DATA_DIR, 'archives'),
+  }));
+  registry.set('maintenance-dedup-run', createDedupRunTool({
+    getDb,
+    geminiApiKey: process.env.GEMINI_API_KEY ?? '',
+  }));
 }
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -220,8 +403,15 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
       prompt += '</previous_step_outputs>';
     }
 
+    // If model is specified but no provider/agentId, default to Anthropic
+    // so the container uses the correct (cheaper) model instead of the default.
+    const resolveConfig = { ...config };
+    if (resolveConfig.model && !resolveConfig.provider && !resolveConfig.agentId) {
+      resolveConfig.provider = 'anthropic';
+    }
+
     // Resolve custom agent (if agentId or inline provider fields are present)
-    const customAgent = resolveCustomAgent(config);
+    const customAgent = resolveCustomAgent(resolveConfig);
 
     logger.info(
       {
@@ -240,10 +430,20 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
       'Workflow agent step completed',
     );
 
+    // Agent steps are typically prompted to return JSON. Parse it so
+    // downstream gate steps can access fields (e.g. data.has_alerts).
+    // Falls back to raw string if the response isn't valid JSON.
+    let parsedData: unknown = result;
+    try {
+      parsedData = JSON.parse(stripCodeFences(result));
+    } catch {
+      // Keep as raw string
+    }
+
     // Token counts aren't available from the Agent SDK container path.
     // Cost tracking relies on the container's own telemetry.
     return {
-      data: result,
+      data: parsedData,
       tokensIn: 0,
       tokensOut: 0,
       costUsd: 0,
@@ -253,6 +453,8 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
 
   // Step handler registry
   const toolRegistry = createDefaultToolRegistry();
+  registerHeartbeatTools(toolRegistry as Map<string, any>, deps);
+  registerMaintenanceTools(toolRegistry as Map<string, any>, deps);
   const handlers = new Map<string, StepHandler>();
   handlers.set('agent', createAgentHandler(runAgentPrompt));
   handlers.set('tool', createToolDispatcher(toolRegistry));
@@ -271,13 +473,21 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
   // Wrap the message handler to emit outbound delivery via the bus
   const messageHandlerWithBus: StepHandler = async (ctx) => {
     const output = await baseMessageHandler(ctx);
-    if (deps.messageBus && output.data && output.metadata) {
+    if (output.data && output.metadata) {
       const meta = output.metadata as Record<string, unknown>;
       const channel = meta.channel as string | undefined;
       if (channel) {
-        const jid = channel === 'file'
-          ? `file:${meta.filePath as string}`
-          : `${channel}:default`;
+        let jid: string;
+        if (channel === 'file') {
+          jid = `file:${meta.filePath as string}`;
+        } else if (channel === 'main' && deps.adminJid) {
+          jid = deps.adminJid;
+        } else if (channel === 'main') {
+          logger.warn('Workflow message targets channel "main" but adminJid is not configured — message will be dropped');
+          jid = `${channel}:default`;
+        } else {
+          jid = `${channel}:default`;
+        }
         const text = typeof output.data === 'string'
           ? output.data
           : JSON.stringify(output.data);

@@ -75,7 +75,7 @@ export async function run(args: string[]): Promise<void> {
   fs.mkdirSync(path.join(projectRoot, 'data'), { recursive: true });
 
   // Write to SQLite using parameterized queries (no SQL injection)
-  const dbPath = path.join(STORE_DIR, 'messages.db');
+  const dbPath = path.join(STORE_DIR, 'cambot.sqlite');
   const timestamp = new Date().toISOString();
   const requiresTriggerInt = parsed.requiresTrigger ? 1 : 0;
 

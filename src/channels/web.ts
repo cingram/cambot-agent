@@ -431,23 +431,18 @@ export class WebChannel implements Channel {
         is_bot_message: false,
       };
 
-      if (this.opts.messageBus) {
-        this.opts.messageBus.emitAsync({
-          type: 'chat.metadata',
-          source: 'web',
-          timestamp,
-          data: { jid: WEB_JID, timestamp, name: 'Web UI', channel: 'web', isGroup: false },
-        }).catch(() => {});
-        this.opts.messageBus.emitAsync({
-          type: 'message.inbound',
-          source: 'web',
-          timestamp,
-          data: { jid: WEB_JID, message, channel: 'web' },
-        }).catch(() => {});
-      } else {
-        this.opts.onChatMetadata(WEB_JID, timestamp, 'Web UI', 'web', false);
-        this.opts.onMessage(WEB_JID, message);
-      }
+      this.opts.messageBus.emitAsync({
+        type: 'chat.metadata',
+        source: 'web',
+        timestamp,
+        data: { jid: WEB_JID, timestamp, name: 'Web UI', channel: 'web', isGroup: false },
+      }).catch(() => {});
+      this.opts.messageBus.emitAsync({
+        type: 'message.inbound',
+        source: 'web',
+        timestamp,
+        data: { jid: WEB_JID, message, channel: 'web' },
+      }).catch(() => {});
 
       // When agent responds, send the full text and close the stream
       responsePromise.then((text) => {

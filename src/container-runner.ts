@@ -12,12 +12,14 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  MEMORY_MODE,
   TIMEZONE,
 } from './config.js';
+import type { MemoryMode } from './config.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { CONTAINER_RUNTIME_BIN, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import { CONTAINER_RUNTIME_BIN, killContainersForGroup, readonlyMountArgs, stopContainer } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, WorkerDefinition } from './types.js';
 import { AgentOptions } from './agents.js';
@@ -34,6 +36,12 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
+  /** Active MCP servers to expose to the container agent */
+  mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;
+  /** Which memory system the agent should use */
+  memoryMode?: MemoryMode;
+  /** Query-relevant memory context for the current message */
+  memoryContext?: string;
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';
@@ -302,6 +310,10 @@ export async function runContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // Kill any stale containers for this group before spawning a new one.
+  // Defense-in-depth: even if orphan cleanup missed something, each spawn is clean.
+  killContainersForGroup(group.folder);
+
   // Write owner token so the agent-runner can detect orphan status.
   // If a new container is spawned for the same group, the old container
   // will see the token change and self-exit on its next poll cycle.
@@ -323,6 +335,7 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets(agentOptions.secretKeys);
+    input.memoryMode = MEMORY_MODE;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets and ephemeral fields from input so they don't appear in logs

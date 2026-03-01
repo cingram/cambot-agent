@@ -14,6 +14,7 @@ vi.mock('./config.js', () => ({
   GROUPS_DIR: '/tmp/cambot-agent-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
   TIMEZONE: 'America/Los_Angeles',
+  MEMORY_MODE: 'both',
 }));
 
 // Mock agents module

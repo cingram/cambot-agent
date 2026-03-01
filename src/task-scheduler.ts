@@ -28,10 +28,7 @@ export interface SchedulerDependencies {
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
   onProcess: (groupJid: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
-  /** EventBus for message routing. When present, outbound messages go through the bus. */
-  messageBus?: MessageBus;
-  /** Fallback: direct send when messageBus is not available. */
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  messageBus: MessageBus;
 }
 
 async function runTask(
@@ -146,17 +143,12 @@ async function runTask(
           result = streamedOutput.result;
           const text = formatOutbound(streamedOutput.result);
           if (text) {
-            if (deps.messageBus) {
-              // Broadcast task output to ALL connected channels
-              await deps.messageBus.emitAsync({
-                type: 'message.outbound',
-                source: 'task',
-                timestamp: new Date().toISOString(),
-                data: { jid: task.chat_jid, text, source: 'task', broadcast: true, groupFolder: task.group_folder },
-              });
-            } else {
-              await deps.sendMessage(task.chat_jid, text);
-            }
+            await deps.messageBus.emitAsync({
+              type: 'message.outbound',
+              source: 'task',
+              timestamp: new Date().toISOString(),
+              data: { jid: task.chat_jid, text, source: 'task', broadcast: true, groupFolder: task.group_folder },
+            });
           }
           scheduleClose();
         }

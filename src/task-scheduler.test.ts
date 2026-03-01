@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { _initTestDatabase, createTask, getTaskById } from './db.js';
+import { createMessageBus } from './message-bus.js';
 import {
   _resetSchedulerLoopForTests,
   startSchedulerLoop,
@@ -42,7 +43,7 @@ describe('task scheduler', () => {
       getSessions: () => ({}),
       queue: { enqueueTask } as any,
       onProcess: () => {},
-      sendMessage: async () => {},
+      messageBus: createMessageBus(),
     });
 
     await vi.advanceTimersByTimeAsync(10);

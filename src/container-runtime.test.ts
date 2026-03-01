@@ -20,8 +20,10 @@ import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
   stopContainer,
+  killContainer,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
+  killContainersForGroup,
 } from './container-runtime.js';
 import { logger } from './logger.js';
 
@@ -42,6 +44,14 @@ describe('stopContainer', () => {
   it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
     expect(stopContainer('cambot-agent-test-123')).toBe(
       `${CONTAINER_RUNTIME_BIN} stop cambot-agent-test-123`,
+    );
+  });
+});
+
+describe('killContainer', () => {
+  it('returns kill command using CONTAINER_RUNTIME_BIN', () => {
+    expect(killContainer('cambot-agent-test-123')).toBe(
+      `${CONTAINER_RUNTIME_BIN} kill cambot-agent-test-123`,
     );
   });
 });
@@ -77,29 +87,64 @@ describe('ensureContainerRuntimeRunning', () => {
 // --- cleanupOrphans ---
 
 describe('cleanupOrphans', () => {
-  it('stops orphaned cambot-agent containers', () => {
+  it('kills orphaned cambot-agent containers and verifies', () => {
     // docker ps returns container names, one per line
     mockExecSync.mockReturnValueOnce('cambot-agent-group1-111\ncambot-agent-group2-222\n');
-    // stop calls succeed
-    mockExecSync.mockReturnValue('');
+    // kill calls succeed
+    mockExecSync.mockReturnValueOnce('');
+    mockExecSync.mockReturnValueOnce('');
+    // verification ps returns empty (all killed)
+    mockExecSync.mockReturnValueOnce('');
 
     cleanupOrphans();
 
-    // ps + 2 stop calls
-    expect(mockExecSync).toHaveBeenCalledTimes(3);
+    // ps + 2 kill calls + verification ps = 4
+    expect(mockExecSync).toHaveBeenCalledTimes(4);
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      `${CONTAINER_RUNTIME_BIN} stop cambot-agent-group1-111`,
-      { stdio: 'pipe' },
+      `${CONTAINER_RUNTIME_BIN} kill cambot-agent-group1-111`,
+      { stdio: 'pipe', timeout: 10000 },
     );
     expect(mockExecSync).toHaveBeenNthCalledWith(
       3,
-      `${CONTAINER_RUNTIME_BIN} stop cambot-agent-group2-222`,
-      { stdio: 'pipe' },
+      `${CONTAINER_RUNTIME_BIN} kill cambot-agent-group2-222`,
+      { stdio: 'pipe', timeout: 10000 },
     );
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['cambot-agent-group1-111', 'cambot-agent-group2-222'] },
-      'Stopped orphaned containers',
+      'Killed orphaned containers',
+    );
+  });
+
+  it('warns when orphans survive cleanup', () => {
+    mockExecSync.mockReturnValueOnce('cambot-agent-stubborn-111\n');
+    // kill call succeeds (but container survives somehow)
+    mockExecSync.mockReturnValueOnce('');
+    // verification ps still shows it
+    mockExecSync.mockReturnValueOnce('cambot-agent-stubborn-111\n');
+
+    cleanupOrphans();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      { count: 1, names: ['cambot-agent-stubborn-111'] },
+      'Some orphaned containers survived cleanup',
+    );
+  });
+
+  it('strips quotes from container names (Windows quoting bug)', () => {
+    // Windows cmd.exe passes single quotes literally in --format
+    mockExecSync.mockReturnValueOnce("'cambot-agent-main-111'\n");
+    mockExecSync.mockReturnValueOnce('');
+    // verification ps returns empty
+    mockExecSync.mockReturnValueOnce('');
+
+    cleanupOrphans();
+
+    // Kill should use the cleaned name (no quotes)
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      2,
+      `${CONTAINER_RUNTIME_BIN} kill cambot-agent-main-111`,
+      { stdio: 'pipe', timeout: 10000 },
     );
   });
 
@@ -125,21 +170,69 @@ describe('cleanupOrphans', () => {
     );
   });
 
-  it('continues stopping remaining containers when one stop fails', () => {
+  it('continues killing remaining containers when one kill fails', () => {
     mockExecSync.mockReturnValueOnce('cambot-agent-a-1\ncambot-agent-b-2\n');
-    // First stop fails
+    // First kill fails
     mockExecSync.mockImplementationOnce(() => {
-      throw new Error('already stopped');
+      throw new Error('already dead');
     });
-    // Second stop succeeds
+    // Second kill succeeds
+    mockExecSync.mockReturnValueOnce('');
+    // verification ps returns empty
     mockExecSync.mockReturnValueOnce('');
 
     cleanupOrphans(); // should not throw
 
-    expect(mockExecSync).toHaveBeenCalledTimes(3);
+    expect(mockExecSync).toHaveBeenCalledTimes(4);
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['cambot-agent-a-1', 'cambot-agent-b-2'] },
-      'Stopped orphaned containers',
+      'Killed orphaned containers',
+    );
+  });
+});
+
+// --- killContainersForGroup ---
+
+describe('killContainersForGroup', () => {
+  it('kills containers matching the group name', () => {
+    mockExecSync.mockReturnValueOnce('cambot-agent-main-111\n');
+    mockExecSync.mockReturnValueOnce('');
+
+    killContainersForGroup('main');
+
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      1,
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=cambot-agent-main- --format {{.Names}}`,
+      expect.objectContaining({ encoding: 'utf-8' }),
+    );
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      2,
+      `${CONTAINER_RUNTIME_BIN} kill cambot-agent-main-111`,
+      { stdio: 'pipe', timeout: 10000 },
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      { group: 'main', container: 'cambot-agent-main-111' },
+      'Killed stale group container',
+    );
+  });
+
+  it('does nothing when no containers match', () => {
+    mockExecSync.mockReturnValueOnce('');
+
+    killContainersForGroup('main');
+
+    expect(mockExecSync).toHaveBeenCalledTimes(1);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes group folder name for filter', () => {
+    mockExecSync.mockReturnValueOnce('');
+
+    killContainersForGroup('group with spaces');
+
+    expect(mockExecSync).toHaveBeenCalledWith(
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=cambot-agent-group-with-spaces- --format {{.Names}}`,
+      expect.objectContaining({ encoding: 'utf-8' }),
     );
   });
 });

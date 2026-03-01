@@ -45,7 +45,11 @@ vi.mock('./router.js', () => ({
 }));
 
 import { createShadowAgent } from './shadow-agent.js';
-import { NewMessage, MessageBusEvent } from './types.js';
+import { NewMessage, MessageBus, MessageBusEvent } from './types.js';
+
+function stubBus(): MessageBus {
+  return { emit: vi.fn(), emitAsync: vi.fn(), on: vi.fn(() => () => {}) };
+}
 
 const ADMIN_JID = '1234567890@s.whatsapp.net';
 
@@ -87,6 +91,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin secretkey hello' });
@@ -102,6 +107,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({
@@ -116,6 +122,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [makeChannel()],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({
@@ -130,6 +137,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: 'just a normal message' });
@@ -141,6 +149,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!adminfoo secretkey hello' });
@@ -152,6 +161,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin wrongkey hello' });
@@ -163,6 +173,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin secretkey' });
@@ -174,6 +185,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin secretkey   ' });
@@ -186,6 +198,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [channel],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin secretkey show me groups' });
@@ -198,6 +211,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [makeChannel()],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin secretkey show me groups' });
@@ -214,6 +228,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [makeChannel()],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin secretkey hello' });
@@ -228,6 +243,7 @@ describe('createShadowAgent', () => {
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [makeChannel()],
+        messageBus: stubBus(),
       });
 
       const msg = makeMsg({ content: '!admin secretkey hello' });
@@ -357,15 +373,20 @@ describe('createShadowAgent', () => {
       expect(mockRunContainerAgent).not.toHaveBeenCalled();
     });
 
-    it('does not subscribe when no messageBus provided', () => {
-      const interceptor = createShadowAgent({
+    it('always subscribes to bus for message interception', () => {
+      const bus = stubBus();
+      createShadowAgent({
         adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
+        messageBus: bus,
       });
 
-      // Just returns the callback — no bus interaction
-      expect(typeof interceptor).toBe('function');
+      expect(bus.on).toHaveBeenCalledWith(
+        'message.inbound',
+        expect.any(Function),
+        expect.objectContaining({ priority: 10 }),
+      );
     });
   });
 });

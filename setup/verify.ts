@@ -106,7 +106,7 @@ export async function run(_args: string[]): Promise<void> {
 
   // 5. Check registered groups (using better-sqlite3, not sqlite3 CLI)
   let registeredGroups = 0;
-  const dbPath = path.join(STORE_DIR, 'messages.db');
+  const dbPath = path.join(STORE_DIR, 'cambot.sqlite');
   if (fs.existsSync(dbPath)) {
     try {
       const db = new Database(dbPath, { readonly: true });

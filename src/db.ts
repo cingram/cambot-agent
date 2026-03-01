@@ -1,168 +1,42 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { createWorkflowSchema } from 'cambot-workflows';
+import { createSchemaManager } from 'cambot-core';
 
-import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
+import { DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog, WorkerDefinition } from './types.js';
 
 let db: Database.Database;
 
-function createSchema(database: Database.Database): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS chats (
-      jid TEXT PRIMARY KEY,
-      name TEXT,
-      last_message_time TEXT,
-      channel TEXT,
-      is_group INTEGER DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT,
-      chat_jid TEXT,
-      sender TEXT,
-      sender_name TEXT,
-      content TEXT,
-      timestamp TEXT,
-      is_from_me INTEGER,
-      is_bot_message INTEGER DEFAULT 0,
-      PRIMARY KEY (id, chat_jid),
-      FOREIGN KEY (chat_jid) REFERENCES chats(jid)
-    );
-    CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
-
-    CREATE TABLE IF NOT EXISTS scheduled_tasks (
-      id TEXT PRIMARY KEY,
-      group_folder TEXT NOT NULL,
-      chat_jid TEXT NOT NULL,
-      prompt TEXT NOT NULL,
-      schedule_type TEXT NOT NULL,
-      schedule_value TEXT NOT NULL,
-      next_run TEXT,
-      last_run TEXT,
-      last_result TEXT,
-      status TEXT DEFAULT 'active',
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_next_run ON scheduled_tasks(next_run);
-    CREATE INDEX IF NOT EXISTS idx_status ON scheduled_tasks(status);
-
-    CREATE TABLE IF NOT EXISTS task_run_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id TEXT NOT NULL,
-      run_at TEXT NOT NULL,
-      duration_ms INTEGER NOT NULL,
-      status TEXT NOT NULL,
-      result TEXT,
-      error TEXT,
-      FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
-
-    CREATE TABLE IF NOT EXISTS router_state (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-      group_folder TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS registered_groups (
-      jid TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      folder TEXT NOT NULL UNIQUE,
-      trigger_pattern TEXT NOT NULL,
-      added_at TEXT NOT NULL,
-      container_config TEXT,
-      requires_trigger INTEGER DEFAULT 1
-    );
-    CREATE TABLE IF NOT EXISTS provider_images (
-      provider TEXT PRIMARY KEY,
-      container_image TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS agent_definitions (
-      id TEXT PRIMARY KEY,
-      provider TEXT NOT NULL,
-      model TEXT NOT NULL,
-      personality TEXT,
-      secret_keys TEXT NOT NULL
-    );
-  `);
-
-  // Add context_mode column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  // Add is_bot_message column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`,
-    );
-    // Backfill: mark existing bot messages that used the content prefix pattern
-    database.prepare(
-      `UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`,
-    ).run(`${ASSISTANT_NAME}:%`);
-  } catch {
-    /* column already exists */
-  }
-
-  // Add channel and is_group columns if they don't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE chats ADD COLUMN channel TEXT`,
-    );
-    database.exec(
-      `ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`,
-    );
-    // Backfill from JID patterns
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`);
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`);
-    database.exec(`UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`);
-    database.exec(`UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`);
-  } catch {
-    /* columns already exist */
-  }
-
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS custom_agents (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      provider TEXT NOT NULL,
-      model TEXT NOT NULL,
-      api_key_env_var TEXT NOT NULL,
-      base_url TEXT,
-      system_prompt TEXT NOT NULL,
-      tools TEXT NOT NULL DEFAULT '[]',
-      trigger_pattern TEXT,
-      group_folder TEXT NOT NULL,
-      max_tokens INTEGER,
-      temperature REAL,
-      max_iterations INTEGER DEFAULT 25,
-      timeout_ms INTEGER DEFAULT 120000,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_custom_agents_group ON custom_agents(group_folder);
-  `);
-
-  // Workflow tables (cambot-workflows) — uses CREATE IF NOT EXISTS, safe to re-run
-  createWorkflowSchema(database);
-}
-
 export function initDatabase(): void {
-  const dbPath = path.join(STORE_DIR, 'messages.db');
+  const dbPath = path.join(STORE_DIR, 'cambot.sqlite');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   db = new Database(dbPath);
-  createSchema(db);
+
+  // Performance pragmas
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('cache_size = -64000');
+
+  // Load sqlite-vec extension if available
+  try {
+    db.loadExtension('vec0');
+  } catch {
+    try {
+      db.loadExtension('sqlite-vec');
+    } catch {
+      logger.debug('sqlite-vec extension not available, vector search disabled');
+    }
+  }
+
+  // Delegate schema creation to cambot-core's schema manager
+  const schema = createSchemaManager();
+  schema.initialize(db);
 
   // Migrate from JSON files if they exist
   migrateJsonState();
@@ -171,7 +45,8 @@ export function initDatabase(): void {
 /** @internal - for tests only. Creates a fresh in-memory database. */
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
-  createSchema(db);
+  const schema = createSchemaManager();
+  schema.initialize(db);
 }
 
 /** Expose the database instance for subsystems that need direct access. */
@@ -574,20 +449,20 @@ export function setRouterState(key: string, value: string): void {
 
 export function getSession(groupFolder: string): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
+    .prepare('SELECT session_id FROM auth_sessions WHERE group_folder = ?')
     .get(groupFolder) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
 export function setSession(groupFolder: string, sessionId: string): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
+    'INSERT OR REPLACE INTO auth_sessions (group_folder, session_id) VALUES (?, ?)',
   ).run(groupFolder, sessionId);
 }
 
 export function getAllSessions(): Record<string, string> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
+    .prepare('SELECT group_folder, session_id FROM auth_sessions')
     .all() as Array<{ group_folder: string; session_id: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
@@ -865,6 +740,119 @@ export function getAllAgentDefinitions(): WorkerDefinition[] {
 
 export function deleteAgentDefinition(id: string): void {
   db.prepare('DELETE FROM agent_definitions WHERE id = ?').run(id);
+}
+
+// --- Email state accessors ---
+
+export function getEmailState(key: string): string | null {
+  const row = db
+    .prepare('SELECT value FROM email_state WHERE key = ?')
+    .get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setEmailState(key: string, value: string): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO email_state (key, value, updated_at) VALUES (?, ?, ?)`,
+  ).run(key, value, new Date().toISOString());
+}
+
+// --- Integration state accessors ---
+
+export interface IntegrationStateRow {
+  id: string;
+  enabled: number;
+  status: string;
+  last_error: string | null;
+  last_health_check: string | null;
+  updated_at: string;
+}
+
+export function getIntegrationState(id: string): IntegrationStateRow | undefined {
+  return db.prepare('SELECT * FROM integrations WHERE id = ?').get(id) as IntegrationStateRow | undefined;
+}
+
+export function upsertIntegrationState(
+  id: string,
+  updates: { enabled?: boolean; status?: string; lastError?: string | null },
+): void {
+  const now = new Date().toISOString();
+  const existing = getIntegrationState(id);
+  if (existing) {
+    const fields: string[] = ['updated_at = ?'];
+    const values: unknown[] = [now];
+    if (updates.enabled !== undefined) {
+      fields.push('enabled = ?');
+      values.push(updates.enabled ? 1 : 0);
+    }
+    if (updates.status !== undefined) {
+      fields.push('status = ?');
+      values.push(updates.status);
+    }
+    if (updates.lastError !== undefined) {
+      fields.push('last_error = ?');
+      values.push(updates.lastError);
+    }
+    values.push(id);
+    db.prepare(`UPDATE integrations SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  } else {
+    db.prepare(
+      `INSERT INTO integrations (id, enabled, status, last_error, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      updates.enabled === false ? 0 : 1,
+      updates.status ?? 'unconfigured',
+      updates.lastError ?? null,
+      now,
+    );
+  }
+}
+
+export function updateIntegrationHealthCheck(id: string): void {
+  const now = new Date().toISOString();
+  db.prepare('UPDATE integrations SET last_health_check = ?, updated_at = ? WHERE id = ?').run(now, now, id);
+}
+
+export function getAllIntegrationStates(): IntegrationStateRow[] {
+  return db.prepare('SELECT * FROM integrations').all() as IntegrationStateRow[];
+}
+
+// --- MCP server accessors ---
+
+export interface McpServerRow {
+  id: string;
+  name: string;
+  transport: string;
+  url: string | null;
+  command: string | null;
+  args: string | null;
+  env_vars: string | null;
+  description: string | null;
+  port: number | null;
+  created_at: string;
+}
+
+export function getMcpServer(id: string): McpServerRow | undefined {
+  return db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(id) as McpServerRow | undefined;
+}
+
+export function getAllMcpServers(): McpServerRow[] {
+  return db.prepare('SELECT * FROM mcp_servers ORDER BY created_at').all() as McpServerRow[];
+}
+
+export function insertMcpServer(server: McpServerRow): void {
+  db.prepare(
+    `INSERT INTO mcp_servers (id, name, transport, url, command, args, env_vars, description, port, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    server.id, server.name, server.transport, server.url, server.command,
+    server.args, server.env_vars, server.description, server.port, server.created_at,
+  );
+}
+
+export function deleteMcpServer(id: string): void {
+  db.prepare('DELETE FROM mcp_servers WHERE id = ?').run(id);
+}
 }
 
 // --- JSON migration ---

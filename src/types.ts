@@ -128,7 +128,7 @@ export interface ChannelOpts {
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
-  messageBus?: MessageBus;
+  messageBus: MessageBus;
   workflowService?: {
     reloadDefinitions(): void;
     hasActiveRun(workflowId: string): boolean;
