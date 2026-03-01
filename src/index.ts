@@ -12,10 +12,9 @@ import {
   POLL_INTERVAL,
   TRIGGER_PATTERN,
   WORKFLOW_CONTAINER_TIMEOUT,
-  WORKSPACE_MCP_PORT,
 } from './config.js';
-import { loadChannels } from './channels/registry.js';
-import { readEnvFile } from './env.js';
+import { buildIntegrationDefinitions, createIntegrationManager } from './integrations/index.js';
+import type { IntegrationManager } from './integrations/index.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -55,7 +54,6 @@ import { logger } from './logger.js';
 import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
 import { createShadowAgent } from './shadow-agent.js';
 import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
-import { createWorkspaceMcpService, WorkspaceMcpService } from './workspace-mcp-service.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -66,13 +64,13 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-const channels: Channel[] = [];
+let channels: Channel[] = [];
 const queue = new GroupQueue();
 let messageBus!: MessageBus;
 let workflowService: WorkflowService | null = null;
 let customAgentService: CustomAgentService | null = null;
 let shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
-let workspaceMcpService: WorkspaceMcpService | null = null;
+let integrationMgr: IntegrationManager | null = null;
 
 /** Persist a bot-generated message so /history includes both sides. */
 function storeBotMessage(chatJid: string, text: string): void {
@@ -456,9 +454,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
-        workspaceMcpUrl: workspaceMcpService?.isRunning()
-          ? workspaceMcpService.getUrl()
-          : undefined,
+        mcpServers: integrationMgr?.getActiveMcpServers(),
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -611,34 +607,6 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
-  // ── Initialize Google Workspace MCP Service ─────────────────────────────
-  // Runs workspace-mcp as a persistent HTTP service on the host. Docker
-  // containers connect via host.docker.internal. Only starts if OAuth
-  // credentials are configured.
-  const googleEnv = readEnvFile([
-    'GOOGLE_OAUTH_CLIENT_ID',
-    'GOOGLE_OAUTH_CLIENT_SECRET',
-    'USER_GOOGLE_EMAIL',
-  ]);
-  const hasGoogleCreds = !!(
-    googleEnv.GOOGLE_OAUTH_CLIENT_ID &&
-    googleEnv.GOOGLE_OAUTH_CLIENT_SECRET &&
-    googleEnv.USER_GOOGLE_EMAIL
-  );
-
-  if (hasGoogleCreds) {
-    workspaceMcpService = createWorkspaceMcpService({
-      port: WORKSPACE_MCP_PORT,
-      googleOAuthClientId: googleEnv.GOOGLE_OAUTH_CLIENT_ID,
-      googleOAuthClientSecret: googleEnv.GOOGLE_OAUTH_CLIENT_SECRET,
-      userGoogleEmail: googleEnv.USER_GOOGLE_EMAIL,
-    });
-    await workspaceMcpService.start();
-    logger.info({ port: WORKSPACE_MCP_PORT }, 'Google Workspace MCP service started');
-  } else {
-    logger.debug('Google Workspace MCP not configured (missing OAuth credentials)');
-  }
-
   // ── Initialize Workflow Service ──────────────────────────────────────────
   // Workflow agent steps spawn a container with the existing Agent SDK + OAuth
   // token, using an extended timeout for long-running operations.
@@ -658,6 +626,8 @@ async function main(): Promise<void> {
   workflowService = createWorkflowService({
     db: getDatabase(),
     messageBus: bus,
+    getChannels: () => channels,
+    adminJid: ADMIN_JID,
     runAgentContainer: async (input: AgentStepInput): Promise<string> => {
       // Use a promise that resolves on the first streamed output marker,
       // so we don't wait for the container process to exit (the claude
@@ -679,9 +649,7 @@ async function main(): Promise<void> {
           chatJid: 'workflows',
           isMain: true,
           customAgent: input.customAgent,
-          workspaceMcpUrl: workspaceMcpService?.isRunning()
-            ? workspaceMcpService.getUrl()
-            : undefined,
+          mcpServers: integrationMgr?.getActiveMcpServers(),
         },
         (_proc, containerName) => {
           spawnedContainerName = containerName;
@@ -769,8 +737,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
-    for (const ch of channels) await ch.disconnect();
-    if (workspaceMcpService) await workspaceMcpService.stop();
+    if (integrationMgr) await integrationMgr.shutdown();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -793,17 +760,22 @@ async function main(): Promise<void> {
     channelNames: () => channels.map(ch => ch.name),
   };
 
-  // Create and connect channels
-  channels.push(...await loadChannels(channelOpts));
+  // ── Initialize Integration Manager ────────────────────────────────────
+  // Replaces manual Google Workspace MCP init + loadChannels().
+  // All channels and MCP servers are now managed as integrations.
+  integrationMgr = createIntegrationManager(buildIntegrationDefinitions());
+  await integrationMgr.initialize({ messageBus: bus, channelOpts });
+  channels = integrationMgr.getActiveChannels();
 
   // Channel delivery: forward outbound messages to the owning channel (priority 50, after DB storage)
   bus.on('message.outbound', async (event) => {
     const { jid, text, broadcast } = event.data as {
       jid: string; text: string; broadcast?: boolean;
     };
+    const activeChannels = integrationMgr?.getActiveChannels() ?? channels;
     const targets = broadcast
-      ? channels.filter(ch => ch.isConnected())
-      : channels.filter(ch => ch.ownsJid(jid) && ch.isConnected());
+      ? activeChannels.filter(ch => ch.isConnected())
+      : activeChannels.filter(ch => ch.ownsJid(jid) && ch.isConnected());
     for (const ch of targets) {
       try {
         await ch.sendMessage(jid, text);
@@ -813,11 +785,11 @@ async function main(): Promise<void> {
     }
   }, { id: 'channel-delivery', priority: 50, source: 'cambot-agent' });
 
-  // Initialize shadow admin interceptor (must be after channels load)
+  // Initialize shadow admin interceptor (must be after integration manager init)
   shadowInterceptor = createShadowAgent({
     adminJid: ADMIN_JID,
     adminTrigger: ADMIN_TRIGGER,
-    channels,
+    channels: integrationMgr?.getActiveChannels() ?? channels,
     messageBus,
   });
 
@@ -835,12 +807,14 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroupMetadata: async (force) => {
-      for (const ch of channels) await ch.syncMetadata?.(force);
+      const activeChannels = integrationMgr?.getActiveChannels() ?? channels;
+      for (const ch of activeChannels) await ch.syncMetadata?.(force);
     },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
     workflowService: workflowService ?? undefined,
     customAgentService: customAgentService ?? undefined,
+    integrationManager: integrationMgr ?? undefined,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

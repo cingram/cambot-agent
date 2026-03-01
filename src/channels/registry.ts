@@ -20,7 +20,7 @@ function getConfiguredChannelNames(): Set<string> {
   return new Set(raw.split(',').map((s) => s.trim()).filter(Boolean));
 }
 
-const definitions: ChannelDefinition[] = [
+export const channelDefinitions: ChannelDefinition[] = [
   {
     name: 'whatsapp',
     isConfigured: () => {
@@ -96,7 +96,7 @@ const definitions: ChannelDefinition[] = [
 
 export async function loadChannels(opts: ChannelOpts): Promise<Channel[]> {
   const channels: Channel[] = [];
-  for (const def of definitions) {
+  for (const def of channelDefinitions) {
     if (!def.isConfigured()) {
       logger.debug({ channel: def.name }, 'Channel not configured, skipping');
       continue;

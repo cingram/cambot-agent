@@ -13,6 +13,7 @@ const envConfig = readEnvFile([
   'ADMIN_TRIGGER',
   'ADMIN_KEY',
   'WORKSPACE_MCP_PORT',
+  'MEMORY_MODE',
 ]);
 
 export const ASSISTANT_NAME =
@@ -81,6 +82,12 @@ export const WORKSPACE_MCP_PORT = parseInt(
   process.env.WORKSPACE_MCP_PORT || envConfig.WORKSPACE_MCP_PORT || '8000',
   10,
 );
+
+// Memory mode: which memory system the agent uses
+export type MemoryMode = 'markdown' | 'database' | 'both';
+const rawMemoryMode = process.env.MEMORY_MODE || envConfig.MEMORY_MODE || 'both';
+export const MEMORY_MODE: MemoryMode =
+  rawMemoryMode === 'markdown' || rawMemoryMode === 'database' ? rawMemoryMode : 'both';
 
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default

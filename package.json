@@ -20,6 +20,7 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^11.8.1",
     "cambot-core": "file:../cambot-core",
+    "cambot-integrations": "file:../cambot-integrations",
     "cambot-workflows": "file:../cambot-workflows",
     "cron-parser": "^5.5.0",
     "pino": "^9.6.0",

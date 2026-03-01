@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-Provider Agent System — Design Doc</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    color: #c9d1d9;
+    background: #0d1117;
+    margin: 0;
+    padding: 40px 20px;
+  }
+  .markdown-body {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 45px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+  }
+  h1 { font-size: 2em; border-bottom: 1px solid #21262d; padding-bottom: .3em; color: #f0f6fc; }
+  h2 { font-size: 1.5em; border-bottom: 1px solid #21262d; padding-bottom: .3em; margin-top: 2em; color: #f0f6fc; }
+  h3 { font-size: 1.25em; margin-top: 1.5em; color: #f0f6fc; }
+  h4 { font-size: 1em; margin-top: 1.2em; color: #f0f6fc; }
+  hr { border: 0; border-top: 1px solid #21262d; margin: 2em 0; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: #f0f6fc; }
+  code {
+    background: #1f2937;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 0.2em 0.4em;
+    font-size: 85%;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    color: #e6edf3;
+  }
+  pre {
+    background: #1f2937;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+  pre code {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: 85%;
+    color: #e6edf3;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+  }
+  th, td {
+    border: 1px solid #30363d;
+    padding: 8px 13px;
+    text-align: left;
+  }
+  th { background: #1f2937; font-weight: 600; color: #f0f6fc; }
+  tr:nth-child(even) td { background: rgba(31, 41, 55, 0.5); }
+  ul, ol { padding-left: 2em; }
+  li { margin: 0.25em 0; }
+  blockquote {
+    color: #8b949e;
+    border-left: 4px solid #30363d;
+    padding: 0 1em;
+    margin: 1em 0;
+  }
+  p { margin: 1em 0; }
+</style>
+</head>
+<body>
+<article class="markdown-body">
+<h1>Multi-Provider Agent System</h1>
+<p>Design document for supporting multiple LLM providers (Claude, OpenAI, Grok/xAI) with custom personalities per group.</p>
+<p><strong>Status:</strong> Proposed<br>
+<strong>Date:</strong> 2026-02-22</p>
+<hr>
+<h2>Problem Statement</h2>
+<p>CamBot-Agent currently runs every agent on Claude via the Anthropic SDK. This works well for a single-personality assistant, but limits several use cases:</p>
+<ol>
+<li><strong>Model selection per group</strong> — Some groups may benefit from a different model's strengths (GPT for creative writing, Grok for real-time web knowledge, Claude for code).</li>
+<li><strong>Agent councils</strong> — Multiple agents with different providers deliberate on a problem, each bringing a different perspective.</li>
+<li><strong>Specialized agents</strong> — A code reviewer (Claude), a creative writer (GPT), and a researcher (Grok) each handling what they're best at.</li>
+<li><strong>Cost optimization</strong> — Route lightweight tasks to cheaper models, reserve expensive models for complex work.</li>
+<li><strong>Redundancy</strong> — If one provider has an outage, groups can fall back to another.</li>
+</ol>
+<p>The goal is to support this without rewriting the host orchestration layer, which is already provider-agnostic.</p>
+<hr>
+<h2>Current State</h2>
+<h3>Anthropic-Coupled (Inside the Container)</h3>
+<p>These components are tightly coupled to the Anthropic/Claude ecosystem:</p>
+<table>
+<thead><tr><th>Component</th><th>File</th><th>Coupling</th></tr></thead>
+<tbody>
+<tr><td>Agent runner</td><td><code>container/agent-runner/src/index.ts</code></td><td>Imports <code>query</code> from <code>@anthropic-ai/claude-agent-sdk</code>, uses Claude-specific options (<code>resume</code>, <code>resumeSessionAt</code>, <code>systemPrompt</code>, <code>allowedTools</code>, <code>permissionMode</code>, <code>hooks</code>)</td></tr>
+<tr><td>Secret injection</td><td><code>src/container-runner.ts:184-186</code></td><td><code>readSecrets()</code> reads <code>CLAUDE_CODE_OAUTH_TOKEN</code> and <code>ANTHROPIC_API_KEY</code></td></tr>
+<tr><td>Container image</td><td><code>src/config.ts:37-38</code></td><td>Single global <code>CONTAINER_IMAGE = 'cambot-agent-agent:latest'</code></td></tr>
+<tr><td>Session management</td><td><code>container/agent-runner/src/index.ts:416-456</code></td><td><code>query()</code> call with Claude SDK session resume semantics</td></tr>
+<tr><td>Secret stripping</td><td><code>container/agent-runner/src/index.ts:190</code></td><td><code>SECRET_ENV_VARS</code> hardcodes <code>['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']</code></td></tr>
+<tr><td>SDK settings</td><td><code>src/container-runner.ts:107-121</code></td><td>Writes <code>.claude/settings.json</code> with Claude Code environment variables</td></tr>
+</tbody>
+</table>
+<h3>Already Generic (Host-Side)</h3>
+<p>These components have zero provider awareness and work with any container that speaks the stdin/stdout JSON protocol:</p>
+<table>
+<thead><tr><th>Component</th><th>File</th><th>Why It's Generic</th></tr></thead>
+<tbody>
+<tr><td>Group queue</td><td><code>src/group-queue.ts</code></td><td>Manages <code>ChildProcess</code> instances. Knows nothing about what runs inside.</td></tr>
+<tr><td>IPC watcher</td><td><code>src/ipc.ts</code></td><td>Reads JSON files from per-group IPC directories. Provider-agnostic.</td></tr>
+<tr><td>MCP server</td><td><code>container/agent-runner/src/ipc-mcp-stdio.ts</code></td><td>Pure file-based IPC. No SDK imports. Any agent runtime can spawn it.</td></tr>
+<tr><td>Container runner protocol</td><td><code>src/container-runner.ts:29-44</code></td><td><code>ContainerInput</code>/<code>ContainerOutput</code> are plain JSON — no provider types.</td></tr>
+<tr><td>Volume mounts</td><td><code>src/container-runner.ts:52-177</code></td><td>Builds mounts from group config. Provider-irrelevant.</td></tr>
+<tr><td>Database</td><td><code>src/db.ts</code></td><td><code>registered_groups.container_config</code> is a JSON blob — already extensible.</td></tr>
+<tr><td>Scheduler</td><td><code>src/task-scheduler.ts</code></td><td>Triggers container runs by group. Doesn't know what's inside.</td></tr>
+<tr><td>Router</td><td><code>src/router.ts</code></td><td>Formats messages, strips tags, dispatches to channels.</td></tr>
+<tr><td>Channels</td><td><code>src/types.ts:81-98</code></td><td><code>Channel</code> interface is fully abstract.</td></tr>
+</tbody>
+</table>
+<h3>The Seam</h3>
+<p>The container boundary (stdin JSON in, stdout JSON out) is the natural abstraction point. The host already treats containers as black boxes. The only host-side coupling is:</p>
+<ol>
+<li><code>readSecrets()</code> — which secrets to inject</li>
+<li><code>CONTAINER_IMAGE</code> — which image to spawn</li>
+<li><code>buildVolumeMounts()</code> — <code>.claude/settings.json</code> creation (Claude-specific)</li>
+</ol>
+<hr>
+<h2>Proposed Design</h2>
+<h3>Agent Definition as a First-Class Concept</h3>
+<p>Introduce an <code>AgentDefinition</code> that describes an agent's identity independent of the group it serves:</p>
+<pre><code>interface AgentDefinition {
+  id: string;               // e.g., "claude-default", "gpt-creative", "grok-researcher"
+  provider: 'claude' | 'openai' | 'grok';
+  model: string;            // e.g., "claude-sonnet-4-6", "gpt-4o", "grok-3"
+  personality?: string;     // System prompt overlay (appended to base prompt)
+  containerImage: string;   // e.g., "cambot-agent-claude:latest", "cambot-agent-openai:latest"
+  secretKeys: string[];     // Which env vars to inject (e.g., ["OPENAI_API_KEY"])
+}</code></pre>
+<p>Groups reference agents by ID:</p>
+<pre><code>interface RegisteredGroup {
+  // ... existing fields ...
+  agentId?: string;  // Default: "claude-default" (backwards compatible)
+}</code></pre>
+<h3>One Container Image Per Provider (Open-Closed Principle)</h3>
+<p>Each provider gets its own container image with its own agent-runner implementation. Adding a new provider means building a new image — not modifying existing ones.</p>
+<pre><code>container/
+  agent-runner-claude/     # Existing agent-runner (renamed)
+    src/index.ts           # Uses @anthropic-ai/claude-agent-sdk
+    src/ipc-mcp-stdio.ts   # Shared (symlinked or copied)
+    Dockerfile
+  agent-runner-openai/     # New
+    src/index.ts           # Uses openai SDK
+    src/ipc-mcp-stdio.ts   # Same MCP server
+    Dockerfile
+  agent-runner-grok/       # New (thin wrapper — Grok uses OpenAI-compatible API)
+    src/index.ts           # Uses openai SDK with xAI base URL
+    src/ipc-mcp-stdio.ts   # Same MCP server
+    Dockerfile</code></pre>
+<h3>The Container Protocol (Abstraction Boundary)</h3>
+<p>The existing stdin/stdout JSON protocol is the contract. Every provider container must implement:</p>
+<p><strong>Input</strong> (stdin, single JSON blob):</p>
+<pre><code>{
+  "prompt": "User's message",
+  "sessionId": "optional-resume-id",
+  "groupFolder": "family-chat",
+  "chatJid": "120363...@g.us",
+  "isMain": false,
+  "isScheduledTask": false,
+  "secrets": { "OPENAI_API_KEY": "sk-..." }
+}</code></pre>
+<p><strong>Output</strong> (stdout, wrapped in sentinel markers):</p>
+<pre><code>---CAMBOT_AGENT_OUTPUT_START---
+{"status":"success","result":"Agent's response","newSessionId":"sess-abc"}
+---CAMBOT_AGENT_OUTPUT_END---</code></pre>
+<p><strong>IPC</strong> (file-based, unchanged):</p>
+<ul>
+<li><code>/workspace/ipc/messages/</code> — outbound messages</li>
+<li><code>/workspace/ipc/tasks/</code> — task management</li>
+<li><code>/workspace/ipc/input/</code> — inbound follow-up messages, <code>_close</code> sentinel</li>
+</ul>
+<p>This protocol is already clean. No changes needed.</p>
+<h3>Host-Side Changes Summary</h3>
+<h4>1. Types (<code>src/types.ts</code>)</h4>
+<p>Add <code>AgentDefinition</code> interface. Add <code>agentId?: string</code> to <code>RegisteredGroup</code>.</p>
+<h4>2. Database (<code>src/db.ts</code>)</h4>
+<p>New table:</p>
+<pre><code>CREATE TABLE IF NOT EXISTS agent_definitions (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  personality TEXT,
+  container_image TEXT NOT NULL,
+  secret_keys TEXT NOT NULL  -- JSON array
+);</code></pre>
+<p>Add <code>agent_id</code> column to <code>registered_groups</code> (default: <code>'claude-default'</code>).</p>
+<p>Composite session key — add <code>agent_id</code> to the <code>sessions</code> table:</p>
+<pre><code>-- Migration: sessions table gets composite key
+CREATE TABLE sessions_v2 (
+  group_folder TEXT NOT NULL,
+  agent_id TEXT NOT NULL DEFAULT 'claude-default',
+  session_id TEXT NOT NULL,
+  PRIMARY KEY (group_folder, agent_id)
+);</code></pre>
+<h4>3. Config (<code>src/config.ts</code>)</h4>
+<p>Remove <code>CONTAINER_IMAGE</code> global constant. Image is now per-agent from the definition.</p>
+<h4>4. Container Runner (<code>src/container-runner.ts</code>)</h4>
+<ul>
+<li><code>readSecrets()</code> becomes <code>readSecrets(secretKeys: string[])</code> — reads only the keys the agent needs.</li>
+<li><code>buildContainerArgs()</code> takes <code>containerImage: string</code> parameter instead of using the global.</li>
+<li><code>buildVolumeMounts()</code> — skip <code>.claude/settings.json</code> for non-Claude providers. Each provider's Dockerfile handles its own config.</li>
+<li><code>runContainerAgent()</code> signature gains <code>agentDef: AgentDefinition</code> parameter.</li>
+</ul>
+<h4>5. Orchestrator (<code>src/index.ts</code>)</h4>
+<p>When processing messages for a group:</p>
+<ol>
+<li>Look up <code>group.agentId</code> (default <code>'claude-default'</code>).</li>
+<li>Fetch <code>AgentDefinition</code> from DB.</li>
+<li>Pass definition to <code>runContainerAgent()</code>.</li>
+</ol>
+<h4>6. Secrets (<code>.env</code>)</h4>
+<p>Add provider-specific keys alongside existing ones:</p>
+<pre><code>ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+XAI_API_KEY=xai-...</code></pre>
+<p>Each agent definition declares which keys it needs via <code>secretKeys</code>.</p>
+<h3>Session Management Across Providers</h3>
+<p>Sessions are currently keyed by <code>group_folder</code> alone. With multi-provider support, the key becomes <code>(group_folder, agent_id)</code>:</p>
+<ul>
+<li>Switching a group from Claude to GPT starts a fresh session (different agent, different session).</li>
+<li>A council scenario runs multiple agents in the same group — each maintains its own session.</li>
+<li>The existing <code>getSession()</code>/<code>setSession()</code> API gains an <code>agentId</code> parameter.</li>
+</ul>
+<hr>
+<h2>Provider Containers</h2>
+<h3>Claude (Existing — Minimal Changes)</h3>
+<p>Rename <code>container/agent-runner/</code> to <code>container/agent-runner-claude/</code>. The existing code is nearly unchanged:</p>
+<ul>
+<li><code>index.ts</code> — already correct. Uses <code>@anthropic-ai/claude-agent-sdk</code>.</li>
+<li><code>SECRET_ENV_VARS</code> — stays <code>['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']</code>.</li>
+<li>Session resume — uses SDK's <code>resume</code>/<code>resumeSessionAt</code> (Claude-specific).</li>
+<li>Hooks — <code>PreCompact</code> and <code>PreToolUse</code> hooks remain.</li>
+<li>Tools — full Claude Code toolset (<code>Bash</code>, <code>Read</code>, <code>Write</code>, <code>Edit</code>, etc.).</li>
+</ul>
+<p>The <code>.claude/settings.json</code> setup moves into this image's entrypoint (out of host <code>container-runner.ts</code>).</p>
+<h3>OpenAI (New Image, ~200 Lines)</h3>
+<p>New <code>container/agent-runner-openai/src/index.ts</code>:</p>
+<pre><code>// Pseudocode — same stdin/stdout protocol, different SDK
+import OpenAI from 'openai';
+
+const client = new OpenAI({ apiKey: secrets.OPENAI_API_KEY });
+
+// Read ContainerInput from stdin (identical to Claude runner)
+// Start MCP server (identical — same ipc-mcp-stdio.ts)
+// Convert MCP tools to OpenAI function-calling format
+// Run completion loop with tool calls
+// Write ContainerOutput to stdout with sentinel markers</code></pre>
+<p>Key differences from the Claude runner:</p>
+<ul>
+<li>No session resume (OpenAI has no equivalent — session context is rebuilt from conversation history stored in the group folder).</li>
+<li>Tool calling uses OpenAI's function-calling API instead of Claude's tool_use blocks.</li>
+<li>System prompt is passed directly (no <code>systemPrompt.preset</code>).</li>
+<li>No hooks system — bash sanitization is done inline.</li>
+</ul>
+<p>The MCP server (<code>ipc-mcp-stdio.ts</code>) is shared unchanged — it's pure file-based IPC.</p>
+<h3>Grok/xAI (OpenAI-Compatible, Trivial Delta)</h3>
+<p>Grok's API is OpenAI-compatible. The Grok runner is a thin wrapper:</p>
+<pre><code>import OpenAI from 'openai';
+
+const client = new OpenAI({
+  apiKey: secrets.XAI_API_KEY,
+  baseURL: 'https://api.x.ai/v1',
+});
+
+// Everything else identical to OpenAI runner</code></pre>
+<p>Could even be the same image with a <code>BASE_URL</code> environment variable, but separate images are cleaner (open-closed).</p>
+<h3>Shared MCP Server</h3>
+<p><code>ipc-mcp-stdio.ts</code> is already provider-agnostic. It:</p>
+<ul>
+<li>Reads context from environment variables (<code>CAMBOT_AGENT_CHAT_JID</code>, etc.)</li>
+<li>Writes JSON files to <code>/workspace/ipc/</code></li>
+<li>Has zero SDK imports</li>
+</ul>
+<p>Each provider runner spawns it identically. For providers without native MCP support (OpenAI, Grok), the runner converts MCP tool definitions to the provider's function-calling format and bridges calls back to the MCP server.</p>
+<hr>
+<h2>Use Case Walkthroughs</h2>
+<h3>1. Assign a GPT Agent to a Group</h3>
+<p><strong>Setup:</strong></p>
+<pre><code>Agent definition in DB:
+  id: "gpt-creative"
+  provider: "openai"
+  model: "gpt-4o"
+  personality: "You are a creative storytelling assistant. Be vivid and imaginative."
+  containerImage: "cambot-agent-openai:latest"
+  secretKeys: ["OPENAI_API_KEY"]
+
+Group "story-club" updated:
+  agentId: "gpt-creative"</code></pre>
+<p><strong>Message flow:</strong></p>
+<ol>
+<li>User sends <code>@Andy tell us a story about dragons</code> in the story-club group.</li>
+<li>Router matches trigger, enqueues message check.</li>
+<li>Orchestrator looks up <code>story-club.agentId</code> → <code>"gpt-creative"</code>.</li>
+<li>Fetches <code>AgentDefinition</code> → gets <code>containerImage: "cambot-agent-openai:latest"</code>, <code>secretKeys: ["OPENAI_API_KEY"]</code>.</li>
+<li><code>readSecrets(["OPENAI_API_KEY"])</code> reads only <code>OPENAI_API_KEY</code> from <code>.env</code>.</li>
+<li><code>buildContainerArgs()</code> uses <code>"cambot-agent-openai:latest"</code> image.</li>
+<li>Container starts, reads <code>ContainerInput</code> from stdin, calls OpenAI API.</li>
+<li>Response written to stdout with sentinel markers.</li>
+<li>Host parses <code>ContainerOutput</code>, routes to WhatsApp.</li>
+</ol>
+<p>Everything outside step 7 is identical to a Claude run.</p>
+<h3>2. Council: 3 Agents Deliberate on a Problem</h3>
+<p><strong>Setup:</strong> A new council-mode feature where the main agent delegates to multiple sub-agents:</p>
+<pre><code>Agent definitions:
+  - id: "claude-analyst", provider: claude, personality: "Analytical and precise"
+  - id: "gpt-creative", provider: openai, personality: "Creative and exploratory"
+  - id: "grok-researcher", provider: grok, personality: "Data-driven, cites sources"</code></pre>
+<p><strong>Flow:</strong></p>
+<ol>
+<li>User asks: <code>@Andy Should we invest in project X? Get multiple perspectives.</code></li>
+<li>The primary agent (Claude) receives the request via normal flow.</li>
+<li>Using the existing Agent Teams (<code>TeamCreate</code>/<code>SendMessage</code>) SDK feature, the primary agent spawns sub-queries — but these go through the host's container runner.</li>
+<li>Alternatively, the primary agent uses <code>send_message</code> MCP tool to post each sub-agent's analysis back to the group, and the host orchestrates parallel containers.</li>
+</ol>
+<p><strong>Implementation note:</strong> Council mode is a higher-level feature that builds on multi-provider. The foundation this design provides (per-agent container images + per-agent sessions) is sufficient. The council orchestration logic (how to merge perspectives, voting, etc.) is a separate concern.</p>
+<h3>3. Specialized Agents: Per-Task Routing</h3>
+<p><strong>Setup:</strong></p>
+<pre><code>Group "dev-team":
+  Default agentId: "claude-coder"
+
+Scheduled tasks:
+  - "Daily code review" → agentId: "claude-coder" (best at code)
+  - "Weekly newsletter draft" → agentId: "gpt-creative" (best at prose)
+  - "Morning news briefing" → agentId: "grok-researcher" (real-time web)</code></pre>
+<p><strong>Extension to scheduled tasks:</strong> The <code>scheduled_tasks</code> table gains an optional <code>agent_id</code> column. When the scheduler fires a task:</p>
+<ol>
+<li>If <code>task.agent_id</code> is set, use that agent definition.</li>
+<li>Otherwise, fall back to the group's default <code>agentId</code>.</li>
+<li>Session key is <code>(group_folder, agent_id)</code> — each agent maintains its own context.</li>
+</ol>
+<hr>
+<h2>Implementation Sequence</h2>
+<h3>Phase 1: Foundation (No New Providers Yet)</h3>
+<ol>
+<li>Add <code>AgentDefinition</code> type and <code>agent_definitions</code> DB table.</li>
+<li>Seed <code>claude-default</code> agent definition matching current behavior.</li>
+<li>Add <code>agentId</code> to <code>RegisteredGroup</code> (default: <code>'claude-default'</code>).</li>
+<li>Refactor <code>container-runner.ts</code>: parameterize <code>readSecrets()</code>, <code>buildContainerArgs()</code>, and <code>buildVolumeMounts()</code> to accept <code>AgentDefinition</code>.</li>
+<li>Remove global <code>CONTAINER_IMAGE</code> from config.</li>
+<li>All existing groups continue working identically — <code>claude-default</code> resolves to current image and keys.</li>
+</ol>
+<h3>Phase 2: Session Isolation</h3>
+<ol>
+<li>Migrate <code>sessions</code> table to composite key <code>(group_folder, agent_id)</code>.</li>
+<li>Update <code>getSession()</code>/<code>setSession()</code> to accept <code>agentId</code>.</li>
+<li>Existing sessions migrate with <code>agent_id = 'claude-default'</code>.</li>
+</ol>
+<h3>Phase 3: OpenAI Provider Container</h3>
+<ol>
+<li>Create <code>container/agent-runner-openai/</code> with OpenAI SDK agent runner.</li>
+<li>Implement the stdin/stdout contract with sentinel markers.</li>
+<li>Bridge MCP tools to OpenAI function-calling format.</li>
+<li>Build <code>cambot-agent-openai:latest</code> image.</li>
+<li>Add <code>gpt-default</code> agent definition.</li>
+</ol>
+<h3>Phase 4: Grok Provider Container</h3>
+<ol>
+<li>Fork OpenAI runner with xAI base URL.</li>
+<li>Build <code>cambot-agent-grok:latest</code> image.</li>
+<li>Add <code>grok-default</code> agent definition.</li>
+</ol>
+<h3>Phase 5: Agent Management</h3>
+<ol>
+<li>MCP tools for the main agent to manage agent definitions (CRUD).</li>
+<li>MCP tool to assign agents to groups.</li>
+<li>UI support in cambot-core-ui for viewing/editing agent assignments.</li>
+</ol>
+<h3>Phase 6: Council Mode</h3>
+<ol>
+<li>Design council orchestration protocol.</li>
+<li>Implement parallel agent invocation for a single prompt.</li>
+<li>Response merging/voting strategies.</li>
+</ol>
+<hr>
+<h2>What Doesn't Change</h2>
+<p>These components require zero modifications:</p>
+<table>
+<thead><tr><th>Component</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><strong>Group queue</strong> (<code>src/group-queue.ts</code>)</td><td>Manages <code>ChildProcess</code> lifecycle. Provider-blind.</td></tr>
+<tr><td><strong>IPC watcher</strong> (<code>src/ipc.ts</code>)</td><td>Reads JSON from filesystem. Provider-blind.</td></tr>
+<tr><td><strong>IPC MCP server</strong> (<code>container/agent-runner/src/ipc-mcp-stdio.ts</code>)</td><td>File-based IPC. No SDK imports. Shared across all providers.</td></tr>
+<tr><td><strong>Router</strong> (<code>src/router.ts</code>)</td><td>Formats and dispatches messages. Provider-blind.</td></tr>
+<tr><td><strong>Scheduler</strong> (<code>src/task-scheduler.ts</code>)</td><td>Fires tasks by schedule. Provider-blind.</td></tr>
+<tr><td><strong>Channels</strong> (WhatsApp, Telegram, Discord)</td><td>Deliver messages. Provider-blind.</td></tr>
+<tr><td><strong>Mount security</strong> (<code>src/mount-security.ts</code>)</td><td>Validates mount paths. Provider-blind.</td></tr>
+<tr><td><strong>Container runtime</strong> (<code>src/container-runtime.ts</code>)</td><td>Detects Docker/Podman/Apple Container. Provider-blind.</td></tr>
+<tr><td><strong>Logger, env, group-folder</strong></td><td>Infrastructure utilities.</td></tr>
+<tr><td><strong>cambot-core</strong> (memory, telemetry, security)</td><td>Operates on the host DB. No container awareness.</td></tr>
+<tr><td><strong>cambot-core-ui</strong></td><td>Reads from host DB. Would gain agent display later (Phase 5).</td></tr>
+</tbody>
+</table>
+<hr>
+<h2>Risks and Mitigations</h2>
+<table>
+<thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td>OpenAI/Grok lack Claude's tool-use depth (no <code>Read</code>, <code>Write</code>, <code>Edit</code> built-ins)</td><td>Provider runners implement tool bridging. Start with <code>Bash</code> + MCP tools only. Expand tool support incrementally.</td></tr>
+<tr><td>Session resume semantics differ across providers</td><td>Each provider manages its own session format. The host only stores an opaque session ID.</td></tr>
+<tr><td>Secret sprawl (many API keys in <code>.env</code>)</td><td><code>secretKeys</code> array ensures each container only receives what it needs. No over-sharing.</td></tr>
+<tr><td>Increased container image count</td><td>One-time build cost. Images share a base layer. CI builds all images in parallel.</td></tr>
+<tr><td>MCP tool bridging complexity for non-Claude providers</td><td>Start with the 6 MCP tools (send_message, schedule_task, list_tasks, pause_task, resume_task, cancel_task). These are simple request/response — easy to bridge.</td></tr>
+</tbody>
+</table>
+<hr>
+<h2>Open Questions</h2>
+<ol>
+<li><strong>Agent definition storage</strong> — DB table (as proposed) vs. config file (<code>agents.json</code>)? DB is more flexible for runtime management; config file is simpler for initial setup.</li>
+<li><strong>Personality injection</strong> — Append to system prompt, or use provider-specific mechanisms (Claude's <code>systemPrompt.append</code> vs. OpenAI's system message)?</li>
+<li><strong>Tool parity</strong> — Should non-Claude agents get the full tool suite (<code>Read</code>, <code>Write</code>, <code>Edit</code>, <code>Glob</code>, <code>Grep</code>), or start with <code>Bash</code> + MCP only? Full parity requires reimplementing each tool in the provider's function-calling format.</li>
+<li><strong>Council orchestration</strong> — Host-driven (spawn N containers in parallel) vs. agent-driven (primary agent delegates via Agent Teams)? Host-driven is simpler but less flexible.</li>
+</ol>
+</article>
+</body>
+</html>

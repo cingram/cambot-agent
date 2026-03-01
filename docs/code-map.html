@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CamBot-Agent — Architecture Code Map</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117; --bg2: #181a24; --bg3: #22253a; --bg4: #2a2e42;
+    --fg: #e2e8f0; --fg2: #94a3b8; --fg3: #64748b;
+    --accent: #3b82f6; --accent2: #818cf8;
+    --green: #10b981; --red: #ef4444; --orange: #f97316; --pink: #ec4899;
+    --yellow: #eab308; --cyan: #06b6d4; --purple: #a855f7;
+    --sidebar-w: 290px; --prompt-h: 180px;
+    --radius: 6px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--fg); height: 100vh; overflow: hidden;
+    display: grid;
+    grid-template-columns: var(--sidebar-w) 1fr;
+    grid-template-rows: 1fr var(--prompt-h);
+  }
+
+  /* ─── Sidebar ─── */
+  .sidebar {
+    grid-row: 1 / 3; background: var(--bg2); border-right: 1px solid var(--bg3);
+    overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .sidebar::-webkit-scrollbar { width: 5px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 3px; }
+
+  h1 { font-size: 15px; font-weight: 700; letter-spacing: .3px; color: var(--fg); }
+  h1 span { color: var(--fg3); font-weight: 400; font-size: 12px; display: block; margin-top: 2px; }
+
+  .section-title {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.2px;
+    color: var(--fg3); margin-bottom: 6px;
+  }
+
+  /* Presets */
+  .presets { display: flex; flex-wrap: wrap; gap: 5px; }
+  .preset-btn {
+    font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--bg4);
+    background: var(--bg3); color: var(--fg2); cursor: pointer; transition: all .15s;
+  }
+  .preset-btn:hover { border-color: var(--accent); color: var(--fg); }
+  .preset-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* Toggles */
+  .toggle-group { display: flex; flex-direction: column; gap: 4px; }
+  .toggle-row {
+    display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 4px;
+    cursor: pointer; font-size: 12px; color: var(--fg2); transition: background .12s;
+  }
+  .toggle-row:hover { background: var(--bg3); }
+  .toggle-row input { display: none; }
+  .toggle-swatch {
+    width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
+  }
+  .toggle-check {
+    width: 14px; height: 14px; border: 1.5px solid var(--fg3); border-radius: 3px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all .12s;
+  }
+  .toggle-row input:checked ~ .toggle-check { background: var(--accent); border-color: var(--accent); }
+  .toggle-row input:checked ~ .toggle-check::after {
+    content: '✓'; font-size: 9px; color: #fff; line-height: 1;
+  }
+  .toggle-label { flex: 1; }
+
+  /* Connection legend swatches */
+  .conn-swatch { width: 18px; height: 2px; flex-shrink: 0; border-radius: 1px; }
+  .conn-swatch.dashed { background: repeating-linear-gradient(90deg, var(--c) 0 6px, transparent 6px 10px); height: 2px; }
+
+  /* Comments */
+  .comments-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow-y: auto; }
+  .comment-card {
+    background: var(--bg3); border-radius: 5px; padding: 8px; font-size: 11px; position: relative;
+  }
+  .comment-card strong { color: var(--accent2); font-size: 11px; }
+  .comment-card .file { color: var(--fg3); font-size: 10px; font-family: monospace; }
+  .comment-card p { color: var(--fg2); margin-top: 4px; line-height: 1.4; }
+  .comment-del {
+    position: absolute; top: 6px; right: 6px; background: none; border: none;
+    color: var(--fg3); cursor: pointer; font-size: 12px; line-height: 1;
+  }
+  .comment-del:hover { color: var(--red); }
+  .no-comments { font-size: 11px; color: var(--fg3); font-style: italic; }
+
+  /* ─── Canvas ─── */
+  .canvas-wrap { position: relative; overflow: hidden; background: var(--bg); }
+  svg { width: 100%; height: 100%; }
+
+  .zoom-controls {
+    position: absolute; top: 12px; right: 12px; display: flex; gap: 4px; z-index: 5;
+  }
+  .zoom-btn {
+    width: 28px; height: 28px; border-radius: 5px; border: 1px solid var(--bg4);
+    background: var(--bg2); color: var(--fg2); cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .zoom-btn:hover { border-color: var(--accent); color: var(--fg); }
+
+  .info-badge {
+    position: absolute; bottom: 12px; left: 12px; font-size: 10px; color: var(--fg3);
+    background: var(--bg2); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--bg3);
+  }
+
+  /* ─── Prompt ─── */
+  .prompt-area {
+    grid-column: 2; background: var(--bg2); border-top: 1px solid var(--bg3);
+    padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; overflow: hidden;
+  }
+  .prompt-header { display: flex; justify-content: space-between; align-items: center; }
+  .prompt-header span { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--fg3); font-weight: 600; }
+  .copy-btn {
+    font-size: 11px; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--bg4);
+    background: var(--bg3); color: var(--fg2); cursor: pointer; transition: all .15s;
+  }
+  .copy-btn:hover { border-color: var(--accent); color: var(--fg); }
+  .copy-btn.copied { background: var(--green); border-color: var(--green); color: #fff; }
+  .prompt-text {
+    flex: 1; overflow-y: auto; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 11.5px; line-height: 1.55; color: var(--fg2); white-space: pre-wrap;
+  }
+  .prompt-text::-webkit-scrollbar { width: 4px; }
+  .prompt-text::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 2px; }
+
+  /* ─── Modal ─── */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 100;
+    display: none; align-items: center; justify-content: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--bg2); border: 1px solid var(--bg4); border-radius: 10px;
+    padding: 20px; width: 400px; max-width: 90vw;
+  }
+  .modal h3 { font-size: 14px; margin-bottom: 2px; }
+  .modal .file { font-family: monospace; font-size: 11px; color: var(--fg3); margin-bottom: 12px; }
+  .modal textarea {
+    width: 100%; height: 80px; background: var(--bg); border: 1px solid var(--bg3);
+    border-radius: 5px; color: var(--fg); font-size: 12px; padding: 8px; resize: vertical;
+    font-family: inherit;
+  }
+  .modal textarea:focus { outline: none; border-color: var(--accent); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  .modal-actions button {
+    padding: 6px 16px; border-radius: 5px; border: 1px solid var(--bg4);
+    background: var(--bg3); color: var(--fg2); cursor: pointer; font-size: 12px;
+  }
+  .modal-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ─── Tooltip ─── */
+  .tooltip {
+    position: fixed; background: var(--bg2); border: 1px solid var(--bg4); border-radius: 6px;
+    padding: 10px 14px; font-size: 11px; color: var(--fg2); max-width: 300px;
+    pointer-events: none; z-index: 50; display: none; line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  }
+  .tooltip strong { color: var(--fg); display: block; margin-bottom: 2px; font-size: 12px; }
+  .tooltip .tt-file { font-family: monospace; color: var(--accent2); font-size: 10px; }
+  .tooltip .tt-role { margin-top: 4px; }
+  .tooltip .tt-hint { margin-top: 6px; color: var(--fg3); font-size: 10px; }
+</style>
+</head>
+<body>
+
+<!-- ─── SIDEBAR ─── -->
+<div class="sidebar">
+  <h1>CamBot-Agent<span>Architecture Code Map</span></h1>
+
+  <div>
+    <div class="section-title">View Presets</div>
+    <div class="presets" id="presets"></div>
+  </div>
+
+  <div>
+    <div class="section-title">Layers</div>
+    <div class="toggle-group" id="layers"></div>
+  </div>
+
+  <div>
+    <div class="section-title">Connections</div>
+    <div class="toggle-group" id="connections"></div>
+  </div>
+
+  <div>
+    <div class="section-title">Comments <span id="comment-count"></span></div>
+    <div class="comments-list" id="comments"></div>
+  </div>
+</div>
+
+<!-- ─── CANVAS ─── -->
+<div class="canvas-wrap" id="canvasWrap">
+  <svg id="canvas" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="zoom-controls">
+    <button class="zoom-btn" onclick="zoom(1.2)">+</button>
+    <button class="zoom-btn" onclick="zoom(1/1.2)">−</button>
+    <button class="zoom-btn" onclick="resetZoom()" style="font-size:11px">⊙</button>
+  </div>
+  <div class="info-badge" id="infoBadge">Hover a node for details · Click to comment</div>
+</div>
+
+<!-- ─── PROMPT ─── -->
+<div class="prompt-area">
+  <div class="prompt-header">
+    <span>Generated Prompt</span>
+    <button class="copy-btn" id="copyBtn" onclick="copyPrompt()">Copy</button>
+  </div>
+  <div class="prompt-text" id="promptText"></div>
+</div>
+
+<!-- ─── MODAL ─── -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3 id="modalTitle"></h3>
+    <div class="file" id="modalFile"></div>
+    <textarea id="modalInput" placeholder="Add your feedback about this component…"></textarea>
+    <div class="modal-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="saveComment()">Add Comment</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── TOOLTIP ─── -->
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+// ═══════════════════════════════════════════════════
+//  DATA — Nodes, connections, layers
+// ═══════════════════════════════════════════════════
+
+const LAYERS = [
+  { id: 'channel',   label: 'Channels',         color: '#3b82f6' },
+  { id: 'orchestrator', label: 'Orchestrator',   color: '#a855f7' },
+  { id: 'queue',     label: 'Queue & Scheduling', color: '#eab308' },
+  { id: 'container', label: 'Container Runtime', color: '#10b981' },
+  { id: 'agent',     label: 'Agent (in-container)', color: '#06b6d4' },
+  { id: 'data',      label: 'Data & Config',     color: '#ec4899' },
+  { id: 'skills',    label: 'Skills Engine',     color: '#f97316' },
+  { id: 'security',  label: 'Security',          color: '#ef4444' },
+];
+
+const CONN_TYPES = [
+  { id: 'data-flow',  label: 'Data Flow',      color: '#3b82f6', dash: '' },
+  { id: 'ipc',        label: 'IPC (filesystem)', color: '#10b981', dash: '6,3' },
+  { id: 'event',      label: 'Events / Async',  color: '#ef4444', dash: '4,4' },
+  { id: 'import',     label: 'Import / Uses',   color: '#6b7280', dash: '2,2' },
+  { id: 'mcp',        label: 'MCP Tools',       color: '#f97316', dash: '8,4' },
+];
+
+const NODES = [
+  // ── Channels (y ~40-50) ──
+  { id: 'whatsapp', label: 'WhatsApp Channel', subtitle: 'src/channels/whatsapp.ts',
+    x: 80, y: 40, w: 155, h: 48, layer: 'channel',
+    role: 'Connects to WhatsApp via Baileys. Handles auth, message receive/send, presence updates, and group metadata sync. Queues outgoing messages while disconnected.' },
+  { id: 'cli', label: 'CLI Channel', subtitle: 'src/channels/cli.ts',
+    x: 270, y: 40, w: 120, h: 48, layer: 'channel',
+    role: 'Reads from stdin via readline. Auto-registers cli:console as main group. Used for development and testing.' },
+  { id: 'registry', label: 'Channel Registry', subtitle: 'src/channels/registry.ts',
+    x: 430, y: 40, w: 150, h: 48, layer: 'channel',
+    role: 'Loads channels from CHANNELS env var or auto-detects WhatsApp from stored credentials. Returns Channel[] array.' },
+
+  // ── Orchestrator (y ~140-160) ──
+  { id: 'index', label: 'Orchestrator', subtitle: 'src/index.ts',
+    x: 80, y: 150, w: 155, h: 48, layer: 'orchestrator',
+    role: 'Central process. Runs the 2s message polling loop, manages sessions, formats prompts, invokes agents, handles streaming output, and routes responses back through channels.' },
+  { id: 'router', label: 'Router', subtitle: 'src/router.ts',
+    x: 270, y: 150, w: 120, h: 48, layer: 'orchestrator',
+    role: 'Formats messages as XML, strips <internal> tags from output, finds the right channel for a JID. Pure functions, no state.' },
+  { id: 'lifecycle', label: 'Lifecycle Interceptor', subtitle: 'src/lifecycle-interceptor.ts',
+    x: 430, y: 150, w: 170, h: 48, layer: 'orchestrator',
+    role: 'Bridges cambot-core memory system. Handles PII redaction/restoration, fact ingestion, boot context injection. All methods error-isolated.' },
+  { id: 'types', label: 'Types', subtitle: 'src/types.ts',
+    x: 640, y: 150, w: 100, h: 48, layer: 'orchestrator',
+    role: 'All shared interfaces: Channel, NewMessage, RegisteredGroup, WorkerDefinition, ScheduledTask, ContainerConfig, etc.' },
+
+  // ── Queue & Scheduling (y ~260) ──
+  { id: 'group-queue', label: 'Group Queue', subtitle: 'src/group-queue.ts',
+    x: 80, y: 270, w: 140, h: 48, layer: 'queue',
+    role: 'Concurrency gate. Enforces MAX_CONCURRENT_CONTAINERS. Per-group state tracking (active, idle, pending). Tasks take priority over messages. Retry with exponential backoff.' },
+  { id: 'scheduler', label: 'Task Scheduler', subtitle: 'src/task-scheduler.ts',
+    x: 260, y: 270, w: 150, h: 48, layer: 'queue',
+    role: 'Polls for due tasks every 60s. Supports cron, interval, and once schedules. Enqueues tasks through GroupQueue, streams results to channels.' },
+  { id: 'ipc-watcher', label: 'IPC Watcher', subtitle: 'src/ipc.ts',
+    x: 450, y: 270, w: 140, h: 48, layer: 'queue',
+    role: 'Polls data/ipc/ every 1s. Processes outbound messages and task management commands from containers. Enforces per-group authorization.' },
+  { id: 'ingestion', label: 'Ingestion Queue', subtitle: 'src/ingestion-queue.ts',
+    x: 640, y: 270, w: 145, h: 48, layer: 'queue',
+    role: 'Bounded async FIFO (max 100, concurrency 2) for background Gemini API calls. Fact extraction and embeddings. Oldest dropped on overflow.' },
+
+  // ── Container Runtime (y ~380) ──
+  { id: 'container-runner', label: 'Container Runner', subtitle: 'src/container-runner.ts',
+    x: 80, y: 385, w: 160, h: 48, layer: 'container',
+    role: 'Builds volume mounts, spawns docker run -i, writes ContainerInput to stdin, parses streaming output markers from stdout. Supports runContainerAgent() and runWorkerAgent().' },
+  { id: 'container-runtime', label: 'Runtime Abstraction', subtitle: 'src/container-runtime.ts',
+    x: 280, y: 385, w: 165, h: 48, layer: 'container',
+    role: 'Hardcoded to docker CLI. Provides readonlyMountArgs(), stopContainer(), ensureContainerRuntimeRunning(), cleanupOrphans(). Swap file for Podman/Apple Container.' },
+  { id: 'agents-config', label: 'Agents Config', subtitle: 'src/agents.ts',
+    x: 480, y: 385, w: 140, h: 48, layer: 'container',
+    role: 'Parses agents.yaml with Zod validation. Maps agent IDs to container images and secret keys. Seeds provider_images and agent_definitions DB tables.' },
+  { id: 'dockerfile', label: 'Dockerfile', subtitle: 'container/Dockerfile',
+    x: 660, y: 385, w: 120, h: 48, layer: 'container',
+    role: 'node:22-slim base. Installs Chromium, fonts, a/v libs, claude-code CLI. Entrypoint recompiles agent-runner TypeScript on every start.' },
+
+  // ── Agent In-Container (y ~500) ──
+  { id: 'agent-runner', label: 'Agent Runner', subtitle: 'container/agent-runner/src/index.ts',
+    x: 80, y: 500, w: 170, h: 48, layer: 'agent',
+    role: 'Container entrypoint. Reads ContainerInput from stdin, runs Claude Agent SDK query loop. Polls IPC for follow-up messages via MessageStream. Archives transcripts before compaction.' },
+  { id: 'mcp-server', label: 'MCP Server', subtitle: 'container/agent-runner/src/ipc-mcp-stdio.ts',
+    x: 290, y: 500, w: 150, h: 48, layer: 'agent',
+    role: 'Exposes MCP tools to the agent: send_message, schedule_task, list/pause/resume/cancel tasks, register_group, delegate_to_worker. All IPC writes are atomic.' },
+  { id: 'msg-stream', label: 'MessageStream', subtitle: 'container/agent-runner/src/index.ts',
+    x: 490, y: 500, w: 145, h: 48, layer: 'agent',
+    role: 'Push-based async iterable. Keeps SDK session alive for follow-up messages during idle. Prevents isSingleUserTurn mode for agent teams support.' },
+  { id: 'claude-sdk', label: 'Claude Agent SDK', subtitle: '@anthropic-ai/claude-agent-sdk',
+    x: 680, y: 500, w: 155, h: 48, layer: 'agent',
+    role: 'External SDK. Provides query(), tool execution, session management, compaction hooks, and agent teams. Called by agent-runner inside the container.' },
+
+  // ── Data & Config (y ~620) ──
+  { id: 'db', label: 'Database', subtitle: 'src/db.ts',
+    x: 80, y: 615, w: 120, h: 48, layer: 'data',
+    role: 'SQLite via better-sqlite3. 9 tables: chats, messages, scheduled_tasks, task_run_logs, router_state, sessions, registered_groups, provider_images, agent_definitions. 30+ CRUD functions.' },
+  { id: 'config', label: 'Config', subtitle: 'src/config.ts',
+    x: 230, y: 615, w: 110, h: 48, layer: 'data',
+    role: 'All constants: TRIGGER_PATTERN, timeouts, intervals, paths, MAX_CONCURRENT_CONTAINERS. Reads .env via env.ts without polluting process.env.' },
+  { id: 'env', label: 'Env Reader', subtitle: 'src/env.ts',
+    x: 370, y: 615, w: 120, h: 48, layer: 'data',
+    role: 'Parses .env file without touching process.env. Prevents secrets from leaking into child processes.' },
+  { id: 'group-folder', label: 'Group Folder', subtitle: 'src/group-folder.ts',
+    x: 520, y: 615, w: 135, h: 48, layer: 'data',
+    role: 'Security-focused path utilities. Validates folder names (no traversal, no reserved names). Resolves group and IPC paths safely.' },
+  { id: 'logger', label: 'Logger', subtitle: 'src/logger.ts',
+    x: 690, y: 615, w: 100, h: 48, layer: 'data',
+    role: 'Pino logger with pretty-printing. Installs global uncaughtException and unhandledRejection handlers.' },
+
+  // ── Skills Engine (y ~730) ──
+  { id: 'skills-apply', label: 'Skill Apply', subtitle: 'skills-engine/apply.ts',
+    x: 80, y: 725, w: 130, h: 48, layer: 'skills',
+    role: 'Installs a skill with 3-way merge. Base (clean core) vs current (working tree) vs skill (patch). Auto-resolves via git rerere.' },
+  { id: 'skills-update', label: 'Skill Update', subtitle: 'skills-engine/update.ts',
+    x: 240, y: 725, w: 140, h: 48, layer: 'skills',
+    role: 'Upgrades core files. applyUpdate() and previewUpdate() handle the base-refresh + replay-all-skills workflow.' },
+  { id: 'skills-merge', label: '3-Way Merge', subtitle: 'skills-engine/merge.ts',
+    x: 415, y: 725, w: 130, h: 48, layer: 'skills',
+    role: 'Wraps git merge-file for content merging. runRerere() for automatic conflict resolution using cached resolutions.' },
+  { id: 'skills-state', label: 'Skill State', subtitle: 'skills-engine/state.ts',
+    x: 580, y: 725, w: 125, h: 48, layer: 'skills',
+    role: 'Reads/writes .cambot-agent/state.yaml. Tracks applied skills, file hashes, custom modifications, and version info.' },
+
+  // ── Security (y ~835) ──
+  { id: 'mount-security', label: 'Mount Security', subtitle: 'src/mount-security.ts',
+    x: 80, y: 830, w: 150, h: 48, layer: 'security',
+    role: 'Validates additional mounts against an allowlist at ~/.config/cambot-agent/mount-allowlist.json. Blocks .ssh, .gnupg, .aws, .env, credentials. Resolves symlinks.' },
+  { id: 'ipc-auth', label: 'IPC Authorization', subtitle: 'src/ipc.ts (auth logic)',
+    x: 270, y: 830, w: 155, h: 48, layer: 'security',
+    role: 'Non-main groups can only send messages to their own JID and schedule tasks for themselves. Main group has elevated privileges for cross-group operations.' },
+  { id: 'secret-isolation', label: 'Secret Isolation', subtitle: 'container/agent-runner (hooks)',
+    x: 470, y: 830, w: 160, h: 48, layer: 'security',
+    role: 'Secrets passed via stdin JSON, never in process.env. PreToolUse[Bash] hook strips API keys from bash environments. env.ts reads .env without polluting global env.' },
+];
+
+const CONNECTIONS = [
+  // Channel → Orchestrator
+  { from: 'whatsapp', to: 'index', type: 'data-flow', label: 'messages' },
+  { from: 'cli', to: 'index', type: 'data-flow', label: 'messages' },
+  { from: 'registry', to: 'whatsapp', type: 'import', label: 'creates' },
+  { from: 'registry', to: 'cli', type: 'import', label: 'creates' },
+
+  // Orchestrator internals
+  { from: 'index', to: 'router', type: 'import', label: 'format msgs' },
+  { from: 'index', to: 'lifecycle', type: 'data-flow', label: 'PII redact/restore' },
+  { from: 'index', to: 'types', type: 'import' },
+  { from: 'router', to: 'types', type: 'import' },
+  { from: 'lifecycle', to: 'ingestion', type: 'event', label: 'queue facts' },
+
+  // Orchestrator → Queue/Scheduling
+  { from: 'index', to: 'group-queue', type: 'data-flow', label: 'enqueue' },
+  { from: 'index', to: 'scheduler', type: 'import', label: 'start loop' },
+  { from: 'index', to: 'ipc-watcher', type: 'import', label: 'start watcher' },
+  { from: 'scheduler', to: 'group-queue', type: 'data-flow', label: 'enqueue tasks' },
+
+  // Queue → Container
+  { from: 'group-queue', to: 'container-runner', type: 'data-flow', label: 'invoke' },
+  { from: 'container-runner', to: 'container-runtime', type: 'import', label: 'docker CLI' },
+  { from: 'container-runner', to: 'agents-config', type: 'import', label: 'resolve image' },
+  { from: 'container-runner', to: 'dockerfile', type: 'data-flow', label: 'docker run' },
+
+  // Container ↔ Agent
+  { from: 'dockerfile', to: 'agent-runner', type: 'data-flow', label: 'stdin JSON' },
+  { from: 'agent-runner', to: 'claude-sdk', type: 'import', label: 'query()' },
+  { from: 'agent-runner', to: 'mcp-server', type: 'import', label: 'MCP stdio' },
+  { from: 'agent-runner', to: 'msg-stream', type: 'import', label: 'push msgs' },
+
+  // IPC bidirectional
+  { from: 'mcp-server', to: 'ipc-watcher', type: 'ipc', label: 'file writes' },
+  { from: 'ipc-watcher', to: 'index', type: 'event', label: 'process cmds' },
+  { from: 'group-queue', to: 'agent-runner', type: 'ipc', label: 'follow-up msgs' },
+
+  // Agent output → Channel
+  { from: 'agent-runner', to: 'container-runner', type: 'data-flow', label: 'stdout markers' },
+  { from: 'index', to: 'whatsapp', type: 'data-flow', label: 'sendMessage' },
+
+  // Data dependencies
+  { from: 'index', to: 'db', type: 'import', label: 'CRUD' },
+  { from: 'index', to: 'config', type: 'import' },
+  { from: 'scheduler', to: 'db', type: 'import', label: 'getDueTasks' },
+  { from: 'ipc-watcher', to: 'db', type: 'import', label: 'task CRUD' },
+  { from: 'config', to: 'env', type: 'import', label: 'readEnvFile' },
+  { from: 'container-runner', to: 'group-folder', type: 'import', label: 'resolve paths' },
+  { from: 'container-runner', to: 'mount-security', type: 'import', label: 'validate mounts' },
+  { from: 'agents-config', to: 'db', type: 'import', label: 'seed tables' },
+
+  // Skills engine
+  { from: 'skills-apply', to: 'skills-merge', type: 'import', label: '3-way merge' },
+  { from: 'skills-apply', to: 'skills-state', type: 'import', label: 'track applied' },
+  { from: 'skills-update', to: 'skills-merge', type: 'import', label: 'merge updates' },
+  { from: 'skills-update', to: 'skills-state', type: 'import', label: 'update base' },
+
+  // MCP tools
+  { from: 'mcp-server', to: 'agent-runner', type: 'mcp', label: 'send_message' },
+  { from: 'mcp-server', to: 'agent-runner', type: 'mcp', label: 'schedule_task' },
+];
+
+// ═══════════════════════════════════════════════════
+//  PRESETS
+// ═══════════════════════════════════════════════════
+
+const PRESETS = {
+  'Full System': {
+    layers: LAYERS.map(l => l.id),
+    conns: CONN_TYPES.map(c => c.id),
+  },
+  'Message Flow': {
+    layers: ['channel', 'orchestrator', 'queue', 'container', 'agent'],
+    conns: ['data-flow', 'ipc'],
+  },
+  'IPC Deep Dive': {
+    layers: ['queue', 'container', 'agent', 'security'],
+    conns: ['ipc', 'mcp', 'data-flow'],
+  },
+  'Data Layer': {
+    layers: ['orchestrator', 'queue', 'data', 'container'],
+    conns: ['import', 'data-flow'],
+  },
+  'Security': {
+    layers: ['container', 'agent', 'security', 'data'],
+    conns: ['data-flow', 'import', 'ipc'],
+  },
+  'Skills Engine': {
+    layers: ['skills'],
+    conns: ['import'],
+  },
+};
+
+// ═══════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════
+
+const state = {
+  layers: Object.fromEntries(LAYERS.map(l => [l.id, true])),
+  conns: Object.fromEntries(CONN_TYPES.map(c => [c.id, true])),
+  comments: [],
+  preset: 'Full System',
+  zoom: 1,
+  panX: 0, panY: 0,
+  modalNodeId: null,
+};
+
+// ═══════════════════════════════════════════════════
+//  RENDER CONTROLS
+// ═══════════════════════════════════════════════════
+
+function renderPresets() {
+  const el = document.getElementById('presets');
+  el.innerHTML = Object.keys(PRESETS).map(name =>
+    `<button class="preset-btn ${state.preset === name ? 'active' : ''}" onclick="applyPreset('${name}')">${name}</button>`
+  ).join('');
+}
+
+function renderLayerToggles() {
+  const el = document.getElementById('layers');
+  el.innerHTML = LAYERS.map(l => `
+    <label class="toggle-row">
+      <input type="checkbox" ${state.layers[l.id] ? 'checked' : ''} onchange="toggleLayer('${l.id}', this.checked)">
+      <div class="toggle-check"></div>
+      <div class="toggle-swatch" style="background:${l.color}"></div>
+      <span class="toggle-label">${l.label}</span>
+    </label>
+  `).join('');
+}
+
+function renderConnToggles() {
+  const el = document.getElementById('connections');
+  el.innerHTML = CONN_TYPES.map(c => {
+    const style = c.dash
+      ? `background:repeating-linear-gradient(90deg,${c.color} 0 ${parseInt(c.dash)||4}px,transparent ${parseInt(c.dash)||4}px ${(parseInt(c.dash)||4)+3}px)`
+      : `background:${c.color}`;
+    return `
+    <label class="toggle-row">
+      <input type="checkbox" ${state.conns[c.id] ? 'checked' : ''} onchange="toggleConn('${c.id}', this.checked)">
+      <div class="toggle-check"></div>
+      <div class="conn-swatch" style="${style};height:2px;width:18px;border-radius:1px"></div>
+      <span class="toggle-label">${c.label}</span>
+    </label>
+  `}).join('');
+}
+
+function renderComments() {
+  const el = document.getElementById('comments');
+  const count = document.getElementById('comment-count');
+  count.textContent = state.comments.length ? `(${state.comments.length})` : '';
+  if (!state.comments.length) {
+    el.innerHTML = '<div class="no-comments">Click a node to add feedback</div>';
+    return;
+  }
+  el.innerHTML = state.comments.map((c, i) => `
+    <div class="comment-card">
+      <button class="comment-del" onclick="deleteComment(${i})">✕</button>
+      <strong>${c.targetLabel}</strong>
+      <div class="file">${c.targetFile}</div>
+      <p>${c.text}</p>
+    </div>
+  `).join('');
+}
+
+// ═══════════════════════════════════════════════════
+//  SVG RENDERING
+// ═══════════════════════════════════════════════════
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('canvas');
+
+function layerColor(layerId) {
+  return LAYERS.find(l => l.id === layerId)?.color || '#6b7280';
+}
+
+function layerFill(layerId) {
+  const c = layerColor(layerId);
+  // Convert hex to rgba with low opacity for dark theme
+  const r = parseInt(c.slice(1,3), 16);
+  const g = parseInt(c.slice(3,5), 16);
+  const b = parseInt(c.slice(5,7), 16);
+  return `rgba(${r},${g},${b},0.12)`;
+}
+
+function connTypeInfo(typeId) {
+  return CONN_TYPES.find(c => c.id === typeId) || CONN_TYPES[0];
+}
+
+function renderDiagram() {
+  svg.innerHTML = '';
+
+  // Defs — arrowheads
+  const defs = document.createElementNS(SVG_NS, 'defs');
+  CONN_TYPES.forEach(ct => {
+    const marker = document.createElementNS(SVG_NS, 'marker');
+    marker.setAttribute('id', `arrow-${ct.id}`);
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '6');
+    marker.setAttribute('refX', '7');
+    marker.setAttribute('refY', '3');
+    marker.setAttribute('orient', 'auto');
+    const poly = document.createElementNS(SVG_NS, 'polygon');
+    poly.setAttribute('points', '0 0, 8 3, 0 6');
+    poly.setAttribute('fill', ct.color);
+    marker.appendChild(poly);
+    defs.appendChild(marker);
+  });
+  svg.appendChild(defs);
+
+  // Main group for zoom/pan
+  const g = document.createElementNS(SVG_NS, 'g');
+  g.setAttribute('id', 'mainGroup');
+  g.setAttribute('transform', `translate(${state.panX},${state.panY}) scale(${state.zoom})`);
+
+  const visibleLayers = new Set(Object.entries(state.layers).filter(([,v]) => v).map(([k]) => k));
+  const visibleConns = new Set(Object.entries(state.conns).filter(([,v]) => v).map(([k]) => k));
+  const visibleNodeIds = new Set(NODES.filter(n => visibleLayers.has(n.layer)).map(n => n.id));
+
+  // Draw layer bands
+  const layerBands = {};
+  NODES.forEach(n => {
+    if (!layerBands[n.layer]) layerBands[n.layer] = { minY: Infinity, maxY: -Infinity };
+    layerBands[n.layer].minY = Math.min(layerBands[n.layer].minY, n.y);
+    layerBands[n.layer].maxY = Math.max(layerBands[n.layer].maxY, n.y + n.h);
+  });
+
+  Object.entries(layerBands).forEach(([layerId, band]) => {
+    if (!visibleLayers.has(layerId)) return;
+    const lc = layerColor(layerId);
+    const r = parseInt(lc.slice(1,3), 16);
+    const gg2 = parseInt(lc.slice(3,5), 16);
+    const b = parseInt(lc.slice(5,7), 16);
+
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', 20);
+    rect.setAttribute('y', band.minY - 18);
+    rect.setAttribute('width', 840);
+    rect.setAttribute('height', band.maxY - band.minY + 36);
+    rect.setAttribute('rx', 8);
+    rect.setAttribute('fill', `rgba(${r},${gg2},${b},0.04)`);
+    rect.setAttribute('stroke', `rgba(${r},${gg2},${b},0.1)`);
+    rect.setAttribute('stroke-width', '1');
+    g.appendChild(rect);
+
+    const label = document.createElementNS(SVG_NS, 'text');
+    label.setAttribute('x', 840);
+    label.setAttribute('y', band.minY - 4);
+    label.setAttribute('text-anchor', 'end');
+    label.setAttribute('font-size', '9');
+    label.setAttribute('fill', `rgba(${r},${gg2},${b},0.4)`);
+    label.setAttribute('font-family', '-apple-system, BlinkMacSystemFont, system-ui, sans-serif');
+    label.setAttribute('font-weight', '600');
+    label.setAttribute('letter-spacing', '0.8');
+    label.textContent = LAYERS.find(l => l.id === layerId)?.label.toUpperCase() || '';
+    g.appendChild(label);
+  });
+
+  // Draw connections
+  CONNECTIONS.forEach(conn => {
+    if (!visibleConns.has(conn.type)) return;
+    if (!visibleNodeIds.has(conn.from) || !visibleNodeIds.has(conn.to)) return;
+    const fromN = NODES.find(n => n.id === conn.from);
+    const toN = NODES.find(n => n.id === conn.to);
+    if (!fromN || !toN) return;
+
+    const ct = connTypeInfo(conn.type);
+    const x1 = fromN.x + fromN.w / 2;
+    const y1 = fromN.y + fromN.h / 2;
+    const x2 = toN.x + toN.w / 2;
+    const y2 = toN.y + toN.h / 2;
+
+    // Compute edge attachment points
+    const [sx, sy] = edgePoint(fromN, x2, y2);
+    const [ex, ey] = edgePoint(toN, x1, y1);
+
+    const dx = ex - sx;
+    const dy = ey - sy;
+    const cx1 = sx + dx * 0.3;
+    const cy1 = sy + dy * 0.1;
+    const cx2 = sx + dx * 0.7;
+    const cy2 = sy + dy * 0.9;
+
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', `M${sx},${sy} C${cx1},${cy1} ${cx2},${cy2} ${ex},${ey}`);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', ct.color);
+    path.setAttribute('stroke-width', '1.5');
+    path.setAttribute('stroke-opacity', '0.5');
+    path.setAttribute('marker-end', `url(#arrow-${ct.id})`);
+    if (ct.dash) path.setAttribute('stroke-dasharray', ct.dash);
+    g.appendChild(path);
+
+    // Connection label
+    if (conn.label) {
+      const mx = (sx + ex) / 2;
+      const my = (sy + ey) / 2;
+      const txt = document.createElementNS(SVG_NS, 'text');
+      txt.setAttribute('x', mx);
+      txt.setAttribute('y', my - 4);
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('font-size', '8');
+      txt.setAttribute('fill', ct.color);
+      txt.setAttribute('font-family', "'SF Mono','Cascadia Code','Fira Code',monospace");
+      txt.setAttribute('opacity', '0.65');
+      txt.textContent = conn.label;
+      g.appendChild(txt);
+    }
+  });
+
+  // Draw nodes
+  NODES.forEach(node => {
+    if (!visibleLayers.has(node.layer)) return;
+    const hasComment = state.comments.some(c => c.target === node.id);
+    const lc = layerColor(node.layer);
+
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('class', 'node');
+    group.setAttribute('data-id', node.id);
+    group.style.cursor = 'pointer';
+
+    // Shadow
+    const shadow = document.createElementNS(SVG_NS, 'rect');
+    shadow.setAttribute('x', node.x + 2);
+    shadow.setAttribute('y', node.y + 2);
+    shadow.setAttribute('width', node.w);
+    shadow.setAttribute('height', node.h);
+    shadow.setAttribute('rx', 6);
+    shadow.setAttribute('fill', 'rgba(0,0,0,0.3)');
+    group.appendChild(shadow);
+
+    // Body
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', node.x);
+    rect.setAttribute('y', node.y);
+    rect.setAttribute('width', node.w);
+    rect.setAttribute('height', node.h);
+    rect.setAttribute('rx', 6);
+    rect.setAttribute('fill', layerFill(node.layer));
+    rect.setAttribute('stroke', hasComment ? '#f59e0b' : lc);
+    rect.setAttribute('stroke-width', hasComment ? '2' : '1');
+    rect.setAttribute('stroke-opacity', hasComment ? '1' : '0.5');
+    group.appendChild(rect);
+
+    // Left accent bar
+    const bar = document.createElementNS(SVG_NS, 'rect');
+    bar.setAttribute('x', node.x);
+    bar.setAttribute('y', node.y);
+    bar.setAttribute('width', 4);
+    bar.setAttribute('height', node.h);
+    bar.setAttribute('rx', '2');
+    bar.setAttribute('fill', lc);
+    bar.setAttribute('opacity', '0.7');
+    group.appendChild(bar);
+
+    // Title
+    const title = document.createElementNS(SVG_NS, 'text');
+    title.setAttribute('x', node.x + 12);
+    title.setAttribute('y', node.y + 18);
+    title.setAttribute('font-size', '11');
+    title.setAttribute('font-weight', '600');
+    title.setAttribute('fill', '#e2e8f0');
+    title.setAttribute('font-family', '-apple-system, BlinkMacSystemFont, system-ui, sans-serif');
+    title.textContent = node.label;
+    group.appendChild(title);
+
+    // Subtitle (file path)
+    const sub = document.createElementNS(SVG_NS, 'text');
+    sub.setAttribute('x', node.x + 12);
+    sub.setAttribute('y', node.y + 33);
+    sub.setAttribute('font-size', '9');
+    sub.setAttribute('fill', '#64748b');
+    sub.setAttribute('font-family', "'SF Mono','Cascadia Code','Fira Code',monospace");
+    sub.textContent = node.subtitle;
+    group.appendChild(sub);
+
+    // Comment indicator
+    if (hasComment) {
+      const badge = document.createElementNS(SVG_NS, 'circle');
+      badge.setAttribute('cx', node.x + node.w - 8);
+      badge.setAttribute('cy', node.y + 8);
+      badge.setAttribute('r', 5);
+      badge.setAttribute('fill', '#f59e0b');
+      group.appendChild(badge);
+      const ct = document.createElementNS(SVG_NS, 'text');
+      ct.setAttribute('x', node.x + node.w - 8);
+      ct.setAttribute('y', node.y + 11);
+      ct.setAttribute('text-anchor', 'middle');
+      ct.setAttribute('font-size', '7');
+      ct.setAttribute('fill', '#000');
+      ct.setAttribute('font-weight', '700');
+      ct.textContent = state.comments.filter(c => c.target === node.id).length;
+      group.appendChild(ct);
+    }
+
+    // Events
+    group.addEventListener('click', () => openModal(node.id));
+    group.addEventListener('mouseenter', e => showTooltip(e, node));
+    group.addEventListener('mousemove', e => moveTooltip(e));
+    group.addEventListener('mouseleave', hideTooltip);
+
+    g.appendChild(group);
+  });
+
+  svg.appendChild(g);
+}
+
+function edgePoint(node, toX, toY) {
+  const cx = node.x + node.w / 2;
+  const cy = node.y + node.h / 2;
+  const dx = toX - cx;
+  const dy = toY - cy;
+  const hw = node.w / 2;
+  const hh = node.h / 2;
+
+  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) return [cx, cy];
+
+  const sx = hw / Math.abs(dx || 0.001);
+  const sy = hh / Math.abs(dy || 0.001);
+  const s = Math.min(sx, sy);
+
+  return [cx + dx * s, cy + dy * s];
+}
+
+// ═══════════════════════════════════════════════════
+//  TOOLTIP
+// ═══════════════════════════════════════════════════
+
+const tooltip = document.getElementById('tooltip');
+
+function showTooltip(e, node) {
+  const layer = LAYERS.find(l => l.id === node.layer);
+  tooltip.innerHTML = `
+    <strong>${node.label}</strong>
+    <div class="tt-file">${node.subtitle}</div>
+    <div class="tt-role">${node.role}</div>
+    <div class="tt-hint">Layer: ${layer?.label || node.layer} · Click to comment</div>
+  `;
+  tooltip.style.display = 'block';
+  moveTooltip(e);
+}
+
+function moveTooltip(e) {
+  const pad = 14;
+  let x = e.clientX + pad;
+  let y = e.clientY + pad;
+  if (x + 300 > window.innerWidth) x = e.clientX - 310;
+  if (y + 150 > window.innerHeight) y = e.clientY - 160;
+  tooltip.style.left = x + 'px';
+  tooltip.style.top = y + 'px';
+}
+
+function hideTooltip() { tooltip.style.display = 'none'; }
+
+// ═══════════════════════════════════════════════════
+//  ZOOM / PAN
+// ═══════════════════════════════════════════════════
+
+function zoom(factor) {
+  state.zoom = Math.max(0.3, Math.min(3, state.zoom * factor));
+  renderDiagram();
+}
+
+function resetZoom() {
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  renderDiagram();
+}
+
+// Pan with mouse drag
+let isPanning = false, panStartX, panStartY;
+const canvasWrap = document.getElementById('canvasWrap');
+
+canvasWrap.addEventListener('mousedown', e => {
+  if (e.target.closest('.node')) return;
+  isPanning = true;
+  panStartX = e.clientX - state.panX;
+  panStartY = e.clientY - state.panY;
+  canvasWrap.style.cursor = 'grabbing';
+});
+window.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  state.panX = e.clientX - panStartX;
+  state.panY = e.clientY - panStartY;
+  const mg = document.getElementById('mainGroup');
+  if (mg) mg.setAttribute('transform', `translate(${state.panX},${state.panY}) scale(${state.zoom})`);
+});
+window.addEventListener('mouseup', () => {
+  isPanning = false;
+  canvasWrap.style.cursor = '';
+});
+
+canvasWrap.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoom(e.deltaY < 0 ? 1.08 : 1 / 1.08);
+}, { passive: false });
+
+// ═══════════════════════════════════════════════════
+//  MODAL (comments)
+// ═══════════════════════════════════════════════════
+
+function openModal(nodeId) {
+  const node = NODES.find(n => n.id === nodeId);
+  if (!node) return;
+  state.modalNodeId = nodeId;
+  document.getElementById('modalTitle').textContent = node.label;
+  document.getElementById('modalFile').textContent = node.subtitle;
+  document.getElementById('modalInput').value = '';
+  document.getElementById('modalOverlay').classList.add('show');
+  setTimeout(() => document.getElementById('modalInput').focus(), 50);
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('show');
+  state.modalNodeId = null;
+}
+
+function saveComment() {
+  const text = document.getElementById('modalInput').value.trim();
+  if (!text) return;
+  const node = NODES.find(n => n.id === state.modalNodeId);
+  if (!node) return;
+  state.comments.push({
+    id: Date.now(),
+    target: node.id,
+    targetLabel: node.label,
+    targetFile: node.subtitle,
+    text,
+  });
+  closeModal();
+  updateAll();
+}
+
+function deleteComment(idx) {
+  state.comments.splice(idx, 1);
+  updateAll();
+}
+
+document.getElementById('modalOverlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Enter' && e.ctrlKey && document.getElementById('modalOverlay').classList.contains('show')) saveComment();
+});
+
+// ═══════════════════════════════════════════════════
+//  ACTIONS
+// ═══════════════════════════════════════════════════
+
+function applyPreset(name) {
+  const p = PRESETS[name];
+  if (!p) return;
+  state.preset = name;
+  LAYERS.forEach(l => state.layers[l.id] = p.layers.includes(l.id));
+  CONN_TYPES.forEach(c => state.conns[c.id] = p.conns.includes(c.id));
+  updateAll();
+}
+
+function toggleLayer(id, checked) {
+  state.layers[id] = checked;
+  state.preset = '';
+  updateAll();
+}
+
+function toggleConn(id, checked) {
+  state.conns[id] = checked;
+  state.preset = '';
+  updateAll();
+}
+
+// ═══════════════════════════════════════════════════
+//  PROMPT
+// ═══════════════════════════════════════════════════
+
+function updatePrompt() {
+  const parts = [];
+  const activeLayers = LAYERS.filter(l => state.layers[l.id]);
+  const allLayersOn = activeLayers.length === LAYERS.length;
+
+  if (allLayersOn) {
+    parts.push('This is the CamBot-Agent architecture — the full system view.');
+  } else if (activeLayers.length === 0) {
+    document.getElementById('promptText').textContent = '(No layers selected)';
+    return;
+  } else {
+    parts.push(`This is the CamBot-Agent architecture, focusing on: ${activeLayers.map(l => l.label).join(', ')}.`);
+  }
+
+  parts.push('');
+  parts.push('System summary: Single Node.js process connects WhatsApp (Baileys) to Claude Agent SDK running in Docker containers. Each group gets isolated filesystem, IPC, and session. Messages flow: Channel → Orchestrator (2s poll) → GroupQueue → Container Runner (docker run -i) → Agent Runner (Claude SDK query loop) → MCP tools write IPC files → host IPC watcher routes responses back through channels.');
+
+  if (state.comments.length > 0) {
+    parts.push('');
+    parts.push('Feedback on specific components:');
+    state.comments.forEach(c => {
+      parts.push('');
+      parts.push(`**${c.targetLabel}** (${c.targetFile}):`);
+      parts.push(c.text);
+    });
+  }
+
+  document.getElementById('promptText').textContent = parts.join('\n');
+}
+
+function copyPrompt() {
+  const text = document.getElementById('promptText').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+// ═══════════════════════════════════════════════════
+//  MAIN UPDATE
+// ═══════════════════════════════════════════════════
+
+function updateAll() {
+  renderPresets();
+  renderLayerToggles();
+  renderConnToggles();
+  renderComments();
+  renderDiagram();
+  updatePrompt();
+}
+
+// Boot
+updateAll();
+</script>
+</body>
+</html>

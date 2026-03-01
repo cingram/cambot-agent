@@ -151,6 +151,34 @@ function createSchema(database: Database.Database): void {
     );
   `);
 
+  // Integration state tracking
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS integrations (
+      id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'unconfigured',
+      last_error TEXT,
+      last_health_check TEXT,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  // User-defined MCP servers
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      transport TEXT NOT NULL,
+      url TEXT,
+      command TEXT,
+      args TEXT,
+      env_vars TEXT,
+      description TEXT,
+      port INTEGER,
+      created_at TEXT NOT NULL
+    );
+  `);
+
   // Workflow tables (cambot-workflows) — uses CREATE IF NOT EXISTS, safe to re-run
   createWorkflowSchema(database);
 }
@@ -780,6 +808,103 @@ export function setEmailState(key: string, value: string): void {
   db.prepare(
     `INSERT OR REPLACE INTO email_state (key, value, updated_at) VALUES (?, ?, ?)`,
   ).run(key, value, new Date().toISOString());
+}
+
+// --- Integration state accessors ---
+
+export interface IntegrationStateRow {
+  id: string;
+  enabled: number;
+  status: string;
+  last_error: string | null;
+  last_health_check: string | null;
+  updated_at: string;
+}
+
+export function getIntegrationState(id: string): IntegrationStateRow | undefined {
+  return db.prepare('SELECT * FROM integrations WHERE id = ?').get(id) as IntegrationStateRow | undefined;
+}
+
+export function upsertIntegrationState(
+  id: string,
+  updates: { enabled?: boolean; status?: string; lastError?: string | null },
+): void {
+  const now = new Date().toISOString();
+  const existing = getIntegrationState(id);
+  if (existing) {
+    const fields: string[] = ['updated_at = ?'];
+    const values: unknown[] = [now];
+    if (updates.enabled !== undefined) {
+      fields.push('enabled = ?');
+      values.push(updates.enabled ? 1 : 0);
+    }
+    if (updates.status !== undefined) {
+      fields.push('status = ?');
+      values.push(updates.status);
+    }
+    if (updates.lastError !== undefined) {
+      fields.push('last_error = ?');
+      values.push(updates.lastError);
+    }
+    values.push(id);
+    db.prepare(`UPDATE integrations SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  } else {
+    db.prepare(
+      `INSERT INTO integrations (id, enabled, status, last_error, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      updates.enabled === false ? 0 : 1,
+      updates.status ?? 'unconfigured',
+      updates.lastError ?? null,
+      now,
+    );
+  }
+}
+
+export function updateIntegrationHealthCheck(id: string): void {
+  const now = new Date().toISOString();
+  db.prepare('UPDATE integrations SET last_health_check = ?, updated_at = ? WHERE id = ?').run(now, now, id);
+}
+
+export function getAllIntegrationStates(): IntegrationStateRow[] {
+  return db.prepare('SELECT * FROM integrations').all() as IntegrationStateRow[];
+}
+
+// --- MCP server accessors ---
+
+export interface McpServerRow {
+  id: string;
+  name: string;
+  transport: string;
+  url: string | null;
+  command: string | null;
+  args: string | null;
+  env_vars: string | null;
+  description: string | null;
+  port: number | null;
+  created_at: string;
+}
+
+export function getMcpServer(id: string): McpServerRow | undefined {
+  return db.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(id) as McpServerRow | undefined;
+}
+
+export function getAllMcpServers(): McpServerRow[] {
+  return db.prepare('SELECT * FROM mcp_servers ORDER BY created_at').all() as McpServerRow[];
+}
+
+export function insertMcpServer(server: McpServerRow): void {
+  db.prepare(
+    `INSERT INTO mcp_servers (id, name, transport, url, command, args, env_vars, description, port, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    server.id, server.name, server.transport, server.url, server.command,
+    server.args, server.env_vars, server.description, server.port, server.created_at,
+  );
+}
+
+export function deleteMcpServer(id: string): void {
+  db.prepare('DELETE FROM mcp_servers WHERE id = ?').run(id);
 }
 
 // --- JSON migration ---

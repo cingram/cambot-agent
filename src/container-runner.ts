@@ -13,8 +13,10 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  MEMORY_MODE,
   TIMEZONE,
 } from './config.js';
+import type { MemoryMode } from './config.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -34,8 +36,10 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
-  /** URL for the host-side Google Workspace MCP server (streamable-http) */
-  workspaceMcpUrl?: string;
+  /** Active MCP servers to expose to the container agent */
+  mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;
+  /** Which memory system the agent should use */
+  memoryMode?: MemoryMode;
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';
@@ -299,6 +303,7 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets();
+    input.memoryMode = MEMORY_MODE;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets from input so they don't appear in logs

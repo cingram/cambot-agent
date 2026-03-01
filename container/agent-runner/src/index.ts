@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { getMemoryInstructions } from './memory-instructions.js';
 
 interface ContainerInput {
   prompt: string;
@@ -27,8 +28,10 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   secrets?: Record<string, string>;
-  /** URL for the host-side Google Workspace MCP server (streamable-http) */
-  workspaceMcpUrl?: string;
+  /** Active MCP servers to expose to the container agent */
+  mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;
+  /** Which memory system the agent should use */
+  memoryMode?: 'markdown' | 'database' | 'both';
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';
@@ -412,6 +415,12 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Inject memory-mode instructions into the system prompt
+  const memoryInstructions = getMemoryInstructions(containerInput.memoryMode ?? 'both');
+  if (memoryInstructions) {
+    globalClaudeMd = (globalClaudeMd ?? '') + '\n\n' + memoryInstructions;
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -447,7 +456,7 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__cambot-agent__*',
-        ...(containerInput.workspaceMcpUrl ? ['mcp__google-workspace__*'] : []),
+        ...(containerInput.mcpServers ?? []).map(s => `mcp__${s.name}__*`),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -463,12 +472,12 @@ async function runQuery(
             CAMBOT_AGENT_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
-        ...(containerInput.workspaceMcpUrl ? {
-          'google-workspace': {
-            type: 'http' as const,
-            url: containerInput.workspaceMcpUrl,
-          },
-        } : {}),
+        ...Object.fromEntries(
+          (containerInput.mcpServers ?? []).map(s => [
+            s.name,
+            { type: s.transport as 'http' | 'sse', url: s.url },
+          ]),
+        ),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook()] }],
