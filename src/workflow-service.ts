@@ -8,7 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 import type Database from 'better-sqlite3';
-import { createEventBus } from 'cambot-core';
+import { createEventBus, createBackupService, loadConfig } from 'cambot-core';
 import type { EventBus } from 'cambot-core';
 import { execSync } from 'child_process';
 import { statSync, readdirSync, unlinkSync, existsSync } from 'fs';
@@ -37,6 +37,18 @@ import {
   createMessageBacklogTool,
   createCostSummaryTool,
   createChainVerifyTool,
+  // Maintenance tools
+  createNightlyBackupTool,
+  createDecayUpdateTool,
+  createTelemetryPruneTool,
+  createFullBackupTool,
+  createQualityPurgeTool,
+  createOrphanCleanupTool,
+  createFtsCheckTool,
+  createSqliteOptimizeTool,
+  createHardDeleteTool,
+  createMessageArchiveTool,
+  createDedupRunTool,
 } from 'cambot-workflows';
 import type {
   WorkflowDefinition,
@@ -213,6 +225,40 @@ function registerHeartbeatTools(
 
   registry.set('heartbeat-chain-verify', createChainVerifyTool({
     getDb: () => deps.db,
+  }));
+}
+
+// ── Maintenance tool registration ─────────────────────────────────────
+
+function registerMaintenanceTools(
+  registry: Map<string, any>,
+  deps: WorkflowServiceDeps,
+): void {
+  const getDb = () => deps.db;
+  const config = loadConfig({});
+  const backupService = createBackupService(config, null);
+
+  // Nightly
+  registry.set('maintenance-nightly-backup', createNightlyBackupTool({ getDb, backupService }));
+  registry.set('maintenance-decay-update', createDecayUpdateTool({ getDb }));
+  registry.set('maintenance-telemetry-prune', createTelemetryPruneTool({ getDb }));
+
+  // Weekly
+  registry.set('maintenance-full-backup', createFullBackupTool({ getDb, backupService }));
+  registry.set('maintenance-quality-purge', createQualityPurgeTool({ getDb }));
+  registry.set('maintenance-orphan-cleanup', createOrphanCleanupTool({ getDb }));
+  registry.set('maintenance-fts-check', createFtsCheckTool({ getDb }));
+
+  // Monthly
+  registry.set('maintenance-sqlite-optimize', createSqliteOptimizeTool({ getDb }));
+  registry.set('maintenance-hard-delete', createHardDeleteTool({ getDb }));
+  registry.set('maintenance-message-archive', createMessageArchiveTool({
+    getDb,
+    archiveDir: path.join(DATA_DIR, 'archives'),
+  }));
+  registry.set('maintenance-dedup-run', createDedupRunTool({
+    getDb,
+    geminiApiKey: process.env.GEMINI_API_KEY ?? '',
   }));
 }
 
@@ -408,6 +454,7 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
   // Step handler registry
   const toolRegistry = createDefaultToolRegistry();
   registerHeartbeatTools(toolRegistry as Map<string, any>, deps);
+  registerMaintenanceTools(toolRegistry as Map<string, any>, deps);
   const handlers = new Map<string, StepHandler>();
   handlers.set('agent', createAgentHandler(runAgentPrompt));
   handlers.set('tool', createToolDispatcher(toolRegistry));

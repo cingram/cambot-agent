@@ -3,7 +3,7 @@ type MemoryMode = 'markdown' | 'database' | 'both';
 const DATABASE_INSTRUCTIONS = `
 ## Knowledge Database (Read-Only)
 
-You have access to a SQLite knowledge base at \`/workspace/project/store/cambot-core.sqlite\`.
+You have access to a SQLite knowledge base at \`/workspace/project/store/cambot.sqlite\`.
 Query it to recall stored knowledge before answering questions about people, events, or facts.
 
 ### Schema

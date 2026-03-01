@@ -85,7 +85,7 @@ This file lives outside the project root and is never mounted into containers, s
 
 ### 2. Group Container Config (per-group mount assignment)
 
-Stored in the `registered_groups` table in `store/messages.db` as the `container_config` JSON column.
+Stored in the `registered_groups` table in `store/cambot.sqlite` as the `container_config` JSON column.
 
 ```sql
 UPDATE registered_groups

@@ -35,7 +35,7 @@ export async function run(args: string[]): Promise<void> {
 }
 
 async function listGroups(limit: number): Promise<void> {
-  const dbPath = path.join(STORE_DIR, 'messages.db');
+  const dbPath = path.join(STORE_DIR, 'cambot.sqlite');
 
   if (!fs.existsSync(dbPath)) {
     console.error('ERROR: database not found');
@@ -93,7 +93,7 @@ import Database from 'better-sqlite3';
 
 const logger = pino({ level: 'silent' });
 const authDir = path.join('store', 'auth');
-const dbPath = path.join('store', 'messages.db');
+const dbPath = path.join('store', 'cambot.sqlite');
 
 if (!fs.existsSync(authDir)) {
   console.error('NO_AUTH');
@@ -167,7 +167,7 @@ sock.ev.on('connection.update', async (update) => {
 
   // Count groups in DB using better-sqlite3 (no sqlite3 CLI)
   let groupsInDb = 0;
-  const dbPath = path.join(STORE_DIR, 'messages.db');
+  const dbPath = path.join(STORE_DIR, 'cambot.sqlite');
   if (fs.existsSync(dbPath)) {
     try {
       const db = new Database(dbPath, { readonly: true });

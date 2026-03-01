@@ -20,7 +20,7 @@ import {
 import { STORE_DIR } from './config.js';
 import { logger } from './logger.js';
 
-const DB_PATH = path.join(STORE_DIR, 'cambot-core.sqlite');
+const DB_PATH = path.join(STORE_DIR, 'cambot.sqlite');
 
 /** Lazily opened read-only database handle. */
 let readonlyDb: Database.Database | null = null;
