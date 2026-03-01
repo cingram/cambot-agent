@@ -16,7 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput, PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -40,6 +40,34 @@ interface ContainerInput {
     maxIterations?: number;
     timeoutMs?: number;
   };
+  ipcToken?: string;
+}
+
+interface ContainerTelemetry {
+  totalCostUsd: number;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  usage: { inputTokens: number; outputTokens: number };
+  modelUsage: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>;
+  toolInvocations: Array<{
+    toolName: string;
+    durationMs?: number;
+    status: 'success' | 'error';
+    inputSummary?: string;
+    outputSummary?: string;
+    error?: string;
+  }>;
+}
+
+interface ToolInvocationEntry {
+  toolName: string;
+  startTime: number;
+  durationMs?: number;
+  status: 'success' | 'error';
+  inputSummary?: string;
+  outputSummary?: string;
+  error?: string;
 }
 
 interface ContainerOutput {
@@ -47,6 +75,7 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  telemetry?: ContainerTelemetry;
 }
 
 interface SessionEntry {
@@ -69,7 +98,27 @@ interface SDKUserMessage {
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
+const IPC_OWNER_FILE = '/workspace/ipc/_owner';
 const IPC_POLL_MS = 500;
+
+/** Token identifying this container instance. Set from ContainerInput. */
+let ipcToken: string | undefined;
+
+/**
+ * Check whether this container is still the designated owner of the IPC
+ * directory.  When a new container is spawned for the same group, the host
+ * overwrites the _owner file with the new container's token.  Orphaned
+ * containers detect the mismatch and exit gracefully.
+ */
+function isStillOwner(): boolean {
+  if (!ipcToken) return true; // No token → backwards-compat, skip check
+  try {
+    const owner = fs.readFileSync(IPC_OWNER_FILE, 'utf-8').trim();
+    return owner === ipcToken;
+  } catch {
+    return true; // File missing → assume still owner
+  }
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -93,6 +142,17 @@ class MessageStream {
   end(): void {
     this.done = true;
     this.waiting?.();
+  }
+
+  /** Return any messages pushed but never consumed by the SDK. */
+  drain(): string[] {
+    const texts: string[] = [];
+    for (const msg of this.queue) {
+      const text = typeof msg.message.content === 'string' ? msg.message.content : '';
+      if (text) texts.push(text);
+    }
+    this.queue.length = 0;
+    return texts;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> {
@@ -202,6 +262,70 @@ function createPreCompactHook(): HookCallback {
 // be visible to commands Kit runs.
 const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY'];
 
+function truncate(str: string | undefined, maxLen: number): string | undefined {
+  if (!str) return undefined;
+  return str.length > maxLen ? str.slice(0, maxLen) + '...' : str;
+}
+
+function createPostToolUseHook(invocations: ToolInvocationEntry[], startTimes: Map<string, number>): HookCallback {
+  return async (input, toolUseId, _context) => {
+    const postInput = input as PostToolUseHookInput;
+    const endTime = Date.now();
+    const startTime = toolUseId ? startTimes.get(toolUseId) : undefined;
+
+    invocations.push({
+      toolName: postInput.tool_name,
+      startTime: startTime ?? endTime,
+      durationMs: startTime ? endTime - startTime : undefined,
+      status: 'success',
+      inputSummary: truncate(
+        typeof postInput.tool_input === 'string'
+          ? postInput.tool_input
+          : JSON.stringify(postInput.tool_input),
+        200,
+      ),
+      outputSummary: truncate(
+        typeof postInput.tool_response === 'string'
+          ? postInput.tool_response
+          : JSON.stringify(postInput.tool_response),
+        500,
+      ),
+    });
+
+    return {};
+  };
+}
+
+function createPostToolUseFailureHook(invocations: ToolInvocationEntry[]): HookCallback {
+  return async (input, _toolUseId, _context) => {
+    const failInput = input as { hook_event_name: string; tool_name: string; tool_input: unknown; error: string };
+
+    invocations.push({
+      toolName: failInput.tool_name,
+      startTime: Date.now(),
+      status: 'error',
+      inputSummary: truncate(
+        typeof failInput.tool_input === 'string'
+          ? failInput.tool_input
+          : JSON.stringify(failInput.tool_input),
+        200,
+      ),
+      error: truncate(failInput.error, 500),
+    });
+
+    return {};
+  };
+}
+
+function createPreToolUseTimingHook(startTimes: Map<string, number>): HookCallback {
+  return async (_input, toolUseId, _context) => {
+    if (toolUseId) {
+      startTimes.set(toolUseId, Date.now());
+    }
+    return {};
+  };
+}
+
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
     const preInput = input as PreToolUseHookInput;
@@ -296,11 +420,15 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
 }
 
 /**
- * Check for _close sentinel.
+ * Check for _close sentinel or owner revocation.
  */
 function shouldClose(): boolean {
   if (fs.existsSync(IPC_INPUT_CLOSE_SENTINEL)) {
     try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+    return true;
+  }
+  if (!isStillOwner()) {
+    log('Owner token changed — this container has been superseded, exiting');
     return true;
   }
   return false;
@@ -322,10 +450,18 @@ function drainIpcInput(): string[] {
       const filePath = path.join(IPC_INPUT_DIR, file);
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        fs.unlinkSync(filePath);
+        // Capture the message BEFORE unlinking — on Windows Docker bind
+        // mounts, unlinkSync can throw ENOENT even after a successful read.
         if (data.type === 'message' && data.text) {
+          // If message has a containerTag, only process if it matches our token.
+          // Messages without a tag (initial prompt) are always accepted.
+          // Do NOT delete non-matching files — the correct container must consume them.
+          if (data.containerTag && ipcToken && data.containerTag !== ipcToken) {
+            continue;
+          }
           messages.push(data.text);
         }
+        try { fs.unlinkSync(filePath); } catch { /* ignore ENOENT on bind mounts */ }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
         try { fs.unlinkSync(filePath); } catch { /* ignore */ }
@@ -360,6 +496,21 @@ function waitForIpcMessage(): Promise<string | null> {
   });
 }
 
+function buildModelUsage(
+  raw: Record<string, Record<string, unknown>> | undefined,
+): Record<string, { inputTokens: number; outputTokens: number; costUSD: number }> {
+  if (!raw) return {};
+  const result: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }> = {};
+  for (const [model, usage] of Object.entries(raw)) {
+    result[model] = {
+      inputTokens: (usage.inputTokens as number) ?? 0,
+      outputTokens: (usage.outputTokens as number) ?? 0,
+      costUSD: (usage.costUSD as number) ?? 0,
+    };
+  }
+  return result;
+}
+
 /**
  * Run a single query and stream results via writeOutput.
  * Uses MessageStream (AsyncIterable) to keep isSingleUserTurn=false,
@@ -373,9 +524,13 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; unconsumedMessages: string[]; telemetry?: ContainerTelemetry }> {
   const stream = new MessageStream();
   stream.push(prompt);
+
+  // Telemetry: collect tool invocations during the query
+  const toolInvocations: ToolInvocationEntry[] = [];
+  const toolStartTimes = new Map<string, number>();
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
@@ -402,6 +557,8 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let lastResultText: string | null = null;
+  let queryTelemetry: ContainerTelemetry | undefined;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -463,7 +620,12 @@ async function runQuery(
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook()] }],
-        PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [createSanitizeBashHook()] },
+          { hooks: [createPreToolUseTimingHook(toolStartTimes)] },
+        ],
+        PostToolUse: [{ hooks: [createPostToolUseHook(toolInvocations, toolStartTimes)] }],
+        PostToolUseFailure: [{ hooks: [createPostToolUseFailureHook(toolInvocations)] }],
       },
     }
   })) {
@@ -486,9 +648,41 @@ async function runQuery(
     }
 
     if (message.type === 'result') {
-      resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
+      // Suppress duplicate results (same text emitted twice by SDK/agent-teams)
+      if (textResult && textResult === lastResultText) {
+        log(`Result: suppressed duplicate of result #${resultCount}`);
+        continue;
+      }
+      lastResultText = textResult || null;
+      resultCount++;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+
+      // Extract telemetry from SDK result message
+      const resultMsg = message as Record<string, unknown>;
+      if (typeof resultMsg.total_cost_usd === 'number') {
+        queryTelemetry = {
+          totalCostUsd: resultMsg.total_cost_usd as number,
+          durationMs: (resultMsg.duration_ms as number) ?? 0,
+          durationApiMs: (resultMsg.duration_api_ms as number) ?? 0,
+          numTurns: (resultMsg.num_turns as number) ?? 0,
+          usage: {
+            inputTokens: ((resultMsg.usage as Record<string, number>)?.input_tokens) ?? 0,
+            outputTokens: ((resultMsg.usage as Record<string, number>)?.output_tokens) ?? 0,
+          },
+          modelUsage: buildModelUsage(resultMsg.modelUsage as Record<string, Record<string, unknown>> | undefined),
+          toolInvocations: toolInvocations.map(t => ({
+            toolName: t.toolName,
+            durationMs: t.durationMs,
+            status: t.status,
+            inputSummary: t.inputSummary,
+            outputSummary: t.outputSummary,
+            error: t.error,
+          })),
+        };
+        log(`Telemetry: cost=$${queryTelemetry.totalCostUsd.toFixed(4)}, turns=${queryTelemetry.numTurns}, tools=${toolInvocations.length}`);
+      }
+
       writeOutput({
         status: 'success',
         result: textResult || null,
@@ -498,8 +692,16 @@ async function runQuery(
   }
 
   ipcPolling = false;
+
+  // Drain any messages that pollIpcDuringQuery consumed from disk but the SDK
+  // never read (race: IPC file arrived just as the query was ending).
+  const unconsumedMessages = stream.drain();
+  if (unconsumedMessages.length > 0) {
+    log(`Recovered ${unconsumedMessages.length} unconsumed message(s) from stream`);
+  }
+
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, unconsumedMessages, telemetry: queryTelemetry };
 }
 
 async function main(): Promise<void> {
@@ -541,6 +743,16 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
+  // Register IPC owner token for orphan detection
+  ipcToken = containerInput.ipcToken;
+  if (ipcToken) {
+    if (!isStillOwner()) {
+      log(`Owner mismatch at startup — this container is an orphan, exiting`);
+      process.exit(0);
+    }
+    log(`IPC owner token: ${ipcToken}`);
+  }
+
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
@@ -572,6 +784,11 @@ async function main(): Promise<void> {
         resumeAt = queryResult.lastAssistantUuid;
       }
 
+      // Emit telemetry for the completed query (separate from user-visible results)
+      if (queryResult.telemetry) {
+        writeOutput({ status: 'success', result: null, newSessionId: sessionId, telemetry: queryResult.telemetry });
+      }
+
       // If _close was consumed during the query, exit immediately.
       // Don't emit a session-update marker (it would reset the host's
       // idle timer and cause a 30-min delay before the next _close).
@@ -582,6 +799,25 @@ async function main(): Promise<void> {
 
       // Emit session update so host can track it
       writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+
+      // Check for messages consumed from IPC by pollIpcDuringQuery but never
+      // read by the SDK (race: file arrived as the query was ending).
+      // Also drain any IPC files that arrived after polling stopped.
+      const recovered = queryResult.unconsumedMessages;
+      const freshIpc = drainIpcInput();
+      const pendingMessages = [...recovered, ...freshIpc];
+
+      if (pendingMessages.length > 0) {
+        log(`Immediate follow-up: ${pendingMessages.length} pending message(s)`);
+        prompt = pendingMessages.join('\n');
+        continue;
+      }
+
+      // Check for close sentinel before blocking on waitForIpcMessage
+      if (shouldClose()) {
+        log('Close sentinel received after query, exiting');
+        break;
+      }
 
       log('Query ended, waiting for next IPC message...');
 

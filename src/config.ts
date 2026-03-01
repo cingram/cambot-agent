@@ -12,12 +12,17 @@ const envConfig = readEnvFile([
   'ADMIN_JID',
   'ADMIN_TRIGGER',
   'ADMIN_KEY',
+  'WEB_CHANNEL_PORT',
 ]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER || envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+export const WEB_CHANNEL_PORT = parseInt(
+  process.env.WEB_CHANNEL_PORT || envConfig.WEB_CHANNEL_PORT || '3100',
+  10,
+);
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -37,8 +42,7 @@ export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const MAIN_GROUP_FOLDER = 'main';
 
-export const CONTAINER_IMAGE =
-  process.env.CONTAINER_IMAGE || 'cambot-agent-agent:latest';
+export const AGENTS_CONFIG_PATH = path.resolve(PROJECT_ROOT, 'agents.yaml');
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,

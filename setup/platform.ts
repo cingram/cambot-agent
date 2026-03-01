@@ -98,10 +98,8 @@ export function getServiceManager(): ServiceManager {
 
 export function getNodePath(): string {
   try {
-    if (process.platform === 'win32') {
-      return execSync('where node', { encoding: 'utf-8' }).trim().split('\n')[0];
-    }
-    return execSync('command -v node', { encoding: 'utf-8' }).trim();
+    const cmd = process.platform === 'win32' ? 'where node' : 'command -v node';
+    return execSync(cmd, { encoding: 'utf-8' }).trim().split(/\r?\n/)[0];
   } catch {
     return process.execPath;
   }
@@ -109,11 +107,8 @@ export function getNodePath(): string {
 
 export function commandExists(name: string): boolean {
   try {
-    if (process.platform === 'win32') {
-      execSync(`where ${name}`, { stdio: 'ignore' });
-    } else {
-      execSync(`command -v ${name}`, { stdio: 'ignore' });
-    }
+    const cmd = process.platform === 'win32' ? `where ${name}` : `command -v ${name}`;
+    execSync(cmd, { stdio: 'ignore' });
     return true;
   } catch {
     return false;

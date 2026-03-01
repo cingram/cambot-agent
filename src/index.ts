@@ -7,29 +7,37 @@ import {
   ADMIN_TRIGGER,
   ASSISTANT_NAME,
   DATA_DIR,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
+  STORE_DIR,
   TRIGGER_PATTERN,
   WORKFLOW_CONTAINER_TIMEOUT,
 } from './config.js';
+import { getLeadAgentId, loadAgentsConfig, resolveAgentImage } from './agents.js';
 import { loadChannels } from './channels/registry.js';
 import {
   ContainerOutput,
   runContainerAgent,
   writeCustomAgentsSnapshot,
   writeGroupsSnapshot,
+  writeArchivedTasksSnapshot,
   writeTasksSnapshot,
   writeWorkflowsSnapshot,
+  writeWorkersSnapshot,
 } from './container-runner.js';
 import { cleanupOrphans, cleanupStaleContainers, ensureContainerRuntimeRunning, stopContainer } from './container-runtime.js';
 import {
+  getAllAgentDefinitions,
   getAllChats,
   getAllCustomAgents,
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
   getDatabase,
+  getAgentDefinition,
+  getArchivedTasks,
   getMessagesSince,
   getNewMessages,
   getRouterState,
@@ -53,6 +61,10 @@ import { logger } from './logger.js';
 import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
 import { createShadowAgent } from './shadow-agent.js';
 import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
+import { createCamBotCore, createStandaloneConfig } from 'cambot-core';
+import { createLifecycleInterceptor } from './lifecycle-interceptor.js';
+import type { LifecycleInterceptor } from './lifecycle-interceptor.js';
+import { readEnvFile } from './env.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -63,12 +75,28 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
+/**
+ * Remove orphaned IPC input files (messages + _close sentinel) so a retry
+ * container starts with a clean input directory.
+ */
+function cleanIpcInputDir(groupFolder: string): void {
+  const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+  try {
+    for (const f of fs.readdirSync(inputDir)) {
+      if (f.endsWith('.json') || f === '_close') {
+        try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore — dir may not exist */ }
+}
+
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 let messageBus: MessageBus | null = null;
 let workflowService: WorkflowService | null = null;
 let customAgentService: CustomAgentService | null = null;
 let shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
+let interceptor: LifecycleInterceptor | null = null;
 
 /** Persist a bot-generated message so /history includes both sides. */
 function storeBotMessage(chatJid: string, text: string): void {
@@ -190,7 +218,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
-  // Clean stale IPC input files before spawning
+  // Clean stale IPC input files from previous container runs before spawning.
+  // Prevents orphaned containers' leftover files from being misprocessed.
   cleanIpcInputDir(group.folder);
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
@@ -234,7 +263,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages);
+  const rawPrompt = formatMessages(missedMessages);
+
+  // Lifecycle interceptor: boot context + PII redaction
+  // Build the full prompt first (boot context + message text), then redact
+  // everything in one pass so entity names in boot context headings get caught.
+  const bootContext = interceptor ? interceptor.getBootContext() : '';
+  const fullRawPrompt = bootContext
+    ? `<system-context>\n${bootContext}\n</system-context>\n\n${rawPrompt}`
+    : rawPrompt;
+  const { redacted: prompt, mappings: piiMappings } = interceptor
+    ? interceptor.redactPrompt(fullRawPrompt)
+    : { redacted: fullRawPrompt, mappings: [] };
+  interceptor?.startSession(group.folder, chatJid);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -279,49 +320,61 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let lastSentTime = 0;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
+    // Record telemetry if present (separate from user-visible results)
+    if (result.telemetry && interceptor) {
+      interceptor.recordTelemetry(result.telemetry, chatJid);
+    }
+
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
       const text = formatOutbound(raw);
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        // Suppress duplicate outputs within a 10-second window
+        // Suppress duplicate outputs within a 10-second window (defense-in-depth
+        // against SDK/container emitting the same result multiple times)
         const now = Date.now();
         if (text === lastSentText && (now - lastSentTime) < 10_000) {
           logger.warn({ group: group.name }, 'Duplicate agent output suppressed');
         } else {
           lastSentText = text;
           lastSentTime = now;
+          const restoredText = interceptor
+            ? interceptor.restoreOutput(text, piiMappings)
+            : text;
 
           if (messageBus) {
             await messageBus.emitAsync({
               type: 'message.outbound',
               source: 'agent',
               timestamp: new Date().toISOString(),
-              data: { jid: chatJid, text, source: 'agent', groupFolder: group.folder },
+              data: { jid: chatJid, text: restoredText, source: 'agent', groupFolder: group.folder },
             });
           } else {
             // Fallback: direct channel delivery
             for (const ch of channels) {
               if (ch.ownsJid(chatJid) && ch.isConnected()) {
-                await ch.sendMessage(chatJid, text);
+                await ch.sendMessage(chatJid, restoredText);
               }
             }
-            storeBotMessage(chatJid, text);
+            storeBotMessage(chatJid, restoredText);
           }
+          interceptor?.ingestResponse(group.folder, chatJid, restoredText);
 
           outputSentToUser = true;
         }
       }
 
-      // Advance cursor to cover any messages piped via IPC
+      // Advance cursor to cover any messages piped via IPC that the
+      // container has now processed.  The message loop does NOT advance
+      // the cursor when piping — we do it here on confirmed output.
       const latest = getMessagesSince(chatJid, lastAgentTimestamp[chatJid] || '', ASSISTANT_NAME);
       if (latest.length > 0) {
         lastAgentTimestamp[chatJid] = latest[latest.length - 1].timestamp;
         saveState();
       }
 
-      // Only reset idle timer on actual results
+      // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
     }
 
@@ -348,11 +401,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   }
   if (idleTimer) clearTimeout(idleTimer);
+  interceptor?.endSession(group.folder, output !== 'error' && !hadError);
 
   if (output === 'error' || hadError) {
     cleanIpcInputDir(group.folder);
+    // If we already sent output to the user, check for remaining messages
+    // before giving up — IPC-piped messages may still need processing.
     if (outputSentToUser) {
-      // Check for remaining messages before giving up
       const remaining = getMessagesSince(chatJid, lastAgentTimestamp[chatJid] || '', ASSISTANT_NAME);
       if (remaining.length > 0) {
         logger.warn({ group: group.name, count: remaining.length }, 'Agent error after output; unprocessed messages remain, retrying');
@@ -368,7 +423,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
-  // Safety net: detect unprocessed IPC-piped messages
+  // Safety net: detect messages piped via IPC that the container never
+  // processed (e.g. container exited before reading the IPC file, SDK
+  // hang, Docker bind-mount visibility delay on Windows, etc.).
   const remaining = getMessagesSince(chatJid, lastAgentTimestamp[chatJid] || '', ASSISTANT_NAME);
   if (remaining.length > 0) {
     logger.warn(
@@ -404,6 +461,21 @@ async function runAgent(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+    })),
+  );
+
+  // Update archived tasks snapshot for container to read
+  const archived = getArchivedTasks();
+  writeArchivedTasksSnapshot(
+    group.folder,
+    isMain,
+    archived.map((t) => ({
+      id: t.id,
+      groupFolder: t.group_folder,
+      prompt: t.prompt,
+      schedule_type: t.schedule_type,
+      schedule_value: t.schedule_value,
+      status: t.status,
     })),
   );
 
@@ -454,6 +526,10 @@ async function runAgent(
     writeWorkflowsSnapshot(group.folder, isMain, workflows, runs);
   }
 
+  // Update available workers snapshot for delegation
+  const allWorkers = getAllAgentDefinitions();
+  writeWorkersSnapshot(group.folder, allWorkers);
+
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
@@ -466,6 +542,9 @@ async function runAgent(
     : undefined;
 
   try {
+    const leadId = getLeadAgentId();
+    const agentOpts = resolveAgentImage(leadId);
+
     const output = await runContainerAgent(
       group,
       {
@@ -477,6 +556,7 @@ async function runAgent(
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
+      agentOpts,
     );
 
     if (output.newSessionId) {
@@ -554,21 +634,28 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Pull all messages since lastAgentTimestamp so non-trigger
-          // context that accumulated between triggers is included.
+          // Pull messages since the latest piped timestamp (to avoid
+          // re-piping already-sent messages), falling back to lastAgentTimestamp
+          // for the first pipe of this container session.
+          const pipeSince = queue.getLastPipedTimestamp(chatJid)
+            || lastAgentTimestamp[chatJid] || '';
           const allPending = getMessagesSince(
             chatJid,
-            lastAgentTimestamp[chatJid] || '',
+            pipeSince,
             ASSISTANT_NAME,
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend);
+          const safeFormatted = interceptor
+            ? interceptor.redactPrompt(formatted).redacted
+            : formatted;
 
-          if (queue.sendMessage(chatJid, formatted)) {
-            logger.debug(
+          const latestTs = messagesToSend[messagesToSend.length - 1]?.timestamp;
+          if (queue.sendMessage(chatJid, safeFormatted, latestTs)) {
+            logger.info(
               { chatJid, count: messagesToSend.length },
-              'Piped messages to active container',
+              'Piped messages to active container via IPC',
             );
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
@@ -623,6 +710,21 @@ function recoverPendingMessages(): void {
       queue.enqueueMessageCheck(chatJid);
     }
   }
+
+  // Sync global "seen" cursor to prevent startMessageLoop from
+  // rediscovering messages that recovery already claimed.
+  const maxAgentTs = Object.values(lastAgentTimestamp).reduce(
+    (max, ts) => (ts > max ? ts : max),
+    lastTimestamp,
+  );
+  if (maxAgentTs > lastTimestamp) {
+    logger.info(
+      { old: lastTimestamp, new: maxAgentTs },
+      'Recovery: advancing lastTimestamp to match agent cursors',
+    );
+    lastTimestamp = maxAgentTs;
+    saveState();
+  }
 }
 
 function ensureContainerSystemRunning(): void {
@@ -631,10 +733,43 @@ function ensureContainerSystemRunning(): void {
 }
 
 async function main(): Promise<void> {
+  process.on('unhandledRejection', (reason) => {
+    console.error('[FATAL] Unhandled rejection:', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[FATAL] Uncaught exception:', err);
+  });
+  process.on('beforeExit', (code) => {
+    console.error('[DEBUG] beforeExit code:', code);
+  });
+  process.on('exit', (code) => {
+    console.error('[DEBUG] exit code:', code);
+  });
+  process.on('SIGTERM', () => console.error('[DEBUG] SIGTERM'));
+  process.on('SIGINT', () => console.error('[DEBUG] SIGINT'));
+
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  loadAgentsConfig();
+
+  // Initialize cambot-core lifecycle interceptor
+  try {
+    const coreEnv = readEnvFile(['GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'CAMBOT_DB_PATH']);
+    const coreConfig = createStandaloneConfig({
+      dbPath: coreEnv.CAMBOT_DB_PATH || process.env.CAMBOT_DB_PATH || path.join(STORE_DIR, 'cambot-core.sqlite'),
+      geminiApiKey: coreEnv.GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
+      anthropicApiKey: coreEnv.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || '',
+      piiRedactionTags: [],
+    });
+    const core = createCamBotCore(coreConfig);
+    interceptor = createLifecycleInterceptor(core, logger);
+    interceptor.startPeriodicTasks();
+    logger.info('Lifecycle interceptor initialized');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to initialize lifecycle interceptor, running without memory');
+  }
 
   // ── Initialize Workflow Service ──────────────────────────────────────────
   // Workflow agent steps spawn a container with the existing Agent SDK + OAuth
@@ -768,6 +903,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    if (interceptor) await interceptor.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -782,6 +918,7 @@ async function main(): Promise<void> {
     onMessage: (chatJid: string, msg: NewMessage) => {
       if (shadowInterceptor(chatJid, msg)) return; // consumed by shadow admin
       storeMessage(msg);
+      interceptor?.ingestMessage(msg);
     },
     onChatMetadata: (chatJid: string, timestamp: string, name?: string, channel?: string, isGroup?: boolean) =>
       storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
@@ -831,13 +968,18 @@ async function main(): Promise<void> {
       // Fallback when no messageBus
       const text = formatOutbound(rawText);
       if (!text) return;
-      const ch = channels.find(c => c.ownsJid(jid) && c.isConnected());
-      if (!ch) {
-        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
-        return;
-      }
-      await ch.sendMessage(jid, text);
+
+      // Broadcast task output to ALL connected channels so the user sees it
+      // regardless of which channel the task was created from.
+      const deliveries = channels
+        .filter(ch => ch.isConnected())
+        .map(ch => ch.sendMessage(jid, text).catch(() => {}));
+      await Promise.all(deliveries);
+
       storeBotMessage(jid, text);
+      // Ingest scheduled task output for fact extraction
+      const group = registeredGroups[jid];
+      if (group) interceptor?.ingestResponse(group.folder, jid, text);
     },
   });
   startWorkflowSchedulerLoop({ workflowService });
@@ -859,6 +1001,8 @@ async function main(): Promise<void> {
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
     workflowService: workflowService ?? undefined,
     customAgentService: customAgentService ?? undefined,
+    resolveAgentImage,
+    getAgentDefinition,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

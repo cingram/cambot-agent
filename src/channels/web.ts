@@ -1,14 +1,27 @@
 import http from 'http';
 
-import { ASSISTANT_NAME, MAIN_GROUP_FOLDER } from '../config.js';
-import { getChatHistory } from '../db.js';
+import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, WEB_CHANNEL_PORT } from '../config.js';
+import { getChatHistory, getConversationHistory } from '../db.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts, NewMessage } from '../types.js';
+import { createWebSocketManager, WebSocketManager } from './web-ws.js';
 
 const WEB_JID = 'web:ui';
 const RESPONSE_TIMEOUT_MS = 180_000; // 3 minutes
 const HEARTBEAT_INTERVAL_MS = 2_000;
 const DEFAULT_PORT = 3100;
+const MAX_BUFFERED_MESSAGES = 100;
+
+// ---------------------------------------------------------------------------
+// Buffered message — stored when no WS clients are connected
+// ---------------------------------------------------------------------------
+
+interface BufferedMessage {
+  jid: string;
+  text: string;
+  sender: string;
+  timestamp: string;
+}
 
 // ---------------------------------------------------------------------------
 // SSE chunk format (matches what cambot-core-ui expects)
@@ -41,10 +54,13 @@ export class WebChannel implements Channel {
   private opts: ChannelOpts;
   private port: number;
   private pending = new Map<string, PendingResponse>();
+  private wsManager: WebSocketManager;
+  private messageBuffer: BufferedMessage[] = [];
 
   constructor(opts: ChannelOpts, port?: number) {
     this.opts = opts;
     this.port = port ?? DEFAULT_PORT;
+    this.wsManager = createWebSocketManager();
   }
 
   async connect(): Promise<void> {
@@ -65,19 +81,83 @@ export class WebChannel implements Channel {
       });
     });
 
+    // Attach WebSocket upgrade handler to the HTTP server
+    this.wsManager.attach(this.server!);
+
+    // Flush buffered messages when a client connects
+    this.wsManager.onClientConnect(() => this.flushBuffer());
+
+    this.wsManager.onInboundMessage((msg) => {
+      const timestamp = new Date().toISOString();
+      this.opts.onChatMetadata(WEB_JID, timestamp, 'Web UI', 'web', false);
+      this.opts.onMessage(WEB_JID, {
+        id: `ws-${Date.now()}`,
+        chat_jid: WEB_JID,
+        sender: 'web:user',
+        sender_name: msg.sender_name || 'User',
+        content: msg.text.trim(),
+        timestamp,
+        is_from_me: false,
+        is_bot_message: false,
+      });
+    });
+
     this.connected = true;
     logger.info('Web channel connected');
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
-    const entry = this.pending.get(jid);
-    if (!entry) {
-      logger.warn({ jid }, 'No pending web request for JID');
-      return;
+    let delivered = false;
+
+    // Broadcast to WebSocket clients
+    if (this.wsManager.clientCount() > 0) {
+      this.wsManager.broadcast({ type: 'message', jid, text, sender: ASSISTANT_NAME });
+      delivered = true;
     }
-    entry.resolve(text);
-    clearTimeout(entry.timer);
-    this.pending.delete(jid);
+
+    // Resolve any pending SSE/HTTP request
+    const entry = this.pending.get(jid);
+    if (entry) {
+      entry.resolve(text);
+      clearTimeout(entry.timer);
+      this.pending.delete(jid);
+      delivered = true;
+    }
+
+    if (!delivered) {
+      // Buffer the message for delivery when a client next connects
+      this.messageBuffer.push({
+        jid,
+        text,
+        sender: ASSISTANT_NAME,
+        timestamp: new Date().toISOString(),
+      });
+      // Evict oldest messages if buffer is full
+      if (this.messageBuffer.length > MAX_BUFFERED_MESSAGES) {
+        this.messageBuffer = this.messageBuffer.slice(-MAX_BUFFERED_MESSAGES);
+      }
+      logger.info(
+        { jid, buffered: this.messageBuffer.length },
+        'No WebSocket clients — message buffered for delivery on next connect'
+      );
+    }
+  }
+
+  private flushBuffer(): void {
+    if (this.messageBuffer.length === 0) return;
+    const count = this.messageBuffer.length;
+    for (const msg of this.messageBuffer) {
+      this.wsManager.broadcast({
+        type: 'message',
+        jid: msg.jid,
+        text: msg.text,
+        sender: msg.sender,
+        buffered: true,
+        timestamp: msg.timestamp,
+      });
+    }
+    this.messageBuffer = [];
+    logger.info({ count }, 'Flushed buffered messages to new WebSocket client');
   }
 
   isConnected(): boolean {
@@ -90,10 +170,12 @@ export class WebChannel implements Channel {
 
   async disconnect(): Promise<void> {
     this.connected = false;
+    this.wsManager.close();
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer);
     }
     this.pending.clear();
+    this.messageBuffer = [];
     if (this.server) {
       await new Promise<void>((resolve) => {
         this.server!.close(() => resolve());
@@ -159,7 +241,12 @@ export class WebChannel implements Channel {
 
   private handleHealth(res: http.ServerResponse): void {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', channel: 'web', connected: this.connected }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      channel: 'web',
+      connected: this.connected,
+      wsClients: this.wsManager.clientCount(),
+    }));
   }
 
   private handleChannels(res: http.ServerResponse): void {
@@ -259,6 +346,10 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Cancel failed' }));
     }
   }
+
+  // -------------------------------------------------------------------------
+  // POST /message — accept user message, stream agent response via SSE
+  // -------------------------------------------------------------------------
 
   private handleMessage(req: http.IncomingMessage, res: http.ServerResponse): void {
     let body = '';

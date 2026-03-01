@@ -3,11 +3,11 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
 import {
-  IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
+import { getLeadAgentId, resolveAgentImage } from './agents.js';
 import { ContainerOutput, runContainerAgent, writeTasksSnapshot } from './container-runner.js';
 import {
   getAllTasks,
@@ -128,6 +128,8 @@ async function runTask(
   };
 
   try {
+    const agentOpts = resolveAgentImage(getLeadAgentId());
+
     const output = await runContainerAgent(
       group,
       {
@@ -165,6 +167,7 @@ async function runTask(
           error = streamedOutput.error || 'Unknown error';
         }
       },
+      agentOpts,
     );
 
     if (closeTimer) clearTimeout(closeTimer);
