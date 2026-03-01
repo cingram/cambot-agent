@@ -32,6 +32,8 @@ interface ContainerInput {
   mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;
   /** Which memory system the agent should use */
   memoryMode?: 'markdown' | 'database' | 'both';
+  /** Query-relevant memory context for the current message */
+  memoryContext?: string;
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';
@@ -421,6 +423,12 @@ async function runQuery(
     globalClaudeMd = (globalClaudeMd ?? '') + '\n\n' + memoryInstructions;
   }
 
+  // Inject query-relevant memory context (built by host from cambot-core)
+  if (containerInput.memoryContext) {
+    globalClaudeMd = (globalClaudeMd ?? '') + '\n\n' + containerInput.memoryContext;
+    log(`Injected memory context (${containerInput.memoryContext.length} chars)`);
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -608,6 +616,21 @@ async function main(): Promise<void> {
       if (nextMessage === null) {
         log('Close sentinel received, exiting');
         break;
+      }
+
+      // Refresh memory context from IPC (host writes _memory_context.md per message)
+      const memoryContextPath = path.join(IPC_INPUT_DIR, '_memory_context.md');
+      try {
+        if (fs.existsSync(memoryContextPath)) {
+          const freshContext = fs.readFileSync(memoryContextPath, 'utf-8');
+          if (freshContext.trim().length > 0) {
+            containerInput.memoryContext = freshContext;
+            log(`Refreshed memory context (${freshContext.length} chars)`);
+          }
+          fs.unlinkSync(memoryContextPath);
+        }
+      } catch (err) {
+        log(`Failed to read _memory_context.md: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       log(`Got new message (${nextMessage.length} chars), starting new query`);

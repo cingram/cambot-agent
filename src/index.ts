@@ -52,6 +52,7 @@ import { startWorkflowSchedulerLoop } from './workflow-scheduler.js';
 import { Channel, MessageBus, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
+import { buildMemoryContext } from './memory-context.js';
 import { createShadowAgent } from './shadow-agent.js';
 import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
 
@@ -168,7 +169,7 @@ function cleanIpcInputDir(groupFolder: string): void {
   const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
   try {
     for (const f of fs.readdirSync(inputDir)) {
-      if (f.endsWith('.json') || f === '_close') {
+      if (f.endsWith('.json') || f === '_close' || f === '_memory_context.md') {
         try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
       }
     }
@@ -237,6 +238,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const prompt = formatMessages(missedMessages);
+
+  // Build query-relevant memory context from the last user message
+  const lastMessageContent = missedMessages[missedMessages.length - 1].content;
+  const memoryContext = await buildMemoryContext(lastMessageContent);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -318,7 +323,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
-  });
+  }, memoryContext);
 
   // Stop typing indicator
   messageBus.emitAsync({
@@ -367,6 +372,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  memoryContext?: string | null,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
@@ -455,6 +461,7 @@ async function runAgent(
         chatJid,
         isMain,
         mcpServers: integrationMgr?.getActiveMcpServers(),
+        memoryContext: memoryContext ?? undefined,
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -554,6 +561,20 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
+
+            // Write refreshed memory context for the follow-up message
+            const lastContent = messagesToSend[messagesToSend.length - 1].content;
+            buildMemoryContext(lastContent).then((ctx) => {
+              if (ctx) {
+                const ipcInputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+                try {
+                  fs.writeFileSync(path.join(ipcInputDir, '_memory_context.md'), ctx);
+                } catch (err) {
+                  logger.warn({ err, group: group.folder }, 'Failed to write _memory_context.md');
+                }
+              }
+            }).catch(() => {});
+
             // Typing indicator via bus
             messageBus.emitAsync({
               type: 'typing.update',

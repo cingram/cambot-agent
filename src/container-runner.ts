@@ -40,6 +40,8 @@ export interface ContainerInput {
   mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;
   /** Which memory system the agent should use */
   memoryMode?: MemoryMode;
+  /** Query-relevant memory context for the current message */
+  memoryContext?: string;
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';
