@@ -20,7 +20,7 @@ import type { MemoryMode } from './config.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { CONTAINER_RUNTIME_BIN, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import { CONTAINER_RUNTIME_BIN, killContainersForGroup, readonlyMountArgs, stopContainer } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -290,6 +290,10 @@ export async function runContainerAgent(
 
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
+
+  // Kill any stale containers for this group before spawning a new one.
+  // Defense-in-depth: even if orphan cleanup missed something, each spawn is clean.
+  killContainersForGroup(group.folder);
 
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {

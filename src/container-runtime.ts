@@ -19,6 +19,28 @@ export function stopContainer(name: string): string {
   return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
 }
 
+/** Returns the shell command to force-kill a container by name. */
+export function killContainer(name: string): string {
+  return `${CONTAINER_RUNTIME_BIN} kill ${name}`;
+}
+
+/**
+ * List running cambot-agent containers, optionally filtered by group.
+ * Handles Windows quoting: --format without shell quotes so cmd.exe
+ * doesn't embed literal single-quote characters in the output.
+ */
+function listContainers(filterName = 'cambot-agent-'): string[] {
+  const output = execSync(
+    `${CONTAINER_RUNTIME_BIN} ps --filter name=${filterName} --format {{.Names}}`,
+    { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+  );
+  return output
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((name) => name.replace(/['"]/g, '')); // strip residual quotes
+}
+
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
   try {
@@ -57,18 +79,23 @@ export function ensureContainerRuntimeRunning(): void {
 /** Kill orphaned CamBot-Agent containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
-    const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=cambot-agent- --format '{{.Names}}'`,
-      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
-    );
-    const orphans = output.trim().split('\n').filter(Boolean);
+    const orphans = listContainers();
     for (const name of orphans) {
       try {
-        execSync(stopContainer(name), { stdio: 'pipe' });
-      } catch { /* already stopped */ }
+        execSync(killContainer(name), { stdio: 'pipe', timeout: 10000 });
+      } catch { /* already dead */ }
     }
     if (orphans.length > 0) {
-      logger.info({ count: orphans.length, names: orphans }, 'Stopped orphaned containers');
+      logger.info({ count: orphans.length, names: orphans }, 'Killed orphaned containers');
+
+      // Verify they're actually gone
+      const survivors = listContainers();
+      if (survivors.length > 0) {
+        logger.warn(
+          { count: survivors.length, names: survivors },
+          'Some orphaned containers survived cleanup',
+        );
+      }
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to clean up orphaned containers');
@@ -76,17 +103,32 @@ export function cleanupOrphans(): void {
 }
 
 /**
- * Stop containers older than maxAgeMs.
+ * Kill all running containers for a specific group.
+ * Called before spawning a new container to ensure at most one per group.
+ */
+export function killContainersForGroup(groupFolder: string): void {
+  const safeName = groupFolder.replace(/[^a-zA-Z0-9-]/g, '-');
+  try {
+    const containers = listContainers(`cambot-agent-${safeName}-`);
+    for (const name of containers) {
+      try {
+        execSync(killContainer(name), { stdio: 'pipe', timeout: 10000 });
+        logger.info({ group: groupFolder, container: name }, 'Killed stale group container');
+      } catch { /* already dead */ }
+    }
+  } catch (err) {
+    logger.warn({ err, group: groupFolder }, 'Failed to kill group containers');
+  }
+}
+
+/**
+ * Kill containers older than maxAgeMs.
  * Container names encode their spawn timestamp: cambot-agent-{name}-{timestamp}
  * This is safe to run periodically — it only kills stale containers.
  */
 export function cleanupStaleContainers(maxAgeMs: number): void {
   try {
-    const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=cambot-agent- --format '{{.Names}}'`,
-      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
-    );
-    const containers = output.trim().split('\n').filter(Boolean);
+    const containers = listContainers();
     const now = Date.now();
     const stale: string[] = [];
 
@@ -102,12 +144,12 @@ export function cleanupStaleContainers(maxAgeMs: number): void {
 
     for (const name of stale) {
       try {
-        execSync(stopContainer(name), { stdio: 'pipe' });
-      } catch { /* already stopped */ }
+        execSync(killContainer(name), { stdio: 'pipe', timeout: 10000 });
+      } catch { /* already dead */ }
     }
 
     if (stale.length > 0) {
-      logger.info({ count: stale.length, names: stale, maxAgeMs }, 'Stopped stale containers');
+      logger.info({ count: stale.length, names: stale, maxAgeMs }, 'Killed stale containers');
     }
   } catch (err) {
     logger.warn({ err }, 'Failed to clean up stale containers');
