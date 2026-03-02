@@ -703,6 +703,29 @@ export function writeTasksSnapshot(
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
 }
 
+export function writeArchivedTasksSnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  tasks: Array<{
+    id: string;
+    groupFolder: string;
+    prompt: string;
+    schedule_type: string;
+    schedule_value: string;
+    status: string;
+  }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const filteredTasks = isMain
+    ? tasks
+    : tasks.filter((t) => t.groupFolder === groupFolder);
+
+  const archivedFile = path.join(groupIpcDir, 'archived_tasks.json');
+  fs.writeFileSync(archivedFile, JSON.stringify(filteredTasks, null, 2));
+}
+
 /**
  * Write workflow definitions and recent runs as snapshot files for the container.
  * Follows the same pattern as writeTasksSnapshot.

@@ -339,6 +339,14 @@ export function getAllTasks(): ScheduledTask[] {
     .all() as ScheduledTask[];
 }
 
+export function getArchivedTasks(): ScheduledTask[] {
+  return db
+    .prepare(
+      "SELECT * FROM scheduled_tasks WHERE status IN ('completed', 'paused') ORDER BY created_at DESC",
+    )
+    .all() as ScheduledTask[];
+}
+
 export function updateTask(
   id: string,
   updates: Partial<
