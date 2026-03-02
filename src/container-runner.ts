@@ -210,6 +210,21 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Sync cambot-agents source so the container always has the latest version.
+  // The container bakes in cambot-agents at image build time, but hot-mounted
+  // agent-runner src may import new exports. This mount + entrypoint rebuild
+  // keeps them in sync without requiring a full image rebuild.
+  const cambotAgentsSrc = path.resolve(projectRoot, '..', 'cambot-agents', 'src');
+  const groupCambotAgentsDir = path.join(DATA_DIR, 'sessions', group.folder, 'cambot-agents-src');
+  if (fs.existsSync(cambotAgentsSrc)) {
+    fs.cpSync(cambotAgentsSrc, groupCambotAgentsDir, { recursive: true });
+  }
+  mounts.push({
+    hostPath: groupCambotAgentsDir,
+    containerPath: '/cambot-agents/src',
+    readonly: false,
+  });
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(

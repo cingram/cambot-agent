@@ -14,6 +14,7 @@ import {
   McpBridge,
   MemoryStore,
   generateRollingSummary,
+  calculateCost,
   bashToolDef,
   createBashExecutor,
   fileReadDef, fileWriteDef, fileListDef,
@@ -44,11 +45,29 @@ interface CustomAgentContainerInput {
   };
 }
 
+interface ContainerTelemetry {
+  totalCostUsd: number;
+  durationMs: number;
+  durationApiMs: number;
+  numTurns: number;
+  usage: { inputTokens: number; outputTokens: number };
+  modelUsage: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }>;
+  toolInvocations: Array<{
+    toolName: string;
+    durationMs?: number;
+    status: 'success' | 'error';
+    inputSummary?: string;
+    outputSummary?: string;
+    error?: string;
+  }>;
+}
+
 interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;
+  telemetry?: ContainerTelemetry;
 }
 
 type WriteOutputFn = (output: ContainerOutput) => void;
@@ -175,10 +194,29 @@ export async function runCustomAgent(
     },
   });
 
+  const startTime = Date.now();
+
   try {
     const result = await executor.execute(input.prompt);
+    const durationMs = Date.now() - startTime;
 
-    log(`Agent completed: ${result.iterations} iterations, ${result.totalTokens.prompt + result.totalTokens.completion} tokens`);
+    const inputTokens = result.totalTokens.prompt;
+    const outputTokens = result.totalTokens.completion;
+    const costUsd = calculateCost(agentConfig.model, inputTokens, outputTokens);
+
+    log(`Agent completed: ${result.iterations} iterations, ${inputTokens + outputTokens} tokens, $${costUsd.toFixed(6)}`);
+
+    const telemetry: ContainerTelemetry = {
+      totalCostUsd: costUsd,
+      durationMs,
+      durationApiMs: 0,
+      numTurns: result.iterations,
+      usage: { inputTokens, outputTokens },
+      modelUsage: {
+        [agentConfig.model]: { inputTokens, outputTokens, costUSD: costUsd },
+      },
+      toolInvocations: [],
+    };
 
     // 7. Update memory
     try {
@@ -202,14 +240,25 @@ export async function runCustomAgent(
     writeOutput({
       status: 'success',
       result: result.finalResponse || null,
+      telemetry,
     });
   } catch (err) {
+    const durationMs = Date.now() - startTime;
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent execution error: ${errorMessage}`);
     writeOutput({
       status: 'error',
       result: null,
       error: errorMessage,
+      telemetry: {
+        totalCostUsd: 0,
+        durationMs,
+        durationApiMs: 0,
+        numTurns: 0,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        modelUsage: {},
+        toolInvocations: [],
+      },
     });
   } finally {
     // 8. Disconnect MCP bridge
