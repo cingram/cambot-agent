@@ -26,7 +26,9 @@ export class FileChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    fs.mkdirSync(this.baseDir, { recursive: true });
+    if (!fs.existsSync(this.baseDir)) {
+      fs.mkdirSync(this.baseDir, { recursive: true });
+    }
     this.connected = true;
     logger.info({ baseDir: this.baseDir }, 'File channel connected');
   }

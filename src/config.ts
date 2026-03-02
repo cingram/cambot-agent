@@ -44,6 +44,11 @@ export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const MAIN_GROUP_FOLDER = 'main';
 
+/** Base directory for the file channel. Defaults to filesystem root so workflow
+ *  filePaths like "cambot-folder/report.md" resolve to /cambot-folder/report.md. */
+export const FILE_CHANNEL_BASE_DIR = process.env.FILE_CHANNEL_BASE_DIR
+  || path.parse(PROJECT_ROOT).root;
+
 export const AGENTS_CONFIG_PATH = path.resolve(PROJECT_ROOT, 'agents.yaml');
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',

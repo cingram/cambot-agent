@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, STORE_DIR, WORKSPACE_MCP_PORT } from '../config.js';
+import { DATA_DIR, FILE_CHANNEL_BASE_DIR, STORE_DIR, WORKSPACE_MCP_PORT } from '../config.js';
 import { getEmailState, setEmailState } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
@@ -18,6 +18,38 @@ function getConfiguredChannelNames(): Set<string> {
   const raw = (process.env.CHANNELS || env.CHANNELS || '').toLowerCase();
   if (!raw) return new Set();
   return new Set(raw.split(',').map((s) => s.trim()).filter(Boolean));
+}
+
+function buildIMessageConfig(providerName: string): import('cambot-channels').IMessageConfig {
+  switch (providerName) {
+    case 'loopmessage':
+      return {
+        provider: 'loopmessage',
+        apiKey: process.env.LOOPMESSAGE_API_KEY ?? '',
+        senderName: process.env.LOOPMESSAGE_SENDER ?? '',
+        webhookPort: process.env.LOOPMESSAGE_WEBHOOK_PORT
+          ? parseInt(process.env.LOOPMESSAGE_WEBHOOK_PORT, 10)
+          : undefined,
+        webhookAuthHeader: process.env.LOOPMESSAGE_WEBHOOK_AUTH,
+      };
+    case 'bluebubbles':
+      return {
+        provider: 'bluebubbles',
+        serverUrl: process.env.BLUEBUBBLES_SERVER_URL ?? '',
+        password: process.env.BLUEBUBBLES_PASSWORD ?? '',
+      };
+    case 'native':
+      return {
+        provider: 'native',
+        chatDbPath: process.env.NATIVE_CHAT_DB_PATH,
+        bridgeUrl: process.env.NATIVE_BRIDGE_URL,
+        pollIntervalMs: process.env.NATIVE_POLL_INTERVAL_MS
+          ? parseInt(process.env.NATIVE_POLL_INTERVAL_MS, 10)
+          : undefined,
+      };
+    default:
+      throw new Error(`Unknown IMESSAGE_PROVIDER: "${providerName}"`);
+  }
 }
 
 export const channelDefinitions: ChannelDefinition[] = [
@@ -89,7 +121,25 @@ export const channelDefinitions: ChannelDefinition[] = [
     isConfigured: () => true, // always available — zero runtime cost, needed for workflow delivery
     create: async () => {
       const { FileChannel } = await import('./file.js');
-      return new FileChannel({ baseDir: path.join(DATA_DIR, 'workflows') });
+      return new FileChannel({ baseDir: FILE_CHANNEL_BASE_DIR });
+    },
+  },
+  {
+    name: 'imessage',
+    isConfigured: () => {
+      const explicit = getConfiguredChannelNames();
+      if (explicit.size > 0) return explicit.has('imessage');
+      return !!process.env.IMESSAGE_PROVIDER;
+    },
+    create: async (opts) => {
+      const { IMessageChannel, createIMessageProvider } = await import('cambot-channels');
+      const providerName = process.env.IMESSAGE_PROVIDER ?? '';
+      if (!providerName) {
+        throw new Error('IMESSAGE_PROVIDER env var is required for iMessage channel');
+      }
+      const config = buildIMessageConfig(providerName);
+      const provider = createIMessageProvider(providerName, config);
+      return new IMessageChannel(provider, opts as unknown as import('cambot-channels').ChannelOpts);
     },
   },
 ];
