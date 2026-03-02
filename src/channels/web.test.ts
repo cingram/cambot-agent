@@ -45,6 +45,7 @@ function createTestOpts(overrides?: Partial<ChannelOpts>): ChannelOpts {
     onChatMetadata: vi.fn(),
     registeredGroups: vi.fn(() => ({})),
     registerGroup: vi.fn(),
+    messageBus: { on: vi.fn(), emitAsync: vi.fn().mockResolvedValue(undefined) } as any,
     ...overrides,
   };
 }

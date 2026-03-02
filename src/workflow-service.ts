@@ -106,11 +106,29 @@ export interface AgentStepInput {
 }
 
 /**
+ * Result from a container-based agent run.
+ * Includes the text response and optional telemetry for cost tracking.
+ */
+export interface ModelUsageEntry {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+export interface AgentContainerResult {
+  text: string;
+  totalCostUsd?: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  modelUsage?: Record<string, ModelUsageEntry>;
+}
+
+/**
  * Callback that runs a prompt through a container-based agent.
- * Returns the agent's text response. Spawns a real container using
+ * Returns the agent's text response and optional telemetry. Spawns a real container using
  * the existing OAuth token + Agent SDK (or a custom provider when customAgent is set).
  */
-export type RunAgentContainerFn = (input: AgentStepInput) => Promise<string>;
+export type RunAgentContainerFn = (input: AgentStepInput) => Promise<AgentContainerResult>;
 
 export interface WorkflowServiceDeps {
   db: Database.Database;
@@ -120,6 +138,8 @@ export interface WorkflowServiceDeps {
   getChannels?: () => ChannelProbe[];
   /** Admin JID — used to resolve `channel: main` in workflow message steps. */
   adminJid?: string;
+  /** Optional: callback to record step-level costs to the core telemetry system. */
+  onStepCost?: (cost: { provider: string; model: string; tokensIn: number; tokensOut: number; costUsd: number; taskLabel: string }) => void;
 }
 
 // ── Heartbeat tool registration ──────────────────────────────────────
@@ -272,7 +292,7 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
   // Lightweight event bus — no DB persistence for workflow events
   const eventBus: EventBus = createEventBus(null);
 
-  // Log-only stubs (no cambot-core schema in agent DB)
+  // Cost bridge — forwards workflow step costs to the core telemetry system
   const costLedger = {
     upsert(_db: Database.Database, input: {
       date: string; provider: string; model: string;
@@ -283,6 +303,16 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
         { provider: input.provider, model: input.model, cost: input.costUsd },
         'Workflow cost recorded',
       );
+      if (deps.onStepCost && input.costUsd > 0) {
+        deps.onStepCost({
+          provider: input.provider,
+          model: input.model,
+          tokensIn: input.tokensIn,
+          tokensOut: input.tokensOut,
+          costUsd: input.costUsd,
+          taskLabel: input.taskLabel ?? 'workflow',
+        });
+      }
     },
   };
 
@@ -422,32 +452,30 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     );
 
     const startTime = Date.now();
-    const result = await deps.runAgentContainer({ prompt, customAgent });
+    const containerResult = await deps.runAgentContainer({ prompt, customAgent });
     const durationMs = Date.now() - startTime;
 
     logger.info(
-      { durationMs, resultLength: result.length },
+      { durationMs, resultLength: containerResult.text.length, costUsd: containerResult.totalCostUsd },
       'Workflow agent step completed',
     );
 
     // Agent steps are typically prompted to return JSON. Parse it so
     // downstream gate steps can access fields (e.g. data.has_alerts).
     // Falls back to raw string if the response isn't valid JSON.
-    let parsedData: unknown = result;
+    let parsedData: unknown = containerResult.text;
     try {
-      parsedData = JSON.parse(stripCodeFences(result));
+      parsedData = JSON.parse(stripCodeFences(containerResult.text));
     } catch {
       // Keep as raw string
     }
 
-    // Token counts aren't available from the Agent SDK container path.
-    // Cost tracking relies on the container's own telemetry.
     return {
       data: parsedData,
-      tokensIn: 0,
-      tokensOut: 0,
-      costUsd: 0,
-      metadata: { durationMs, customAgent: customAgent?.agentId },
+      tokensIn: containerResult.tokensIn ?? 0,
+      tokensOut: containerResult.tokensOut ?? 0,
+      costUsd: containerResult.totalCostUsd ?? 0,
+      metadata: { durationMs, customAgent: customAgent?.agentId, modelUsage: containerResult.modelUsage },
     };
   }
 
@@ -465,9 +493,15 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
   const baseMessageHandler = createMessageHandler(async (prompt, model) => {
     logger.info({ model, promptLength: prompt.length }, 'Message AI compose: starting');
     const customAgent = resolveCustomAgent(model ? { provider: 'anthropic', model } : {});
-    const result = await deps.runAgentContainer({ prompt, customAgent });
-    logger.info({ resultLength: result.length }, 'Message AI compose: complete');
-    return { data: result, tokensIn: 0, tokensOut: 0, costUsd: 0 };
+    const containerResult = await deps.runAgentContainer({ prompt, customAgent });
+    logger.info({ resultLength: containerResult.text.length, costUsd: containerResult.totalCostUsd }, 'Message AI compose: complete');
+    return {
+      data: containerResult.text,
+      tokensIn: containerResult.tokensIn ?? 0,
+      tokensOut: containerResult.tokensOut ?? 0,
+      costUsd: containerResult.totalCostUsd ?? 0,
+      metadata: { modelUsage: containerResult.modelUsage },
+    };
   });
 
   // Wrap the message handler to emit outbound delivery via the bus
@@ -480,6 +514,14 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
         let jid: string;
         if (channel === 'file') {
           jid = `file:${meta.filePath as string}`;
+        } else if (channel === 'imessage') {
+          const recipient = meta.recipient as string | undefined;
+          if (recipient) {
+            jid = `im:${recipient}`;
+          } else {
+            logger.warn('Workflow message targets channel "imessage" but no recipient configured — message will be dropped');
+            jid = 'im:unknown';
+          }
         } else if (channel === 'main' && deps.adminJid) {
           jid = deps.adminJid;
         } else if (channel === 'main') {

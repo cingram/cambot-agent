@@ -20,6 +20,7 @@ import { runContainerAgent, type ContainerInput } from './container-runner.js';
 import { stopContainer } from './container-runtime.js';
 import { logger } from './logger.js';
 import type { RegisteredGroup, MessageBus } from './types.js';
+import type { AgentOptions } from './agents.js';
 
 export interface CustomAgentService {
   createAgent(agent: CustomAgentRow): void;
@@ -42,6 +43,9 @@ export interface CustomAgentServiceDeps {
   getRegisteredGroup: (groupFolder: string) => RegisteredGroup | undefined;
   messageBus: MessageBus;
   onProcess: (proc: ChildProcess, containerName: string, groupFolder: string) => void;
+  getAgentOptions: () => AgentOptions;
+  onTelemetry?: (telemetry: import('./container-runner.js').ContainerTelemetry, channel: string) => void;
+  onContainerError?: (error: string, durationMs: number, channel: string) => void;
 }
 
 export function createCustomAgentService(deps: CustomAgentServiceDeps): CustomAgentService {
@@ -118,6 +122,7 @@ export function createCustomAgentService(deps: CustomAgentServiceDeps): CustomAg
       let finalResult = '';
       let spawnedContainerName: string | null = null;
       let gotFirstResult = false;
+      const startTime = Date.now();
 
       const output = await runContainerAgent(
         group,
@@ -126,7 +131,12 @@ export function createCustomAgentService(deps: CustomAgentServiceDeps): CustomAg
           spawnedContainerName = containerName;
           deps.onProcess(proc, containerName, groupFolder);
         },
+        // Streaming output callback
         async (result) => {
+          // Record telemetry so custom agent costs reach the cost_ledger
+          if (result.telemetry && deps.onTelemetry) {
+            deps.onTelemetry(result.telemetry, chatJid);
+          }
           if (result.result) {
             finalResult = result.result;
             await deps.messageBus.emitAsync({
@@ -153,9 +163,26 @@ export function createCustomAgentService(deps: CustomAgentServiceDeps): CustomAg
             }
           }
         },
+        (() => {
+          const opts = deps.getAgentOptions();
+          // Include the custom agent's API key in the secrets passed to the container
+          if (input.customAgent?.apiKeyEnvVar &&
+              !opts.secretKeys.includes(input.customAgent.apiKeyEnvVar)) {
+            return { ...opts, secretKeys: [...opts.secretKeys, input.customAgent.apiKeyEnvVar] };
+          }
+          return opts;
+        })(),
       );
 
       if (output.status === 'error') {
+        // Record error telemetry for custom agent failures
+        if (deps.onContainerError) {
+          deps.onContainerError(
+            `Custom agent ${agentId} failed: ${output.error || 'unknown error'}`,
+            Date.now() - startTime,
+            chatJid,
+          );
+        }
         logger.error({ agentId, error: output.error }, 'Custom agent invocation failed');
         throw new Error(output.error ?? 'Custom agent execution failed');
       }

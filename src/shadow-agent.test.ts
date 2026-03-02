@@ -51,6 +51,8 @@ function stubBus(): MessageBus {
   return { emit: vi.fn(), emitAsync: vi.fn(), on: vi.fn(() => () => {}) };
 }
 
+const stubGetAgentOptions = () => ({ containerImage: 'test:latest', secretKeys: [] });
+
 const ADMIN_JID = '1234567890@s.whatsapp.net';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {
@@ -92,6 +94,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin secretkey hello' });
@@ -108,6 +111,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({
@@ -123,6 +127,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [makeChannel()],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({
@@ -138,6 +143,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: 'just a normal message' });
@@ -150,6 +156,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!adminfoo secretkey hello' });
@@ -162,6 +169,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin wrongkey hello' });
@@ -174,6 +182,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin secretkey' });
@@ -186,6 +195,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin secretkey   ' });
@@ -199,6 +209,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [channel],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin secretkey show me groups' });
@@ -212,6 +223,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [makeChannel()],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin secretkey show me groups' });
@@ -229,6 +241,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [makeChannel()],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin secretkey hello' });
@@ -244,6 +257,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [makeChannel()],
         messageBus: stubBus(),
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const msg = makeMsg({ content: '!admin secretkey hello' });
@@ -301,6 +315,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
       });
 
       expect(bus.on).toHaveBeenCalledWith(
@@ -317,6 +332,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [makeChannel()],
         messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const event = makeBusEvent('!admin secretkey hello', 'web:user');
@@ -333,6 +349,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const event = makeBusEvent('hello world');
@@ -348,6 +365,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const event = makeBusEvent('!admin wrongkey hello');
@@ -364,6 +382,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
       });
 
       const event = makeBusEvent('!admin secretkey');
@@ -380,6 +399,7 @@ describe('createShadowAgent', () => {
         adminTrigger: '!admin',
         channels: [],
         messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
       });
 
       expect(bus.on).toHaveBeenCalledWith(

@@ -721,7 +721,8 @@ async function runQuery(
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionId
+        newSessionId,
+        telemetry: queryTelemetry,
       });
     }
   }

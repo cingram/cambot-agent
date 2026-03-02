@@ -38,10 +38,25 @@ function mockCore(overrides: Partial<CamBotCoreServices> = {}): CamBotCoreServic
     sessionSummaryStore: {} as any,
     summarize: null,
     apiCallStore: {} as any,
-    costLedgerStore: {} as any,
+    costLedgerStore: { upsert: vi.fn() } as any,
     securityEventStore: {} as any,
+    telemetryQueries: {} as any,
     anomalyDetector: {} as any,
     telemetryRecorder: { recordContainerRun: vi.fn() } as any,
+    inputSanitizer: {} as any,
+    injectionDetector: {} as any,
+    circuitBreaker: {} as any,
+    safeErrorHandler: {} as any,
+    memorySanitizer: {} as any,
+    adaptiveThresholds: {} as any,
+    canaryTripwire: null,
+    factDecayService: {} as any,
+    accessTracker: {} as any,
+    queryContextBuilder: {} as any,
+    contradictionDetector: null,
+    provenanceStore: {} as any,
+    reflectionSourceStore: {} as any,
+    feedbackService: {} as any,
     buildBootContext: vi.fn().mockReturnValue('# Boot Context'),
     redactPii: vi.fn().mockImplementation((text: string) => ({
       redacted: text.replace(/test@example\.com/g, '[EMAIL_1]'),
@@ -351,6 +366,89 @@ describe('createLifecycleInterceptor', () => {
         { err: expect.any(Error) },
         'Failed to write response to short-term memory',
       );
+    });
+  });
+
+  describe('recordTelemetry', () => {
+    it('delegates to telemetryRecorder.recordContainerRun', () => {
+      interceptor.recordTelemetry({
+        totalCostUsd: 0.05,
+        durationMs: 1000,
+        durationApiMs: 800,
+        numTurns: 3,
+        usage: { inputTokens: 100, outputTokens: 50 },
+        modelUsage: { 'claude-sonnet-4-20250514': { inputTokens: 100, outputTokens: 50, costUSD: 0.05 } },
+        toolInvocations: [],
+      }, 'whatsapp');
+
+      expect(core.telemetryRecorder.recordContainerRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          totalCostUsd: 0.05,
+          durationMs: 1000,
+          channel: 'whatsapp',
+          status: 'success',
+        }),
+      );
+    });
+
+    it('does not throw on error', () => {
+      (core.telemetryRecorder.recordContainerRun as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('db error');
+      });
+      expect(() => interceptor.recordTelemetry({
+        totalCostUsd: 0, durationMs: 0, durationApiMs: 0, numTurns: 0,
+        usage: { inputTokens: 0, outputTokens: 0 }, modelUsage: {}, toolInvocations: [],
+      })).not.toThrow();
+    });
+  });
+
+  describe('recordContainerError', () => {
+    it('records error with zero cost', () => {
+      interceptor.recordContainerError('Container crashed', 5000, 'workflows');
+
+      expect(core.telemetryRecorder.recordContainerRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          totalCostUsd: 0,
+          durationMs: 5000,
+          channel: 'workflows',
+          status: 'error',
+          errorMessage: 'Container crashed',
+        }),
+      );
+    });
+  });
+
+  describe('recordStepCost', () => {
+    it('upserts cost to costLedgerStore', () => {
+      interceptor.recordStepCost({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-20250514',
+        tokensIn: 200,
+        tokensOut: 100,
+        costUsd: 0.03,
+        taskLabel: 'workflow:heartbeat',
+      });
+
+      expect(core.costLedgerStore.upsert).toHaveBeenCalledWith(
+        core.db,
+        expect.objectContaining({
+          provider: 'anthropic',
+          model: 'claude-sonnet-4-20250514',
+          tokensIn: 200,
+          tokensOut: 100,
+          costUsd: 0.03,
+          taskLabel: 'workflow:heartbeat',
+        }),
+      );
+    });
+
+    it('does not throw on error', () => {
+      (core.costLedgerStore.upsert as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('db error');
+      });
+      expect(() => interceptor.recordStepCost({
+        provider: 'test', model: 'test', tokensIn: 0, tokensOut: 0, costUsd: 0, taskLabel: 'test',
+      })).not.toThrow();
     });
   });
 

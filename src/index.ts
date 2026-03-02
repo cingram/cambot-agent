@@ -63,7 +63,7 @@ import { logger } from './logger.js';
 import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
 import { buildMemoryContext } from './memory-context.js';
 import { createShadowAgent } from './shadow-agent.js';
-import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
+import { createWorkflowService, WorkflowService, type AgentStepInput, type AgentContainerResult } from './workflow-service.js';
 import { createWorkflowBuilderService, WorkflowBuilderService } from './workflow-builder-service.js';
 import { writeContextFiles } from './context-files.js';
 import { createCamBotCore, createStandaloneConfig } from 'cambot-core';
@@ -232,14 +232,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         // Advance cursor
         lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
         saveState();
-        // Invoke custom agent asynchronously
+        // Invoke custom agent with session lifecycle tracking
+        interceptor?.startSession(group.folder, chatJid);
         customAgentService.invokeAgent(
           matchedAgent.id,
           agentPrompt,
           chatJid,
           group.folder,
           isMainGroup,
-        ).catch((err) => {
+        ).then(() => {
+          interceptor?.endSession(group.folder, true);
+        }).catch((err) => {
+          interceptor?.endSession(group.folder, false);
           logger.error({ agentId: matchedAgent.id, err }, 'Custom agent trigger invocation failed');
         });
         return true; // consumed
@@ -308,11 +312,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let outputSentToUser = false;
   let lastSentText = '';
   let lastSentTime = 0;
+  let hadTelemetry = false;
+  const containerStartTime = Date.now();
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Record telemetry if present (separate from user-visible results)
     if (result.telemetry && interceptor) {
       interceptor.recordTelemetry(result.telemetry, chatJid);
+      hadTelemetry = true;
     }
 
     // Streaming output callback — called for each agent result
@@ -378,6 +385,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   interceptor?.endSession(group.folder, output !== 'error' && !hadError);
 
   if (output === 'error' || hadError) {
+    // Record error telemetry if no telemetry was received from the container
+    if (!hadTelemetry && interceptor) {
+      const durationMs = Date.now() - containerStartTime;
+      interceptor.recordContainerError(
+        `Container failed for group ${group.name}`,
+        durationMs,
+        chatJid,
+      );
+    }
     cleanIpcInputDir(group.folder);
     // If we already sent output to the user, check for remaining messages
     // before giving up — IPC-piped messages may still need processing.
@@ -811,24 +827,41 @@ async function main(): Promise<void> {
   const bus = createMessageBus();
   messageBus = bus;
 
+  // Serialization lock: workflow agent steps share the same container group
+  // ("workflows"), so concurrent steps would kill each other. Chain them.
+  let workflowContainerLock = Promise.resolve<unknown>(undefined);
+
   workflowService = createWorkflowService({
     db: getDatabase(),
     messageBus: bus,
     getChannels: () => channels,
     adminJid: ADMIN_JID,
-    runAgentContainer: async (input: AgentStepInput): Promise<string> => {
+    onStepCost: (cost) => {
+      interceptor?.recordStepCost(cost);
+    },
+    runAgentContainer: (input: AgentStepInput): Promise<AgentContainerResult> => {
+      const run = async (): Promise<AgentContainerResult> => {
       // Use a promise that resolves on the first streamed output marker,
       // so we don't wait for the container process to exit (the claude
       // process inside can idle for minutes after the agent-runner finishes).
-      let resolveResult: (value: string) => void;
+      let resolveResult: (value: AgentContainerResult) => void;
       let rejectResult: (err: Error) => void;
-      const resultPromise = new Promise<string>((res, rej) => {
+      const resultPromise = new Promise<AgentContainerResult>((res, rej) => {
         resolveResult = res;
         rejectResult = rej;
       });
       let gotStreamedOutput = false;
       let spawnedContainerName: string | null = null;
 
+      const workflowAgentOpts = resolveAgentImage(getLeadAgentId());
+      // Include the custom agent's API key in the secrets passed to the container
+      if (input.customAgent?.apiKeyEnvVar &&
+          !workflowAgentOpts.secretKeys.includes(input.customAgent.apiKeyEnvVar)) {
+        workflowAgentOpts.secretKeys = [
+          ...workflowAgentOpts.secretKeys,
+          input.customAgent.apiKeyEnvVar,
+        ];
+      }
       const containerPromise = runContainerAgent(
         workflowGroup,
         {
@@ -846,10 +879,36 @@ async function main(): Promise<void> {
         async (output) => {
           if (gotStreamedOutput) return; // only use the first marker
           gotStreamedOutput = true;
+          // Record telemetry so workflow container costs reach the cost_ledger
+          if (output.telemetry && interceptor) {
+            interceptor.recordTelemetry(output.telemetry, 'workflows');
+          }
           if (output.status === 'error') {
+            if (!output.telemetry && interceptor) {
+              interceptor.recordContainerError(
+                `Workflow container failed: ${output.error || 'unknown error'}`,
+                0,
+                'workflows',
+              );
+            }
             rejectResult(new Error(`Workflow container failed: ${output.error || 'unknown error'}`));
           } else {
-            resolveResult(output.result || '');
+            // Normalize modelUsage keys: ContainerTelemetry uses costUSD, our API uses costUsd
+            const modelUsage = output.telemetry?.modelUsage
+              ? Object.fromEntries(
+                  Object.entries(output.telemetry.modelUsage).map(([model, u]) => [
+                    model,
+                    { inputTokens: u.inputTokens, outputTokens: u.outputTokens, costUsd: u.costUSD },
+                  ]),
+                )
+              : undefined;
+            resolveResult({
+              text: output.result || '',
+              totalCostUsd: output.telemetry?.totalCostUsd,
+              tokensIn: output.telemetry?.usage.inputTokens,
+              tokensOut: output.telemetry?.usage.outputTokens,
+              modelUsage,
+            });
           }
           // Stop the container now — we have the result and don't need it running
           if (spawnedContainerName) {
@@ -859,15 +918,41 @@ async function main(): Promise<void> {
             });
           }
         },
+        workflowAgentOpts,
       );
 
       // If container exits before any streamed output (error case), fall back
       containerPromise.then((output) => {
         if (!gotStreamedOutput) {
+          // Record telemetry for the fallback path too
+          if (output.telemetry && interceptor) {
+            interceptor.recordTelemetry(output.telemetry, 'workflows');
+          }
           if (output.status === 'error') {
+            if (!output.telemetry && interceptor) {
+              interceptor.recordContainerError(
+                `Workflow container failed: ${output.error || 'unknown error'}`,
+                0,
+                'workflows',
+              );
+            }
             rejectResult(new Error(`Workflow container failed: ${output.error || 'unknown error'}`));
           } else {
-            resolveResult(output.result || '');
+            const fallbackModelUsage = output.telemetry?.modelUsage
+              ? Object.fromEntries(
+                  Object.entries(output.telemetry.modelUsage).map(([model, u]) => [
+                    model,
+                    { inputTokens: u.inputTokens, outputTokens: u.outputTokens, costUsd: u.costUSD },
+                  ]),
+                )
+              : undefined;
+            resolveResult({
+              text: output.result || '',
+              totalCostUsd: output.telemetry?.totalCostUsd,
+              tokensIn: output.telemetry?.usage.inputTokens,
+              tokensOut: output.telemetry?.usage.outputTokens,
+              modelUsage: fallbackModelUsage,
+            });
           }
         }
       }).catch((err) => {
@@ -877,6 +962,12 @@ async function main(): Promise<void> {
       });
 
       return resultPromise;
+      };
+
+      // Chain through lock so only one workflow container runs at a time
+      const queued = workflowContainerLock.then(run, run);
+      workflowContainerLock = queued.catch(() => {}); // swallow to keep chain alive
+      return queued;
     },
   });
   workflowService.reloadDefinitions();
@@ -904,6 +995,13 @@ async function main(): Promise<void> {
     onProcess: (proc, containerName, groupFolder) => {
       // Custom agent containers don't register in the queue
       logger.debug({ containerName, groupFolder }, 'Custom agent container spawned');
+    },
+    getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
+    onTelemetry: (telemetry, channel) => {
+      interceptor?.recordTelemetry(telemetry, channel);
+    },
+    onContainerError: (error, durationMs, channel) => {
+      interceptor?.recordContainerError(error, durationMs, channel);
     },
   });
 
@@ -992,6 +1090,7 @@ async function main(): Promise<void> {
     adminTrigger: ADMIN_TRIGGER,
     channels: integrationMgr?.getActiveChannels() ?? channels,
     messageBus,
+    getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
   });
 
   // Start subsystems

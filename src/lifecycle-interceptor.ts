@@ -21,6 +21,8 @@ export interface LifecycleInterceptor {
   restoreOutput(text: string, mappings: PiiMapping[]): string;
   getBootContext(): string;
   recordTelemetry(telemetry: ContainerTelemetry, channel?: string): void;
+  recordContainerError(error: string, durationMs: number, channel?: string): void;
+  recordStepCost(cost: { provider: string; model: string; tokensIn: number; tokensOut: number; costUsd: number; taskLabel: string }): void;
   startSession(groupFolder: string, chatJid: string): void;
   endSession(groupFolder: string, success: boolean): void;
   startPeriodicTasks(): void;
@@ -187,6 +189,43 @@ export function createLifecycleInterceptor(
         });
       } catch (err) {
         logger.warn({ err }, 'Failed to record container telemetry');
+      }
+    },
+
+    recordContainerError(error: string, durationMs: number, channel?: string): void {
+      try {
+        core.telemetryRecorder.recordContainerRun({
+          sessionKey: currentSessionKey ?? undefined,
+          channel,
+          totalCostUsd: 0,
+          durationMs,
+          durationApiMs: 0,
+          numTurns: 0,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          modelUsage: {},
+          toolInvocations: [],
+          status: 'error',
+          errorMessage: error,
+        });
+      } catch (err) {
+        logger.warn({ err }, 'Failed to record container error telemetry');
+      }
+    },
+
+    recordStepCost(cost: { provider: string; model: string; tokensIn: number; tokensOut: number; costUsd: number; taskLabel: string }): void {
+      try {
+        core.costLedgerStore.upsert(core.db, {
+          date: new Date().toISOString().slice(0, 10),
+          provider: cost.provider,
+          model: cost.model,
+          tokensIn: cost.tokensIn,
+          tokensOut: cost.tokensOut,
+          costUsd: cost.costUsd,
+          callCount: 1,
+          taskLabel: cost.taskLabel,
+        });
+      } catch (err) {
+        logger.warn({ err }, 'Failed to record workflow step cost');
       }
     },
 

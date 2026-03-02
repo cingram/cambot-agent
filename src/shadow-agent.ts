@@ -18,6 +18,7 @@ import { getSession, setSession } from './db.js';
 import { formatOutbound } from './router.js';
 import { logger } from './logger.js';
 import { Channel, MessageBus, NewMessage } from './types.js';
+import type { AgentOptions } from './agents.js';
 
 const SHADOW_FOLDER = 'shadow-admin';
 
@@ -26,6 +27,7 @@ interface ShadowAgentDeps {
   adminTrigger: string;
   channels: Channel[];
   messageBus: MessageBus;
+  getAgentOptions: () => AgentOptions;
 }
 
 /**
@@ -85,6 +87,7 @@ async function spawnShadowContainer(
   sourceChatJid: string,
   replyJid: string,
   channels: Channel[],
+  agentOpts: AgentOptions,
 ): Promise<void> {
   const sessionId = getSession(SHADOW_FOLDER);
   const wrappedPrompt = `<admin_context source_chat="${sourceChatJid}" />\n\n${prompt}`;
@@ -118,6 +121,7 @@ async function spawnShadowContainer(
           sendReply(channels, replyJid, text);
         }
       },
+      agentOpts,
     );
 
     if (output.newSessionId) {
@@ -181,7 +185,7 @@ function checkGates(
  * bus-routed messages (web channel) before the DB store at priority 100.
  */
 export function createShadowAgent(deps: ShadowAgentDeps): (chatJid: string, msg: NewMessage) => boolean {
-  const { adminJid, adminTrigger, channels, messageBus } = deps;
+  const { adminJid, adminTrigger, channels, messageBus, getAgentOptions } = deps;
 
   // Feature disabled — KEY is required; JID is only needed for WhatsApp path
   if (!ADMIN_KEY) {
@@ -213,7 +217,7 @@ export function createShadowAgent(deps: ShadowAgentDeps): (chatJid: string, msg:
 
     if (result.action === 'accept') {
       logger.info({ sourceChatJid: jid }, 'Shadow admin command accepted (bus)');
-      spawnShadowContainer(result.prompt, jid, jid, channels).catch((err) => {
+      spawnShadowContainer(result.prompt, jid, jid, channels, getAgentOptions()).catch((err) => {
         logger.error({ err }, 'Shadow container error');
       });
     }
@@ -227,7 +231,7 @@ export function createShadowAgent(deps: ShadowAgentDeps): (chatJid: string, msg:
     if (result.action === 'drop') return true;
 
     logger.info({ sourceChatJid: chatJid }, 'Shadow admin command accepted');
-    spawnShadowContainer(result.prompt, chatJid, adminJid, channels).catch((err) => {
+    spawnShadowContainer(result.prompt, chatJid, adminJid, channels, getAgentOptions()).catch((err) => {
       logger.error({ err }, 'Shadow container error');
     });
     return true;
