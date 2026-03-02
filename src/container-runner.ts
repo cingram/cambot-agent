@@ -187,6 +187,8 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'worker-results'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'workflow-results'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'context'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -704,6 +706,9 @@ export function writeTasksSnapshot(
 /**
  * Write workflow definitions and recent runs as snapshot files for the container.
  * Follows the same pattern as writeTasksSnapshot.
+ *
+ * The workflows snapshot includes full step definitions and policies so the
+ * workflow-builder MCP server can read them without an IPC round-trip.
  */
 export function writeWorkflowsSnapshot(
   groupFolder: string,
@@ -715,6 +720,9 @@ export function writeWorkflowsSnapshot(
     version: string;
     stepCount: number;
     schedule?: { cron: string; timezone?: string };
+    steps?: Array<{ id: string; type: string; name: string; config: Record<string, unknown>; after?: string[] }>;
+    policy?: Record<string, unknown>;
+    hash?: string;
   }>,
   runs: Array<{
     runId: string;
@@ -736,6 +744,20 @@ export function writeWorkflowsSnapshot(
   // Only main sees run history (non-main gets empty array)
   const runsFile = path.join(groupIpcDir, 'workflow_runs.json');
   fs.writeFileSync(runsFile, JSON.stringify(isMain ? runs : [], null, 2));
+}
+
+/**
+ * Write the workflow schema snapshot for the container's workflow-builder MCP.
+ */
+export function writeWorkflowSchemaSnapshot(
+  groupFolder: string,
+  schema: Record<string, unknown>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const schemaFile = path.join(groupIpcDir, 'workflow_schema.json');
+  fs.writeFileSync(schemaFile, JSON.stringify(schema, null, 2));
 }
 
 /**

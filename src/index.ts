@@ -26,6 +26,7 @@ import {
   writeArchivedTasksSnapshot,
   writeTasksSnapshot,
   writeWorkflowsSnapshot,
+  writeWorkflowSchemaSnapshot,
   writeWorkersSnapshot,
 } from './container-runner.js';
 import { cleanupOrphans, cleanupStaleContainers, ensureContainerRuntimeRunning, stopContainer } from './container-runtime.js';
@@ -51,7 +52,7 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { createMessageBus } from './message-bus.js';
 import { formatMessages, formatOutbound } from './router.js';
@@ -63,6 +64,8 @@ import { createCustomAgentService, CustomAgentService } from './custom-agent-ser
 import { buildMemoryContext } from './memory-context.js';
 import { createShadowAgent } from './shadow-agent.js';
 import { createWorkflowService, WorkflowService, type AgentStepInput } from './workflow-service.js';
+import { createWorkflowBuilderService, WorkflowBuilderService } from './workflow-builder-service.js';
+import { writeContextFiles } from './context-files.js';
 import { createCamBotCore, createStandaloneConfig } from 'cambot-core';
 import { createLifecycleInterceptor } from './lifecycle-interceptor.js';
 import type { LifecycleInterceptor } from './lifecycle-interceptor.js';
@@ -81,6 +84,7 @@ let channels: Channel[] = [];
 const queue = new GroupQueue();
 let messageBus!: MessageBus;
 let workflowService: WorkflowService | null = null;
+let workflowBuilderService: WorkflowBuilderService | null = null;
 let customAgentService: CustomAgentService | null = null;
 let shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
 let interceptor: LifecycleInterceptor | null = null;
@@ -475,7 +479,7 @@ async function runAgent(
     })),
   );
 
-  // Update workflows snapshot for container to read
+  // Update workflows snapshot for container to read (includes full step definitions)
   if (workflowService) {
     const workflows = workflowService.listWorkflows().map(wf => ({
       id: wf.id,
@@ -484,6 +488,9 @@ async function runAgent(
       version: wf.version,
       stepCount: wf.steps.length,
       schedule: wf.schedule,
+      steps: wf.steps.map(s => ({ id: s.id, type: s.type, name: s.name, config: s.config, after: s.after })),
+      policy: wf.policy as unknown as Record<string, unknown>,
+      hash: wf.hash,
     }));
     const runs = workflowService.listRuns(undefined, 20).map(r => ({
       runId: r.runId,
@@ -495,11 +502,51 @@ async function runAgent(
       totalCostUsd: r.totalCostUsd,
     }));
     writeWorkflowsSnapshot(group.folder, isMain, workflows, runs);
+
+    // Write workflow schema snapshot
+    if (workflowBuilderService) {
+      writeWorkflowSchemaSnapshot(group.folder, workflowBuilderService.getSchema() as unknown as Record<string, unknown>);
+    }
   }
 
   // Update available workers snapshot for delegation
   const allWorkers = getAllAgentDefinitions();
   writeWorkersSnapshot(group.folder, allWorkers);
+
+  // Write dynamic context files (TOOLS.md, AGENTS.md, HEARTBEAT.md, USER.md)
+  {
+    const groupIpcDir = resolveGroupIpcPath(group.folder);
+    const activeMcpServers = integrationMgr?.getActiveMcpServers() ?? [];
+    const skillsDir = path.join(process.cwd(), 'container', 'skills');
+    writeContextFiles(groupIpcDir, isMain, {
+      mcpServers: activeMcpServers,
+      skillsDir,
+      globalDir: path.join(GROUPS_DIR, 'global'),
+      customAgents: customAgents.map(a => ({
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        provider: a.provider,
+        model: a.model,
+        trigger_pattern: a.trigger_pattern,
+      })),
+      tasks: tasks.map(t => ({
+        id: t.id,
+        prompt: t.prompt,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        status: t.status,
+        next_run: t.next_run,
+      })),
+      workflows: workflowService
+        ? workflowService.listWorkflows().map(wf => ({
+            id: wf.id,
+            name: wf.name,
+            schedule: wf.schedule,
+          }))
+        : [],
+    });
+  }
 
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
@@ -834,6 +881,17 @@ async function main(): Promise<void> {
   });
   workflowService.reloadDefinitions();
 
+  // ── Initialize Workflow Builder Service ────────────────────────────────
+  {
+    const { createDefaultToolRegistry } = await import('cambot-workflows');
+    const toolRegistry = createDefaultToolRegistry();
+    workflowBuilderService = createWorkflowBuilderService({
+      workflowsDir: path.join(DATA_DIR, 'workflows'),
+      workflowService,
+      toolRegistry,
+    });
+  }
+
   // ── Initialize Custom Agent Service ─────────────────────────────────────
   customAgentService = createCustomAgentService({
     getRegisteredGroup: (groupFolder: string) => {
@@ -956,6 +1014,7 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
     workflowService: workflowService ?? undefined,
+    workflowBuilderService: workflowBuilderService ?? undefined,
     customAgentService: customAgentService ?? undefined,
     resolveAgentImage,
     getAgentDefinition,

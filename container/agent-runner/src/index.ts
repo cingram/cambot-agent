@@ -19,6 +19,7 @@ import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput, PostToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 import { getMemoryInstructions } from './memory-instructions.js';
+import { buildCambotContext } from './context-assembler.js';
 
 interface ContainerInput {
   prompt: string;
@@ -567,24 +568,23 @@ async function runQuery(
   let lastResultText: string | null = null;
   let queryTelemetry: ContainerTelemetry | undefined;
 
-  // Load global CLAUDE.md as additional system context (shared across all groups)
+  // Build structured context from all sources (CLAUDE.md, memory, dynamic context files)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-  }
+  const claudeMd = !containerInput.isMain && fs.existsSync(globalClaudeMdPath)
+    ? fs.readFileSync(globalClaudeMdPath, 'utf-8')
+    : undefined;
 
-  // Inject memory-mode instructions into the system prompt
   const memoryInstructions = getMemoryInstructions(containerInput.memoryMode ?? 'both');
-  if (memoryInstructions) {
-    globalClaudeMd = (globalClaudeMd ?? '') + '\n\n' + memoryInstructions;
-  }
-
-  // Inject query-relevant memory context (built by host from cambot-core)
   if (containerInput.memoryContext) {
-    globalClaudeMd = (globalClaudeMd ?? '') + '\n\n' + containerInput.memoryContext;
     log(`Injected memory context (${containerInput.memoryContext.length} chars)`);
   }
+
+  const globalClaudeMd = buildCambotContext({
+    claudeMd,
+    memoryInstructions: memoryInstructions ?? undefined,
+    memoryContext: containerInput.memoryContext ?? undefined,
+    contextDir: '/workspace/ipc/context',
+  });
 
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
@@ -621,6 +621,7 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__cambot-agent__*',
+        'mcp__workflow-builder__*',
         ...(containerInput.mcpServers ?? []).map(s => `mcp__${s.name}__*`),
       ],
       env: sdkEnv,
@@ -633,6 +634,14 @@ async function runQuery(
           args: [mcpServerPath],
           env: {
             CAMBOT_AGENT_CHAT_JID: containerInput.chatJid,
+            CAMBOT_AGENT_GROUP_FOLDER: containerInput.groupFolder,
+            CAMBOT_AGENT_IS_MAIN: containerInput.isMain ? '1' : '0',
+          },
+        },
+        'workflow-builder': {
+          command: 'node',
+          args: [path.join(path.dirname(mcpServerPath), 'workflow-mcp-stdio.js')],
+          env: {
             CAMBOT_AGENT_GROUP_FOLDER: containerInput.groupFolder,
             CAMBOT_AGENT_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
@@ -768,6 +777,7 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const workflowMcpPath = path.join(__dirname, 'workflow-mcp-stdio.js');
 
   // Register IPC owner token for orphan detection
   ipcToken = containerInput.ipcToken;

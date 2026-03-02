@@ -16,6 +16,7 @@ import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { MessageBus, RegisteredGroup, WorkerDefinition } from './types.js';
 import type { WorkflowService } from './workflow-service.js';
+import type { WorkflowBuilderService } from './workflow-builder-service.js';
 import type { CustomAgentService } from './custom-agent-service.js';
 import type { IntegrationManager } from './integrations/types.js';
 
@@ -33,6 +34,8 @@ export interface IpcDeps {
   ) => void;
   /** Workflow engine service. When present, workflow IPC commands are handled. */
   workflowService?: WorkflowService;
+  /** Workflow builder service. When present, workflow CRUD IPC commands are handled. */
+  workflowBuilderService?: WorkflowBuilderService;
   /** Custom agent service. When present, custom agent IPC commands are handled. */
   customAgentService?: CustomAgentService;
   resolveAgentImage: (agentId: string) => AgentOptions;
@@ -183,6 +186,20 @@ function writeDelegationResult(
   fs.renameSync(tempFile, resultFile);
 }
 
+function writeWorkflowBuildResult(
+  sourceGroup: string,
+  requestId: string,
+  result: unknown,
+): void {
+  const resultDir = path.join(resolveGroupIpcPath(sourceGroup), 'workflow-results');
+  fs.mkdirSync(resultDir, { recursive: true });
+
+  const resultFile = path.join(resultDir, `${requestId}.json`);
+  const tempFile = `${resultFile}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(result, null, 2));
+  fs.renameSync(tempFile, resultFile);
+}
+
 export async function processTaskIpc(
   data: {
     type: string;
@@ -213,6 +230,12 @@ export async function processTaskIpc(
     delegationId?: string;
     workerId?: string;
     context?: string;
+    // For workflow builder IPC
+    requestId?: string;
+    workflow?: Record<string, unknown>;
+    sourceId?: string;
+    newId?: string;
+    newName?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -783,6 +806,124 @@ export async function processTaskIpc(
         }
       }
       break;
+
+    // ── Workflow Builder IPC ──────────────────────────────────────────
+
+    case 'create_workflow_def': {
+      if (!deps.workflowBuilderService) {
+        logger.warn('create_workflow_def IPC received but workflow builder service not initialized');
+        break;
+      }
+      if (!isMain) {
+        if (data.requestId) {
+          writeWorkflowBuildResult(sourceGroup, data.requestId as string, {
+            success: false, error: 'Only the main group can create workflows.',
+          });
+        }
+        break;
+      }
+      if (data.workflow && data.requestId) {
+        const result = deps.workflowBuilderService.createWorkflow(
+          data.workflow as unknown as Parameters<typeof deps.workflowBuilderService.createWorkflow>[0],
+        );
+        writeWorkflowBuildResult(sourceGroup, data.requestId as string, result);
+        logger.info({ requestId: data.requestId, success: result.success }, 'Workflow create_workflow_def processed');
+      }
+      break;
+    }
+
+    case 'update_workflow_def': {
+      if (!deps.workflowBuilderService) break;
+      if (!isMain) {
+        if (data.requestId) {
+          writeWorkflowBuildResult(sourceGroup, data.requestId as string, {
+            success: false, error: 'Only the main group can update workflows.',
+          });
+        }
+        break;
+      }
+      if (data.workflowId && data.workflow && data.requestId) {
+        const result = deps.workflowBuilderService.updateWorkflow(
+          data.workflowId as string,
+          data.workflow as unknown as Parameters<typeof deps.workflowBuilderService.updateWorkflow>[1],
+        );
+        writeWorkflowBuildResult(sourceGroup, data.requestId as string, result);
+        logger.info({ requestId: data.requestId, workflowId: data.workflowId, success: result.success }, 'Workflow update_workflow_def processed');
+      }
+      break;
+    }
+
+    case 'delete_workflow_def': {
+      if (!deps.workflowBuilderService) break;
+      if (!isMain) {
+        if (data.requestId) {
+          writeWorkflowBuildResult(sourceGroup, data.requestId as string, {
+            success: false, error: 'Only the main group can delete workflows.',
+          });
+        }
+        break;
+      }
+      if (data.workflowId && data.requestId) {
+        const result = deps.workflowBuilderService.deleteWorkflow(data.workflowId as string);
+        writeWorkflowBuildResult(sourceGroup, data.requestId as string, result);
+        logger.info({ requestId: data.requestId, workflowId: data.workflowId, success: result.success }, 'Workflow delete_workflow_def processed');
+      }
+      break;
+    }
+
+    case 'validate_workflow_def': {
+      if (!deps.workflowBuilderService) break;
+      if (!isMain) {
+        if (data.requestId) {
+          writeWorkflowBuildResult(sourceGroup, data.requestId as string, {
+            success: false, error: 'Only the main group can validate workflows.',
+          });
+        }
+        break;
+      }
+      if (data.workflow && data.requestId) {
+        const result = deps.workflowBuilderService.validateWorkflow(
+          data.workflow as unknown as Parameters<typeof deps.workflowBuilderService.validateWorkflow>[0],
+        );
+        writeWorkflowBuildResult(sourceGroup, data.requestId as string, result);
+        logger.info({ requestId: data.requestId, success: result.success }, 'Workflow validate_workflow_def processed');
+      }
+      break;
+    }
+
+    case 'clone_workflow_def': {
+      if (!deps.workflowBuilderService) break;
+      if (!isMain) {
+        if (data.requestId) {
+          writeWorkflowBuildResult(sourceGroup, data.requestId as string, {
+            success: false, error: 'Only the main group can clone workflows.',
+          });
+        }
+        break;
+      }
+      if (data.sourceId && data.newId && data.requestId) {
+        const result = deps.workflowBuilderService.cloneWorkflow(
+          data.sourceId as string,
+          data.newId as string,
+          data.newName as string | undefined,
+        );
+        writeWorkflowBuildResult(sourceGroup, data.requestId as string, result);
+        logger.info({ requestId: data.requestId, sourceId: data.sourceId, newId: data.newId, success: result.success }, 'Workflow clone_workflow_def processed');
+      }
+      break;
+    }
+
+    case 'get_workflow_schema': {
+      if (!deps.workflowBuilderService) break;
+      if (data.requestId) {
+        const schema = deps.workflowBuilderService.getSchema();
+        writeWorkflowBuildResult(sourceGroup, data.requestId as string, {
+          success: true,
+          data: schema,
+        });
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

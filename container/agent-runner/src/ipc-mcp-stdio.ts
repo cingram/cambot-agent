@@ -685,6 +685,8 @@ server.tool(
     writeIpcFile(TASKS_DIR, data);
 
     return { content: [{ type: 'text' as const, text: `Workflow run ${args.run_id} cancellation requested.` }] };
+  },
+);
 
 server.tool(
   'delegate_to_worker',

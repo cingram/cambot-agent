@@ -853,7 +853,6 @@ export function insertMcpServer(server: McpServerRow): void {
 export function deleteMcpServer(id: string): void {
   db.prepare('DELETE FROM mcp_servers WHERE id = ?').run(id);
 }
-}
 
 // --- JSON migration ---
 
