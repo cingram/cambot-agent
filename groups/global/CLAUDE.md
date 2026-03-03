@@ -44,6 +44,19 @@ Here are the key findings from the research...
 
 Text inside `<internal>` tags is logged but not sent to the user. If you've already sent the key information via `send_message`, you can wrap the recap in `<internal>` to avoid sending it again.
 
+### Cross-channel messaging
+
+The `07-CHANNELS.md` context file tells you which channel this message came from and what other channels/chats are available. Use `send_message` with `target_jid` to send to a different channel:
+
+  send_message({ text: "Hello!", target_jid: "im:+1234567890" })
+
+This only works from the main group. Available JID formats:
+- web: `web:ui`
+- imessage: `im:{phone_or_email}`
+- whatsapp: `{number}@s.whatsapp.net` (1:1) or `{id}@g.us` (group)
+- telegram: `tg:{chatId}`
+- cli: `cli:console`
+
 ### Sub-agents and teammates
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.

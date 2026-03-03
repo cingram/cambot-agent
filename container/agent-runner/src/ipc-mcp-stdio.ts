@@ -45,11 +45,15 @@ server.tool(
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+    target_jid: z.string().optional().describe(
+      'Target chat JID for cross-channel messaging (main group only). '
+      + 'Defaults to current chat. Examples: "im:+1234567890", "web:ui", "tg:12345"',
+    ),
   },
   async (args) => {
     const data: Record<string, string | undefined> = {
       type: 'message',
-      chatJid,
+      chatJid: args.target_jid || chatJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,

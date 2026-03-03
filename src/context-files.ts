@@ -10,9 +10,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import Database from 'better-sqlite3';
 
-import { STORE_DIR } from './config.js';
 import { logger } from './logger.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -47,6 +45,13 @@ interface WorkflowSummary {
   schedule?: { cron: string; timezone?: string };
 }
 
+interface ChatInfo {
+  jid: string;
+  name: string;
+  channel: string;
+  is_group: number;
+}
+
 export interface ContextFileDeps {
   mcpServers: McpServerInfo[];
   skillsDir: string;
@@ -54,39 +59,8 @@ export interface ContextFileDeps {
   tasks: ScheduledTaskRow[];
   workflows: WorkflowSummary[];
   globalDir: string; // groups/global/ — source for static context files (SOUL.md, IDENTITY.md)
-}
-
-// ── Fact queries (read-only, best-effort) ────────────────────────────
-
-interface FactRow {
-  content: string;
-  type: string;
-  confidence: number;
-  decay_factor: number;
-  entity_name: string | null;
-}
-
-const RANKING_SQL = `(f.importance * f.confidence * f.decay_factor * (1.0 + 0.1 * (f.provenance_count - 1)))`;
-const ACTIVE_FILTER = `f.is_active = 1 AND f.confidence >= 0.5 AND f.decay_factor >= 0.3`;
-
-function queryUserFacts(db: Database.Database): FactRow[] {
-  try {
-    // Biographical + person-entity facts for user profile
-    const sql = `
-      SELECT DISTINCT f.content, f.type, f.confidence, f.decay_factor,
-             e.display AS entity_name
-      FROM facts f
-      LEFT JOIN entity_facts ef ON ef.fact_id = f.id
-      LEFT JOIN entities e ON e.id = ef.entity_id
-      WHERE ${ACTIVE_FILTER}
-        AND (f.type = 'biographical' OR (e.type = 'person' AND f.type IN ('opinion', 'world')))
-      ORDER BY ${RANKING_SQL} DESC
-      LIMIT 30
-    `;
-    return db.prepare(sql).all() as FactRow[];
-  } catch {
-    return [];
-  }
+  chatJid?: string;                    // current message's JID
+  getChats?: () => ChatInfo[];         // getAllChats from db.ts
 }
 
 // ── Generators ───────────────────────────────────────────────────────
@@ -205,43 +179,6 @@ function generateHeartbeatMd(tasks: ScheduledTaskRow[], workflows: WorkflowSumma
   return lines.join('\n');
 }
 
-function generateUserMd(db: Database.Database | null): string {
-  const lines: string[] = ['## User Profile\n'];
-
-  if (!db) {
-    lines.push('User profile unavailable.\n');
-    return lines.join('\n');
-  }
-
-  const facts = queryUserFacts(db);
-  if (facts.length === 0) {
-    lines.push('No user profile facts available yet.\n');
-    return lines.join('\n');
-  }
-
-  // Group by entity
-  const grouped = new Map<string, string[]>();
-  for (const fact of facts) {
-    const key = fact.entity_name || 'General';
-    const existing = grouped.get(key) ?? [];
-    const prefix = fact.decay_factor < 0.7 ? '(uncertain) ' : '';
-    existing.push(`${prefix}${fact.content}`);
-    grouped.set(key, existing);
-  }
-
-  for (const [entity, contents] of grouped) {
-    if (entity !== 'General') {
-      lines.push(`**${entity}**`);
-    }
-    for (const content of contents.slice(0, 8)) {
-      lines.push(`- ${content}`);
-    }
-    lines.push('');
-  }
-
-  return lines.join('\n');
-}
-
 // ── Skill scanner ────────────────────────────────────────────────────
 
 interface SkillInfo {
@@ -282,19 +219,42 @@ function scanSkills(skillsDir: string): SkillInfo[] {
   return skills;
 }
 
-// ── DB access (read-only, best-effort) ───────────────────────────────
+// ── Channel awareness ────────────────────────────────────────────────
 
-function openReadonlyDb(): Database.Database | null {
-  const dbPath = path.join(STORE_DIR, 'cambot.sqlite');
-  if (!fs.existsSync(dbPath)) return null;
+function resolveChannelFromJid(jid?: string): string {
+  if (!jid) return 'unknown';
+  if (jid.startsWith('web:')) return 'web';
+  if (jid.startsWith('im:')) return 'imessage';
+  if (jid.startsWith('tg:')) return 'telegram';
+  if (jid.startsWith('cli:')) return 'cli';
+  if (jid.startsWith('discord:')) return 'discord';
+  if (jid.includes('@g.us') || jid.includes('@s.whatsapp.net')) return 'whatsapp';
+  return 'unknown';
+}
 
-  try {
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-    db.pragma('journal_mode = WAL');
-    return db;
-  } catch {
-    return null;
+function generateChannelsMd(deps: ContextFileDeps): string {
+  const lines: string[] = ['## Channels\n'];
+
+  const currentChannel = resolveChannelFromJid(deps.chatJid);
+  lines.push(`**Current channel:** ${currentChannel} (${deps.chatJid})\n`);
+
+  const chats = deps.getChats?.() ?? [];
+  const byChannel = new Map<string, ChatInfo[]>();
+  for (const chat of chats) {
+    const ch = chat.channel || resolveChannelFromJid(chat.jid);
+    if (!byChannel.has(ch)) byChannel.set(ch, []);
+    byChannel.get(ch)!.push(chat);
   }
+
+  for (const [channel, chatList] of byChannel) {
+    lines.push(`### ${channel}`);
+    for (const chat of chatList.slice(0, 10)) {
+      lines.push(`- ${chat.name || chat.jid} — \`${chat.jid}\`${chat.is_group ? ' (group)' : ''}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
 }
 
 // ── Static file copy ─────────────────────────────────────────────────
@@ -330,16 +290,8 @@ export function writeContextFiles(
     copyStaticContextFile(deps.globalDir, contextDir, 'SOUL.md', '01-SOUL.md');
     copyStaticContextFile(deps.globalDir, contextDir, 'IDENTITY.md', '02-IDENTITY.md');
 
-    // Dynamic files
-    const db = openReadonlyDb();
-    try {
-      fs.writeFileSync(
-        path.join(contextDir, '03-USER.md'),
-        generateUserMd(db),
-      );
-    } finally {
-      db?.close();
-    }
+    // 03-USER.md is intentionally empty — agent queries the DB on demand
+    fs.writeFileSync(path.join(contextDir, '03-USER.md'), '');
 
     fs.writeFileSync(
       path.join(contextDir, '04-TOOLS.md'),
@@ -355,6 +307,13 @@ export function writeContextFiles(
       path.join(contextDir, '06-HEARTBEAT.md'),
       generateHeartbeatMd(deps.tasks, deps.workflows),
     );
+
+    if (deps.chatJid) {
+      fs.writeFileSync(
+        path.join(contextDir, '07-CHANNELS.md'),
+        generateChannelsMd(deps),
+      );
+    }
   } catch (err) {
     logger.warn({ err, groupIpcDir }, 'Failed to write context files');
   }

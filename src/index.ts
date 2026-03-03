@@ -580,6 +580,8 @@ async function runAgent(
             schedule: wf.schedule,
           }))
         : [],
+      chatJid,
+      getChats: () => getAllChats(),
     });
   }
 
