@@ -494,7 +494,13 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     logger.info({ model, promptLength: prompt.length }, 'Message AI compose: starting');
     const customAgent = resolveCustomAgent(model ? { provider: 'anthropic', model } : {});
     const containerResult = await deps.runAgentContainer({ prompt, customAgent });
-    logger.info({ resultLength: containerResult.text.length, costUsd: containerResult.totalCostUsd }, 'Message AI compose: complete');
+    logger.info({
+      resultLength: containerResult.text.length,
+      cost_usd: containerResult.totalCostUsd,
+      tokens_in: containerResult.tokensIn,
+      tokens_out: containerResult.tokensOut,
+      model,
+    }, 'Message AI compose: complete');
     return {
       data: containerResult.text,
       tokensIn: containerResult.tokensIn ?? 0,
@@ -572,28 +578,57 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     return runner;
   }
 
+  /** Cached file mtimes from last successful reload, keyed by filename. */
+  let lastMtimes = new Map<string, number>();
+
+  function filesChanged(): boolean {
+    if (!fs.existsSync(workflowsDir)) return lastMtimes.size > 0;
+
+    const files = fs.readdirSync(workflowsDir).filter(f =>
+      f.endsWith('.yaml') || f.endsWith('.yml'),
+    );
+
+    if (files.length !== lastMtimes.size) return true;
+
+    for (const file of files) {
+      const mtime = fs.statSync(path.join(workflowsDir, file)).mtimeMs;
+      if (lastMtimes.get(file) !== mtime) return true;
+    }
+    return false;
+  }
+
   return {
     reloadDefinitions(): void {
+      if (definitions.size > 0 && !filesChanged()) return;
+
       definitions = new Map();
       runners.clear();
 
-      if (!fs.existsSync(workflowsDir)) return;
+      if (!fs.existsSync(workflowsDir)) {
+        lastMtimes = new Map();
+        return;
+      }
 
       const files = fs.readdirSync(workflowsDir).filter(f =>
         f.endsWith('.yaml') || f.endsWith('.yml'),
       );
 
+      const newMtimes = new Map<string, number>();
+
       for (const file of files) {
         try {
-          const yamlContent = fs.readFileSync(path.join(workflowsDir, file), 'utf-8');
+          const filePath = path.join(workflowsDir, file);
+          const yamlContent = fs.readFileSync(filePath, 'utf-8');
           const workflow = loadWorkflow(yamlContent);
           definitions.set(workflow.id, workflow);
+          newMtimes.set(file, fs.statSync(filePath).mtimeMs);
           logger.info({ workflowId: workflow.id, name: workflow.name }, 'Workflow loaded');
         } catch (err) {
           logger.error({ file, err }, 'Failed to load workflow definition');
         }
       }
 
+      lastMtimes = newMtimes;
       logger.info({ count: definitions.size }, 'Workflow definitions loaded');
     },
 

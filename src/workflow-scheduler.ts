@@ -86,9 +86,6 @@ export function startWorkflowSchedulerLoop(deps: WorkflowSchedulerDeps): void {
           'Scheduled workflow due — processing',
         );
 
-        // Reload definitions in case YAML changed since last sync
-        deps.workflowService.reloadDefinitions();
-
         const wf = deps.workflowService.getWorkflow(workflowId);
         if (!wf?.schedule?.cron) {
           logger.warn({ workflowId }, 'Scheduled workflow not found after reload — removing');
