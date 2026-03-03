@@ -19,7 +19,7 @@ export interface LifecycleInterceptor {
   ingestResponse(groupFolder: string, chatJid: string, text: string): void;
   redactPrompt(prompt: string): { redacted: string; mappings: PiiMapping[] };
   restoreOutput(text: string, mappings: PiiMapping[]): string;
-  getBootContext(): string;
+  getBootContext(queryText?: string): Promise<string>;
   recordTelemetry(telemetry: ContainerTelemetry, channel?: string): void;
   recordContainerError(error: string, durationMs: number, channel?: string): void;
   recordStepCost(cost: { provider: string; model: string; tokensIn: number; tokensOut: number; costUsd: number; taskLabel: string }): void;
@@ -187,6 +187,14 @@ export function createLifecycleInterceptor(
           toolInvocations: telemetry.toolInvocations,
           status: 'success',
         });
+        logger.info({
+          cost_usd: telemetry.totalCostUsd,
+          tokens_in: telemetry.usage.inputTokens,
+          tokens_out: telemetry.usage.outputTokens,
+          duration_ms: telemetry.durationMs,
+          num_turns: telemetry.numTurns,
+          channel,
+        }, 'Container telemetry recorded');
       } catch (err) {
         logger.warn({ err }, 'Failed to record container telemetry');
       }
@@ -207,6 +215,7 @@ export function createLifecycleInterceptor(
           status: 'error',
           errorMessage: error,
         });
+        logger.error({ error, duration_ms: durationMs, channel }, 'Container error recorded');
       } catch (err) {
         logger.warn({ err }, 'Failed to record container error telemetry');
       }
@@ -224,18 +233,31 @@ export function createLifecycleInterceptor(
           callCount: 1,
           taskLabel: cost.taskLabel,
         });
+        logger.info({
+          cost_usd: cost.costUsd,
+          tokens_in: cost.tokensIn,
+          tokens_out: cost.tokensOut,
+          provider: cost.provider,
+          model: cost.model,
+          task_label: cost.taskLabel,
+        }, 'Workflow step cost recorded');
       } catch (err) {
         logger.warn({ err }, 'Failed to record workflow step cost');
       }
     },
 
-    getBootContext(): string {
+    async getBootContext(queryText?: string): Promise<string> {
       try {
+        // When queryText is provided, skip cache — message-specific context
+        if (queryText) {
+          return await core.buildContext(queryText);
+        }
+        // No queryText: use 60s cache for boot-only calls
         const now = Date.now();
         if (now - bootContextCachedAt < BOOT_CONTEXT_TTL_MS && cachedBootContext) {
           return cachedBootContext;
         }
-        cachedBootContext = core.buildBootContext();
+        cachedBootContext = await core.buildContext();
         bootContextCachedAt = now;
         return cachedBootContext;
       } catch (err) {

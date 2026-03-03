@@ -15,6 +15,7 @@ const envConfig = readEnvFile([
   'WEB_CHANNEL_PORT',
   'WORKSPACE_MCP_PORT',
   'MEMORY_MODE',
+  'CONTEXT_TOKEN_BUDGET',
 ]);
 
 export const ASSISTANT_NAME =
@@ -97,6 +98,12 @@ export type MemoryMode = 'markdown' | 'database' | 'both';
 const rawMemoryMode = process.env.MEMORY_MODE || envConfig.MEMORY_MODE || 'both';
 export const MEMORY_MODE: MemoryMode =
   rawMemoryMode === 'markdown' || rawMemoryMode === 'database' ? rawMemoryMode : 'both';
+
+// Context token budget for unified context assembly
+export const CONTEXT_TOKEN_BUDGET = parseInt(
+  process.env.CONTEXT_TOKEN_BUDGET || envConfig.CONTEXT_TOKEN_BUDGET || '4000',
+  10,
+);
 
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default

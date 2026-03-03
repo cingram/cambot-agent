@@ -6,6 +6,7 @@ import {
   ADMIN_JID,
   ADMIN_TRIGGER,
   ASSISTANT_NAME,
+  CONTEXT_TOKEN_BUDGET,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -58,10 +59,9 @@ import { createMessageBus } from './message-bus.js';
 import { formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { startWorkflowSchedulerLoop } from './workflow-scheduler.js';
-import { Channel, MessageBus, NewMessage, RegisteredGroup } from './types.js';
+import { Channel, ExecutionContext, MessageBus, NewMessage, RegisteredGroup, toExecutionContext } from './types.js';
 import { logger } from './logger.js';
 import { createCustomAgentService, CustomAgentService } from './custom-agent-service.js';
-import { buildMemoryContext } from './memory-context.js';
 import { createShadowAgent } from './shadow-agent.js';
 import { createWorkflowService, WorkflowService, type AgentStepInput, type AgentContainerResult } from './workflow-service.js';
 import { createWorkflowBuilderService, WorkflowBuilderService } from './workflow-builder-service.js';
@@ -186,7 +186,7 @@ function cleanIpcInputDir(groupFolder: string): void {
   const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
   try {
     for (const f of fs.readdirSync(inputDir)) {
-      if (f.endsWith('.json') || f === '_close' || f === '_memory_context.md') {
+      if (f.endsWith('.json') || f === '_close') {
         try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
       }
     }
@@ -204,7 +204,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Verify at least one channel can handle this JID
   const hasChannel = channels.some(ch => ch.ownsJid(chatJid));
   if (!hasChannel) {
-    console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
+    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
     return true;
   }
 
@@ -264,7 +264,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Lifecycle interceptor: boot context + PII redaction
   // Build the full prompt first (boot context + message text), then redact
   // everything in one pass so entity names in boot context headings get caught.
-  const bootContext = interceptor ? interceptor.getBootContext() : '';
+  const bootContext = interceptor ? await interceptor.getBootContext(rawPrompt) : '';
   const fullRawPrompt = bootContext
     ? `<system-context>\n${bootContext}\n</system-context>\n\n${rawPrompt}`
     : rawPrompt;
@@ -273,9 +273,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     : { redacted: fullRawPrompt, mappings: [] };
   interceptor?.startSession(group.folder, chatJid);
 
-  // Build query-relevant memory context from the last user message
-  const lastMessageContent = missedMessages[missedMessages.length - 1].content;
-  const memoryContext = await buildMemoryContext(lastMessageContent);
+  // Memory context is no longer pre-built — the agent queries the DB on demand
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -372,7 +370,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
-  }, memoryContext);
+  });
 
   // Stop typing indicator
   messageBus.emitAsync({
@@ -434,10 +432,31 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-  memoryContext?: string | null,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
+  let sessionId: string | undefined = sessions[group.folder];
+
+  // Rotate session when transcript gets too large (>500KB).
+  // Large sessions cause API calls to take minutes and cost significantly more
+  // because the entire conversation history is sent with every request.
+  if (sessionId) {
+    const transcriptPath = path.join(
+      DATA_DIR, 'sessions', group.folder, '.claude', 'projects',
+      '-workspace-group', `${sessionId}.jsonl`,
+    );
+    try {
+      const stat = fs.statSync(transcriptPath);
+      if (stat.size > 512_000) {
+        logger.info(
+          { group: group.name, sessionId, sizeKB: Math.round(stat.size / 1024) },
+          'Session transcript too large, starting fresh session',
+        );
+        sessionId = undefined;
+      }
+    } catch {
+      // File not found — session may have been cleaned up, start fresh
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -580,7 +599,7 @@ async function runAgent(
     const agentOpts = resolveAgentImage(leadId);
 
     const output = await runContainerAgent(
-      group,
+      toExecutionContext(group, isMain),
       {
         prompt,
         sessionId,
@@ -588,7 +607,6 @@ async function runAgent(
         chatJid,
         isMain,
         mcpServers: integrationMgr?.getActiveMcpServers(),
-        memoryContext: memoryContext ?? undefined,
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -653,7 +671,7 @@ async function startMessageLoop(): Promise<void> {
 
           const hasChannel = channels.some(ch => ch.ownsJid(chatJid));
           if (!hasChannel) {
-            console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
+            logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
             continue;
           }
 
@@ -696,19 +714,6 @@ async function startMessageLoop(): Promise<void> {
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
-
-            // Write refreshed memory context for the follow-up message
-            const lastContent = messagesToSend[messagesToSend.length - 1].content;
-            buildMemoryContext(lastContent).then((ctx) => {
-              if (ctx) {
-                const ipcInputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
-                try {
-                  fs.writeFileSync(path.join(ipcInputDir, '_memory_context.md'), ctx);
-                } catch (err) {
-                  logger.warn({ err, group: group.folder }, 'Failed to write _memory_context.md');
-                }
-              }
-            }).catch(() => {});
 
             // Typing indicator via bus
             messageBus.emitAsync({
@@ -774,19 +779,19 @@ function ensureContainerSystemRunning(): void {
 
 async function main(): Promise<void> {
   process.on('unhandledRejection', (reason) => {
-    console.error('[FATAL] Unhandled rejection:', reason);
+    logger.fatal({ err: reason }, 'Unhandled rejection');
   });
   process.on('uncaughtException', (err) => {
-    console.error('[FATAL] Uncaught exception:', err);
+    logger.fatal({ err }, 'Uncaught exception');
   });
   process.on('beforeExit', (code) => {
-    console.error('[DEBUG] beforeExit code:', code);
+    logger.debug({ code }, 'beforeExit');
   });
   process.on('exit', (code) => {
-    console.error('[DEBUG] exit code:', code);
+    logger.debug({ code }, 'exit');
   });
-  process.on('SIGTERM', () => console.error('[DEBUG] SIGTERM'));
-  process.on('SIGINT', () => console.error('[DEBUG] SIGINT'));
+  process.on('SIGTERM', () => logger.info('SIGTERM received'));
+  process.on('SIGINT', () => logger.info('SIGINT received'));
 
   ensureContainerSystemRunning();
   initDatabase();
@@ -802,6 +807,7 @@ async function main(): Promise<void> {
       geminiApiKey: coreEnv.GEMINI_API_KEY || process.env.GEMINI_API_KEY || '',
       anthropicApiKey: coreEnv.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || '',
       piiRedactionTags: [],
+      contextTokenBudget: CONTEXT_TOKEN_BUDGET,
     });
     const core = createCamBotCore(coreConfig);
     interceptor = createLifecycleInterceptor(core, logger);
@@ -814,13 +820,11 @@ async function main(): Promise<void> {
   // ── Initialize Workflow Service ──────────────────────────────────────────
   // Workflow agent steps spawn a container with the existing Agent SDK + OAuth
   // token, using an extended timeout for long-running operations.
-  const workflowGroup: RegisteredGroup = {
+  const workflowExecution: ExecutionContext = {
     name: 'Workflow Agent',
     folder: 'workflows',
-    trigger: '',
-    added_at: new Date().toISOString(),
+    isMain: true,
     containerConfig: { timeout: WORKFLOW_CONTAINER_TIMEOUT },
-    requiresTrigger: false,
   };
 
   // Create message bus early — workflow service needs it for delivery
@@ -863,10 +867,10 @@ async function main(): Promise<void> {
         ];
       }
       const containerPromise = runContainerAgent(
-        workflowGroup,
+        workflowExecution,
         {
           prompt: input.prompt,
-          groupFolder: workflowGroup.folder,
+          groupFolder: workflowExecution.folder,
           chatJid: 'workflows',
           isMain: true,
           customAgent: input.customAgent,

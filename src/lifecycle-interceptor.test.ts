@@ -57,7 +57,9 @@ function mockCore(overrides: Partial<CamBotCoreServices> = {}): CamBotCoreServic
     provenanceStore: {} as any,
     reflectionSourceStore: {} as any,
     feedbackService: {} as any,
-    buildBootContext: vi.fn().mockReturnValue('# Boot Context'),
+    modelPricingStore: {} as any,
+    contextAssembler: { build: vi.fn().mockResolvedValue({ context: '# Boot Context', factIds: [] }) } as any,
+    buildContext: vi.fn().mockResolvedValue('# Boot Context'),
     redactPii: vi.fn().mockImplementation((text: string) => ({
       redacted: text.replace(/test@example\.com/g, '[EMAIL_1]'),
       mappings: text.includes('test@example.com')
@@ -140,27 +142,36 @@ describe('createLifecycleInterceptor', () => {
   });
 
   describe('getBootContext', () => {
-    it('returns boot context from core', () => {
-      const result = interceptor.getBootContext();
+    it('returns boot context from core', async () => {
+      const result = await interceptor.getBootContext();
       expect(result).toBe('# Boot Context');
-      expect(core.buildBootContext).toHaveBeenCalled();
+      expect(core.buildContext).toHaveBeenCalled();
     });
 
-    it('caches boot context for 60s', () => {
-      interceptor.getBootContext();
-      interceptor.getBootContext();
-      interceptor.getBootContext();
+    it('caches boot context for 60s when no queryText', async () => {
+      await interceptor.getBootContext();
+      await interceptor.getBootContext();
+      await interceptor.getBootContext();
 
-      expect(core.buildBootContext).toHaveBeenCalledTimes(1);
+      expect(core.buildContext).toHaveBeenCalledTimes(1);
     });
 
-    it('returns empty string on error', () => {
+    it('skips cache when queryText is provided', async () => {
+      await interceptor.getBootContext();
+      await interceptor.getBootContext('what is X?');
+      await interceptor.getBootContext('what is Y?');
+
+      // 1 cached boot call + 2 query-specific calls
+      expect(core.buildContext).toHaveBeenCalledTimes(3);
+    });
+
+    it('returns empty string on error', async () => {
       core = mockCore({
-        buildBootContext: vi.fn().mockImplementation(() => { throw new Error('fail'); }),
+        buildContext: vi.fn().mockRejectedValue(new Error('fail')),
       });
       interceptor = createLifecycleInterceptor(core, logger);
 
-      expect(interceptor.getBootContext()).toBe('');
+      expect(await interceptor.getBootContext()).toBe('');
     });
   });
 

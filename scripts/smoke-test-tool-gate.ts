@@ -80,7 +80,7 @@ async function main() {
   // Test 3: Boot context
   console.log('\n--- Test 3: Boot context ---');
   const start = Date.now();
-  const bootCtx = core.buildBootContext();
+  const bootCtx = await core.buildContext();
   const elapsed = Date.now() - start;
   console.log(`  Boot context: ${bootCtx.length} chars (${elapsed}ms)`);
 
