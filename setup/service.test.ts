@@ -19,7 +19,7 @@ function generatePlist(nodePath: string, projectRoot: string, homeDir: string): 
     <key>ProgramArguments</key>
     <array>
         <string>${nodePath}</string>
-        <string>${projectRoot}/dist/index.js</string>
+        <string>${projectRoot}/dist/main.js</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${projectRoot}</string>
@@ -54,7 +54,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${nodePath} ${projectRoot}/dist/index.js
+ExecStart=${nodePath} ${projectRoot}/dist/main.js
 WorkingDirectory=${projectRoot}
 Restart=always
 RestartSec=5
@@ -78,9 +78,9 @@ describe('plist generation', () => {
     expect(plist).toContain('<string>/opt/node/bin/node</string>');
   });
 
-  it('points to dist/index.js', () => {
+  it('points to dist/main.js', () => {
     const plist = generatePlist('/usr/local/bin/node', '/home/user/cambot-agent', '/home/user');
-    expect(plist).toContain('/home/user/cambot-agent/dist/index.js');
+    expect(plist).toContain('/home/user/cambot-agent/dist/main.js');
   });
 
   it('sets log paths', () => {
@@ -109,7 +109,7 @@ describe('systemd unit generation', () => {
 
   it('sets correct ExecStart', () => {
     const unit = generateSystemdUnit('/usr/bin/node', '/srv/cambot-agent', '/home/user', false);
-    expect(unit).toContain('ExecStart=/usr/bin/node /srv/cambot-agent/dist/index.js');
+    expect(unit).toContain('ExecStart=/usr/bin/node /srv/cambot-agent/dist/main.js');
   });
 });
 
@@ -123,7 +123,7 @@ describe('WSL nohup fallback', () => {
     const wrapper = `#!/bin/bash
 set -euo pipefail
 cd ${JSON.stringify(projectRoot)}
-nohup ${JSON.stringify(nodePath)} ${JSON.stringify(projectRoot)}/dist/index.js >> ${JSON.stringify(projectRoot)}/logs/cambot-agent.log 2>> ${JSON.stringify(projectRoot)}/logs/cambot-agent.error.log &
+nohup ${JSON.stringify(nodePath)} ${JSON.stringify(projectRoot)}/dist/main.js >> ${JSON.stringify(projectRoot)}/logs/cambot-agent.log 2>> ${JSON.stringify(projectRoot)}/logs/cambot-agent.error.log &
 echo $! > ${JSON.stringify(pidFile)}`;
 
     expect(wrapper).toContain('#!/bin/bash');

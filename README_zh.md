@@ -127,14 +127,15 @@ WhatsApp (baileys) --> SQLite --> 轮询循环 --> 容器 (Claude Agent SDK) -->
 单一 Node.js 进程。智能体在具有挂载目录的隔离 Linux 容器中执行。每个群组的消息队列都带有全局并发控制。通过文件系统进行进程间通信（IPC）。
 
 关键文件：
-- `src/index.ts` - 编排器：状态管理、消息循环、智能体调用
+- `src/orchestrator/app.ts` - 编排器：状态管理、消息循环、智能体调用
 - `src/channels/whatsapp.ts` - WhatsApp 连接、认证、收发消息
-- `src/ipc.ts` - IPC 监听与任务处理
-- `src/router.ts` - 消息格式化与出站路由
-- `src/group-queue.ts` - 各带全局并发限制的群组队列
-- `src/container-runner.ts` - 生成流式智能体容器
-- `src/task-scheduler.ts` - 运行计划任务
-- `src/db.ts` - SQLite 操作（消息、群组、会话、状态）
+- `src/ipc/watcher.ts` - IPC 监听轮询循环
+- `src/ipc/task-handler.ts` - IPC 任务处理（计划、工作流、智能体）
+- `src/utils/router.ts` - 消息格式化与出站路由
+- `src/groups/group-queue.ts` - 各带全局并发限制的群组队列
+- `src/container/runner.ts` - 生成流式智能体容器
+- `src/scheduling/task-scheduler.ts` - 运行计划任务
+- `src/db/` - SQLite 操作（消息、群组、会话、状态）
 - `groups/*/CLAUDE.md` - 各群组的记忆
 
 ## FAQ

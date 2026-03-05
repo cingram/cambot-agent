@@ -20,7 +20,7 @@ describe('add-gmail skill', () => {
   });
 
   it('agent-runner has gmail MCP server', () => {
-    const content = read('container/agent-runner/src/index.ts');
+    const content = read('agent-runner/src/index.ts');
     expect(content).toContain('mcp__gmail__*');
     expect(content).toContain('@gongrzhe/server-gmail-autoauth-mcp');
   });

@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Runner Architecture</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap');
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0b0f;
+  --bg-panel: #111219;
+  --bg-card: #181a24;
+  --bg-hover: #1e2030;
+  --border: #262840;
+  --border-active: #4a4f6a;
+  --text: #e2e4f0;
+  --text-dim: #8a8fb0;
+  --text-muted: #4a4f6a;
+  --foundation: #9ca3af;
+  --foundation-bg: rgba(156,163,175,0.06);
+  --foundation-border: rgba(156,163,175,0.15);
+  --infra: #60a5fa;
+  --infra-bg: rgba(96,165,250,0.06);
+  --infra-border: rgba(96,165,250,0.18);
+  --domain: #34d399;
+  --domain-bg: rgba(52,211,153,0.06);
+  --domain-border: rgba(52,211,153,0.18);
+  --orch: #fbbf24;
+  --orch-bg: rgba(251,191,36,0.06);
+  --orch-border: rgba(251,191,36,0.18);
+  --comp: #c084fc;
+  --comp-bg: rgba(192,132,252,0.06);
+  --comp-border: rgba(192,132,252,0.18);
+  --accent: #60a5fa;
+  --glow: rgba(96,165,250,0.2);
+  --flow-color: #38bdf8;
+}
+
+html, body { height: 100%; font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+body { display: flex; flex-direction: column; }
+
+/* ── Header ─────────────────────────────── */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px; border-bottom: 1px solid var(--border);
+  background: var(--bg-panel); flex-shrink: 0;
+}
+.header-left { display: flex; align-items: center; gap: 14px; }
+.logo {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: linear-gradient(135deg, #3b82f6, #a855f7);
+  display: flex; align-items: center; justify-content: center;
+  font: 700 12px 'JetBrains Mono', monospace; color: #fff;
+}
+.header h1 { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
+.header h1 span { color: var(--text-dim); font-weight: 400; font-size: 14px; }
+
+.tabs { display: flex; gap: 2px; background: var(--bg); border-radius: 9px; padding: 3px; }
+.tab {
+  padding: 7px 18px; border-radius: 7px; font: 500 12px 'Outfit', sans-serif;
+  color: var(--text-dim); cursor: pointer; border: none; background: transparent;
+  transition: all 0.2s;
+}
+.tab:hover { color: var(--text); background: var(--bg-hover); }
+.tab.active { color: var(--text); background: var(--bg-card); box-shadow: 0 1px 4px rgba(0,0,0,0.4); }
+
+/* ── Main ───────────────────────────────── */
+.main { flex: 1; display: flex; overflow: hidden; }
+.canvas-wrap { flex: 1; position: relative; overflow: hidden; }
+
+/* ── ARCHITECTURE VIEW ──────────────────── */
+#arch-view { width: 100%; height: 100%; position: relative; padding: 20px 40px; }
+
+.arch-grid {
+  display: flex; flex-direction: column; gap: 24px;
+  width: 100%; height: 100%; justify-content: space-evenly;
+}
+.arch-row {
+  display: flex; justify-content: center; gap: 16px; flex-shrink: 0;
+}
+.arch-row-label {
+  font: 600 10px 'JetBrains Mono', monospace; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-muted); align-self: center;
+  writing-mode: vertical-rl; transform: rotate(180deg); margin-right: 12px;
+  min-width: 14px;
+}
+
+.node {
+  border-radius: 10px; padding: 12px 16px; cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.22,1,0.36,1);
+  border: 1px solid transparent; min-width: 130px; max-width: 200px;
+  user-select: none; position: relative;
+}
+.node:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+.node.active { z-index: 10; }
+.node.highlight { animation: glow 1.5s ease-in-out infinite; }
+@keyframes glow {
+  0%,100% { box-shadow: 0 0 0 1px var(--flow-color), 0 0 16px rgba(56,189,248,0.15); }
+  50% { box-shadow: 0 0 0 2px var(--flow-color), 0 0 32px rgba(56,189,248,0.3); }
+}
+
+.node-label { font: 600 10px/1 'Outfit', sans-serif; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 5px; opacity: 0.6; }
+.node-name { font: 600 13px 'JetBrains Mono', monospace; margin-bottom: 3px; }
+.node-desc { font-size: 11px; color: var(--text-dim); line-height: 1.3; }
+
+/* layer themes */
+.node.l-found { background: var(--foundation-bg); border-color: var(--foundation-border); }
+.node.l-found .node-name, .node.l-found .node-label { color: var(--foundation); }
+.node.l-found.active { border-color: var(--foundation); box-shadow: 0 0 0 1px var(--foundation), 0 0 24px rgba(156,163,175,0.15); }
+
+.node.l-infra { background: var(--infra-bg); border-color: var(--infra-border); }
+.node.l-infra .node-name, .node.l-infra .node-label { color: var(--infra); }
+.node.l-infra.active { border-color: var(--infra); box-shadow: 0 0 0 1px var(--infra), 0 0 24px rgba(96,165,250,0.15); }
+
+.node.l-domain { background: var(--domain-bg); border-color: var(--domain-border); }
+.node.l-domain .node-name, .node.l-domain .node-label { color: var(--domain); }
+.node.l-domain.active { border-color: var(--domain); box-shadow: 0 0 0 1px var(--domain), 0 0 24px rgba(52,211,153,0.15); }
+
+.node.l-orch { background: var(--orch-bg); border-color: var(--orch-border); }
+.node.l-orch .node-name, .node.l-orch .node-label { color: var(--orch); }
+.node.l-orch.active { border-color: var(--orch); box-shadow: 0 0 0 1px var(--orch), 0 0 24px rgba(251,191,36,0.15); }
+
+.node.l-comp { background: var(--comp-bg); border-color: var(--comp-border); }
+.node.l-comp .node-name, .node.l-comp .node-label { color: var(--comp); }
+.node.l-comp.active { border-color: var(--comp); box-shadow: 0 0 0 1px var(--comp), 0 0 24px rgba(192,132,252,0.15); }
+
+/* ── SVG arrows ─────────────────────────── */
+.arrows-svg {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 0;
+}
+.arrows-svg path {
+  fill: none; stroke: var(--border); stroke-width: 1.2;
+  transition: stroke 0.3s, stroke-width 0.3s, opacity 0.3s;
+}
+.arrows-svg path.dim { opacity: 0.15; }
+.arrows-svg path.lit {
+  stroke: var(--flow-color); stroke-width: 2;
+  filter: drop-shadow(0 0 3px rgba(56,189,248,0.4));
+}
+.arrows-svg marker path { stroke: none; }
+
+/* ── Detail Panel ───────────────────────── */
+.detail-panel {
+  width: 360px; background: var(--bg-panel); border-left: 1px solid var(--border);
+  overflow-y: auto; flex-shrink: 0; transition: width 0.3s, opacity 0.3s;
+}
+.detail-panel.collapsed { width: 0; overflow: hidden; border-left-color: transparent; }
+
+.dp-head { padding: 18px 20px; border-bottom: 1px solid var(--border); }
+.dp-close { float: right; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 18px; padding: 2px; }
+.dp-close:hover { color: var(--text); }
+.dp-title { font: 600 15px 'JetBrains Mono', monospace; margin-bottom: 3px; }
+.dp-file { font: 400 11px 'JetBrains Mono', monospace; color: var(--text-dim); }
+
+.dp-section { padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.dp-section h3 {
+  font: 600 10px 'Outfit', sans-serif; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 8px;
+}
+.dp-section p { font-size: 13px; line-height: 1.55; color: var(--text-dim); }
+
+.method-list { list-style: none; }
+.method-list li {
+  font: 500 11px 'JetBrains Mono', monospace; padding: 6px 10px;
+  border-radius: 6px; margin-bottom: 3px; background: var(--bg);
+  color: var(--accent); border: 1px solid var(--border);
+}
+.method-list .mdesc { display: block; font: 400 10px 'Outfit', sans-serif; color: var(--text-dim); margin-top: 2px; }
+
+.dep-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.dep-tag {
+  font: 500 10px 'JetBrains Mono', monospace; padding: 3px 10px;
+  border-radius: 16px; cursor: pointer; transition: all 0.2s;
+}
+.dep-tag:hover { filter: brightness(1.3); }
+.dep-tag.t-found { background: var(--foundation-bg); color: var(--foundation); border: 1px solid var(--foundation-border); }
+.dep-tag.t-infra { background: var(--infra-bg); color: var(--infra); border: 1px solid var(--infra-border); }
+.dep-tag.t-domain { background: var(--domain-bg); color: var(--domain); border: 1px solid var(--domain-border); }
+.dep-tag.t-orch { background: var(--orch-bg); color: var(--orch); border: 1px solid var(--orch-border); }
+.dep-tag.t-comp { background: var(--comp-bg); color: var(--comp); border: 1px solid var(--comp-border); }
+
+/* ── FLOW VIEW ──────────────────────────── */
+#flow-view { display: none; width: 100%; height: 100%; flex-direction: column; }
+#flow-view.visible { display: flex; }
+
+.flow-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 20px; border-bottom: 1px solid var(--border);
+  background: var(--bg-panel); flex-shrink: 0;
+}
+.fbtn {
+  width: 34px; height: 34px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--bg-card); color: var(--text); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 14px;
+  transition: all 0.2s;
+}
+.fbtn:hover { background: var(--bg-hover); border-color: var(--border-active); }
+.fbtn:disabled { opacity: 0.3; cursor: default; }
+.fbtn.playing { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+.timeline { flex: 1; height: 5px; background: var(--bg); border-radius: 3px; position: relative; cursor: pointer; }
+.timeline-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s; }
+.timeline-dots { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 1px; }
+.tdot { width: 9px; height: 9px; border-radius: 50%; background: var(--border); border: 2px solid var(--bg-panel); z-index: 1; cursor: pointer; transition: all 0.2s; }
+.tdot.on { background: var(--accent); box-shadow: 0 0 6px var(--glow); }
+.tdot.past { background: var(--accent); opacity: 0.4; }
+
+.step-info { font-size: 12px; color: var(--text-dim); min-width: 80px; text-align: right; }
+.step-info b { color: var(--text); }
+
+.scene-sel {
+  font: 500 12px 'Outfit', sans-serif; padding: 7px 12px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text);
+  cursor: pointer; outline: none;
+}
+.scene-sel:focus { border-color: var(--accent); }
+
+/* flow canvas: use CSS grid layout for nodes */
+.flow-canvas { flex: 1; position: relative; overflow: hidden; }
+
+.flow-stage {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-rows: auto auto auto auto auto;
+  gap: 12px 16px;
+  padding: 24px 32px;
+  width: 100%; height: 100%;
+  align-content: space-evenly;
+}
+
+.fn {
+  border-radius: 8px; padding: 8px 12px;
+  font: 500 12px 'JetBrains Mono', monospace;
+  transition: all 0.35s cubic-bezier(0.22,1,0.36,1);
+  border: 1px solid transparent; opacity: 0.25;
+  display: flex; flex-direction: column; gap: 2px;
+  justify-content: center;
+}
+.fn .fn-sub { font: 400 10px 'Outfit', sans-serif; color: var(--text-dim); opacity: 0.7; }
+.fn.on { opacity: 1; }
+.fn.lit {
+  opacity: 1; border-color: var(--flow-color);
+  box-shadow: 0 0 0 1px var(--flow-color), 0 0 16px rgba(56,189,248,0.15);
+}
+
+.fn.f-found { background: var(--foundation-bg); color: var(--foundation); }
+.fn.f-infra { background: var(--infra-bg); color: var(--infra); }
+.fn.f-domain { background: var(--domain-bg); color: var(--domain); }
+.fn.f-orch { background: var(--orch-bg); color: var(--orch); }
+.fn.f-comp { background: var(--comp-bg); color: var(--comp); }
+
+.flow-explain {
+  position: absolute; bottom: 16px; left: 16px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 18px; max-width: 420px; z-index: 20;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+}
+.flow-explain .fe-title { font: 600 14px 'Outfit', sans-serif; color: var(--text); margin-bottom: 5px; }
+.flow-explain .fe-desc { font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+.flow-explain .fe-desc code {
+  font: 500 11px 'JetBrains Mono', monospace; background: var(--bg);
+  padding: 1px 5px; border-radius: 3px; color: var(--accent);
+}
+.flow-explain .fe-data {
+  margin-top: 8px; font: 400 11px 'JetBrains Mono', monospace;
+  background: var(--bg); padding: 7px 10px; border-radius: 5px;
+  color: var(--flow-color); white-space: pre-wrap; border: 1px solid var(--border);
+  max-height: 80px; overflow-y: auto;
+}
+
+/* flow arrow SVG */
+.flow-svg {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 5;
+}
+.flow-svg line {
+  stroke: var(--flow-color); stroke-width: 2; opacity: 0;
+  transition: opacity 0.3s;
+  filter: drop-shadow(0 0 3px rgba(56,189,248,0.3));
+}
+.flow-svg line.show { opacity: 1; }
+.flow-svg marker path { fill: var(--flow-color); stroke: none; }
+
+/* data packet */
+.packet {
+  position: absolute; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--flow-color); box-shadow: 0 0 10px var(--flow-color);
+  pointer-events: none; z-index: 10;
+}
+
+/* ── SCENARIOS VIEW ─────────────────────── */
+#scene-view { display: none; width: 100%; height: 100%; flex-direction: column; }
+#scene-view.visible { display: flex; }
+
+.scene-head { padding: 18px 24px; border-bottom: 1px solid var(--border); background: var(--bg-panel); flex-shrink: 0; }
+.scene-head h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.scene-head p { font-size: 12px; color: var(--text-dim); }
+
+.scene-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px; padding: 20px 24px; overflow-y: auto;
+}
+.scard {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 18px; cursor: pointer; transition: all 0.25s;
+}
+.scard:hover { border-color: var(--border-active); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+.scard-icon {
+  width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center;
+  justify-content: center; font-size: 18px; margin-bottom: 10px;
+}
+.scard h3 { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.scard p { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+.scard .scard-steps { margin-top: 8px; font-size: 10px; color: var(--accent); }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* grain */
+body::after {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9999; opacity: 0.4;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <div class="logo">AR</div>
+    <h1>Agent Runner <span>/ Architecture Explorer</span></h1>
+  </div>
+  <div class="tabs">
+    <button class="tab active" data-v="arch">Architecture</button>
+    <button class="tab" data-v="flow">Message Flow</button>
+    <button class="tab" data-v="scene">Scenarios</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="canvas-wrap">
+
+    <!-- ════ ARCH VIEW ════ -->
+    <div id="arch-view">
+      <svg class="arrows-svg" id="arch-svg">
+        <defs>
+          <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="var(--border)"/></marker>
+          <marker id="ah-lit" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5" fill="var(--flow-color)"/></marker>
+        </defs>
+      </svg>
+      <div class="arch-grid" id="arch-grid"></div>
+    </div>
+
+    <!-- ════ FLOW VIEW ════ -->
+    <div id="flow-view">
+      <div class="flow-bar">
+        <button class="fbtn" id="f-prev" title="Previous">&#9664;</button>
+        <button class="fbtn" id="f-play" title="Play">&#9654;</button>
+        <button class="fbtn" id="f-next" title="Next">&#9654;</button>
+        <div class="timeline" id="timeline">
+          <div class="timeline-fill" id="tl-fill"></div>
+          <div class="timeline-dots" id="tl-dots"></div>
+        </div>
+        <span class="step-info" id="step-info"><b>1</b> / 12</span>
+        <select class="scene-sel" id="scene-sel">
+          <option value="normal">Normal Message</option>
+          <option value="ipc-mid">IPC Mid-Query</option>
+          <option value="close-during">Close During Query</option>
+          <option value="close-between">Close Between Queries</option>
+          <option value="orphan">Orphan Detection</option>
+          <option value="burst">Message Burst</option>
+        </select>
+      </div>
+      <div class="flow-canvas" id="flow-canvas">
+        <svg class="flow-svg" id="flow-svg">
+          <defs>
+            <marker id="fah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><path d="M0,0 L7,2.5 L0,5"/></marker>
+          </defs>
+        </svg>
+        <div class="flow-stage" id="flow-stage"></div>
+        <div class="flow-explain" id="flow-explain">
+          <div class="fe-title"></div>
+          <div class="fe-desc"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ SCENARIOS VIEW ════ -->
+    <div id="scene-view">
+      <div class="scene-head">
+        <h2>Scenarios</h2>
+        <p>Click a scenario to watch it play out step by step in the flow view.</p>
+      </div>
+      <div class="scene-grid" id="scene-grid"></div>
+    </div>
+
+  </div>
+
+  <div class="detail-panel collapsed" id="detail-panel">
+    <div class="dp-head">
+      <button class="dp-close" id="dp-close">&times;</button>
+      <div class="dp-title" id="dp-title"></div>
+      <div class="dp-file" id="dp-file"></div>
+    </div>
+    <div id="dp-body"></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// DATA
+// ═══════════════════════════════════════════
+
+const C = {
+  types:          { name:'types.ts',            file:'types.ts',              layer:'found', desc:'Shared types & constants', full:'Single source of truth for all shared types. Protocol constants, discriminated union ContainerInput, ContainerPaths config, telemetry types.', methods:[{s:'parseContainerInput(raw)',d:'Discriminates claude vs custom'},{s:'createDefaultContainerPaths()',d:'Factory for 12 filesystem paths'},{s:'OUTPUT_START_MARKER',d:'Stdout framing constant'},{s:'IPC_POLL_MS = 500',d:'Bridge polling interval'}], deps:[] },
+  logger:         { name:'ConsoleLogger',       file:'logger.ts',             layer:'infra', desc:'Writes to stderr', full:'Implements Logger interface. Every class takes Logger via constructor injection. Writes prefixed messages to stderr.', methods:[{s:'log(message: string)',d:'Prefixed line to stderr'}], deps:[] },
+  outputWriter:   { name:'StdoutOutputWriter',  file:'output-writer.ts',      layer:'infra', desc:'Protocol-framed stdout', full:'Wraps ContainerOutput JSON in OUTPUT_START / OUTPUT_END markers. Host watches stdout for these markers to extract results.', methods:[{s:'write(output)',d:'Emit marker-framed JSON'}], deps:['types'] },
+  messageStream:  { name:'MessageStream',       file:'message-stream.ts',     layer:'infra', desc:'Async iterable push queue', full:'SDK receives this as prompt input. Push messages in, SDK pulls via for-await. end() signals done. drain() recovers unconsumed messages.', methods:[{s:'push(text)',d:'Enqueue user message for SDK'},{s:'end()',d:'Signal no more messages'},{s:'drain(): string[]',d:'Recover unconsumed messages'},{s:'[Symbol.asyncIterator]',d:'SDK pulls via for-await'}], deps:[] },
+  ipcChannel:     { name:'IpcChannel',          file:'ipc-channel.ts',        layer:'domain', desc:'File-based IPC', full:'All file-based IPC between host and container. Reads .json files from /workspace/ipc/input/. Owner tokens for orphan detection. Atomic drain+close.', methods:[{s:'setOwnerToken(token)',d:'Set owner for orphan detection'},{s:'isStillOwner(): boolean',d:'Check if still designated owner'},{s:'shouldClose(): boolean',d:'Check close sentinel or revocation'},{s:'drain(): string[]',d:'Read & delete pending .json files'},{s:'drainAndClose(): string[]',d:'Atomic drain + acknowledge close'},{s:'waitForMessage()',d:'Block until next message or timeout'},{s:'initialize()',d:'Create IPC dir, clean stale sentinels'}], deps:['types','logger'] },
+  telemetry:      { name:'TelemetryCollector',  file:'telemetry-collector.ts', layer:'domain', desc:'Tool timing & costs', full:'Tracks tool invocations via SDK hooks. Records start/success/failure. Extracts cost, tokens, turns from typed SDK result messages.', methods:[{s:'recordToolStart(id)',d:'Mark start time'},{s:'recordToolSuccess(name,id,in,out)',d:'Record success + duration'},{s:'recordToolFailure(name,in,err)',d:'Record error'},{s:'extractFromResult(result)',d:'Pull telemetry from SDK result'},{s:'reset()',d:'Clear for next query'}], deps:['types'] },
+  archiver:       { name:'TranscriptArchiver',  file:'transcript-archiver.ts', layer:'domain', desc:'Conversation archival', full:'Archives transcripts to markdown before SDK compaction. Reads sessions-index.json for naming. Pure helper functions are module-private.', methods:[{s:'archive(path, sessionId)',d:'Save transcript as dated markdown'}], deps:['types','logger'] },
+  contextBuilder: { name:'ContextBuilder',      file:'context-builder.ts',    layer:'domain', desc:'System prompt assembly', full:'Assembles system prompt from: global CLAUDE.md, memory instructions, dynamic context files, extra mounted directories.', methods:[{s:'build(input): ContextResult',d:'Full system prompt + directories'}], deps:['types','logger'] },
+  hookFactory:    { name:'HookFactory',         file:'hook-factory.ts',       layer:'domain', desc:'SDK hook callbacks', full:'Creates SDK hooks. PreCompact→TranscriptArchiver. PreToolUse→sanitize bash + timing. PostToolUse/Failure→TelemetryCollector. Uses isHookEvent<T>() type guard.', methods:[{s:'buildHooks()',d:'Return full hooks config for SDK'}], deps:['telemetry','archiver','logger'] },
+  ipcBridge:      { name:'IpcQueryBridge',      file:'ipc-query-bridge.ts',   layer:'orch', desc:'IPC → Stream bridge', full:'Bridges IPC polling to MessageStream during active query. Polls every 500ms. If close sentinel appears, calls stream.end(). AbortController for cleanup.', methods:[{s:'start(): { result }',d:'Begin polling IPC into stream'},{s:'stop()',d:'Abort via AbortController'}], deps:['ipcChannel','messageStream','logger'] },
+  queryRunner:    { name:'SdkQueryRunner',      file:'sdk-query-runner.ts',   layer:'orch', desc:'Single SDK query', full:'Executes one Claude Agent SDK query. Creates MessageStream, starts IpcQueryBridge, calls query(), processes messages, extracts telemetry, writes output.', methods:[{s:'run(prompt, input, env, ...)',d:'Execute full SDK query cycle'}], deps:['types','logger','outputWriter','ipcChannel','hookFactory','contextBuilder','telemetry'] },
+  agentRunner:    { name:'AgentRunner',         file:'agent-runner.ts',       layer:'orch', desc:'Query→wait→query loop', full:'The lifecycle loop. Runs query, checks for pending messages, waits for next IPC message, loops. Handles session continuity and atomic drain+close.', methods:[{s:'run(input, sdkEnv)',d:'Full agent lifecycle'}], deps:['logger','outputWriter','ipcChannel','queryRunner'] },
+  index:          { name:'index.ts',            file:'index.ts',              layer:'comp', desc:'Composition root', full:'Only file that knows concrete classes. Reads stdin, parses input, forks custom/claude path, wires dependency graph, delegates to AgentRunner. 119 lines.', methods:[{s:'main()',d:'Read stdin → parse → wire → run'},{s:'readStdin()',d:'Collect stdin until EOF'}], deps:['types','logger','outputWriter','ipcChannel','telemetry','archiver','hookFactory','contextBuilder','queryRunner','agentRunner'] },
+};
+
+const LAYER_ROWS = [
+  { label:'Foundation', layer:'found', ids:['types'] },
+  { label:'Infrastructure', layer:'infra', ids:['logger','outputWriter','messageStream'] },
+  { label:'Domain', layer:'domain', ids:['ipcChannel','telemetry','archiver','contextBuilder','hookFactory'] },
+  { label:'Orchestration', layer:'orch', ids:['ipcBridge','queryRunner','agentRunner'] },
+  { label:'Composition', layer:'comp', ids:['index'] },
+];
+
+const DEPS = [];
+for (const [id, c] of Object.entries(C)) {
+  for (const d of c.deps) DEPS.push([id, d]);
+}
+
+// ── Scenarios ────────────────────────────
+const SC = {
+  normal: {
+    title:'Normal Message → Response', icon:'💬', bg:'var(--infra-bg)',
+    desc:'A message arrives, Claude processes it, response returned.',
+    steps:[
+      { on:['index'], t:'Host pipes JSON to stdin', d:'Host spawns container, pipes JSON blob with prompt, group folder, secrets, session ID.', data:'{ prompt: "Hello!", groupFolder: "main" }' },
+      { on:['index','types'], t:'Parse & discriminate input', d:'<code>parseContainerInput()</code> returns <code>ClaudeContainerInput</code> with <code>kind: "claude"</code>.', data:'{ kind: "claude", prompt: "Hello!" }', arrows:[['index','types']] },
+      { on:['index','ipcChannel','logger','outputWriter','telemetry','archiver','hookFactory','contextBuilder','queryRunner','agentRunner'], t:'Wire dependency graph', d:'All dependencies injected via constructors. This is the only file that imports concrete classes.', arrows:[['index','agentRunner'],['index','queryRunner']] },
+      { on:['agentRunner'], t:'AgentRunner.run() starts', d:'Enters lifecycle loop. Drains pending IPC, prepends [SCHEDULED TASK] prefix if needed.', data:'prompt = "Hello!"' },
+      { on:['queryRunner','messageStream'], t:'Create stream & push prompt', d:'New <code>MessageStream</code> created. Initial prompt pushed in. SDK will pull from this.', data:'stream.push("Hello!")', arrows:[['queryRunner','messageStream']] },
+      { on:['queryRunner','ipcBridge','ipcChannel'], t:'IpcQueryBridge starts polling', d:'Bridge polls <code>IpcChannel.drain()</code> every 500ms. New host messages get pushed into stream.', arrows:[['ipcBridge','ipcChannel']], data:'poll every 500ms' },
+      { on:['queryRunner','contextBuilder','hookFactory'], t:'Build context & SDK options', d:'<code>ContextBuilder</code> assembles system prompt. <code>HookFactory</code> creates callbacks. SDK options configured.', arrows:[['queryRunner','contextBuilder'],['queryRunner','hookFactory']] },
+      { on:['queryRunner','messageStream'], t:'SDK query() — Claude thinks', d:'<code>for await (msg of query(...))</code> — SDK pulls prompt from stream, sends to Claude, streams back.', arrows:[['queryRunner','messageStream']], data:'Claude generating response...' },
+      { on:['hookFactory','telemetry'], t:'Hooks fire during tool use', d:'PreToolUse sanitizes bash env + records start time. PostToolUse records success + duration.', arrows:[['hookFactory','telemetry']], data:'unset ANTHROPIC_API_KEY; ...' },
+      { on:['queryRunner','telemetry','outputWriter'], t:'Result → telemetry → stdout', d:'SDK emits <code>result</code> message. Telemetry extracted. Output written with protocol markers.', arrows:[['queryRunner','telemetry'],['queryRunner','outputWriter']], data:'---OUTPUT_START---\n{ status: "success", result: "Hi!" }\n---OUTPUT_END---' },
+      { on:['queryRunner','ipcBridge'], t:'Cleanup: stop bridge', d:'Bridge stopped via <code>AbortController.abort()</code>. Unconsumed stream messages drained.', arrows:[['queryRunner','ipcBridge']], data:'unconsumed: []' },
+      { on:['agentRunner','ipcChannel'], t:'Wait for next message', d:'No pending messages, no close signal. <code>waitForMessage()</code> blocks up to 30 minutes.', arrows:[['agentRunner','ipcChannel']], data:'waiting... (30m timeout)' },
+    ],
+  },
+  'ipc-mid': {
+    title:'IPC Message Mid-Query', icon:'⚡', bg:'var(--orch-bg)',
+    desc:'Follow-up message arrives while Claude is still processing.',
+    steps:[
+      { on:['queryRunner','messageStream'], t:'Query in progress', d:'Claude is actively thinking — SDK iterating the MessageStream.', data:'Claude working...' },
+      { on:['ipcBridge','ipcChannel'], t:'Host drops new .json file', d:'Host writes message to <code>/workspace/ipc/input/msg-002.json</code>. Bridge\'s 500ms poll picks it up.', arrows:[['ipcBridge','ipcChannel']], data:'drain() → ["follow-up"]' },
+      { on:['ipcBridge','messageStream'], t:'Bridge pushes to stream', d:'<code>stream.push("follow-up")</code> — SDK sees new user message. Claude continues with additional context.', arrows:[['ipcBridge','messageStream']], data:'stream.push("follow-up")' },
+      { on:['queryRunner','messageStream'], t:'Claude processes both', d:'SDK reads the new message. Claude responds to original + follow-up in context.', arrows:[['queryRunner','messageStream']] },
+      { on:['queryRunner','outputWriter'], t:'Combined result emitted', d:'Single result covering both messages.', arrows:[['queryRunner','outputWriter']], data:'{ result: "Answer to both..." }' },
+    ],
+  },
+  'close-during': {
+    title:'Close During Query', icon:'🛑', bg:'rgba(239,68,68,0.08)',
+    desc:'Host sends close signal while Claude is still processing.',
+    steps:[
+      { on:['queryRunner','messageStream'], t:'Query in progress', d:'Claude is actively thinking.' },
+      { on:['ipcBridge','ipcChannel'], t:'Close sentinel detected', d:'Bridge poll finds <code>_close</code> file. Sets <code>closedDuringQuery = true</code>.', arrows:[['ipcBridge','ipcChannel']], data:'_close found!' },
+      { on:['ipcBridge','messageStream'], t:'Stream ended gracefully', d:'<code>stream.end()</code> — SDK finishes current turn, wraps up. No abrupt termination.', arrows:[['ipcBridge','messageStream']], data:'stream.end()' },
+      { on:['queryRunner','outputWriter'], t:'Final result emitted', d:'Claude\'s response captured and sent before shutdown.', arrows:[['queryRunner','outputWriter']] },
+      { on:['agentRunner'], t:'Exit immediately', d:'<code>closedDuringQuery: true</code> — breaks loop without session-update marker.', data:'process.exit()' },
+    ],
+  },
+  'close-between': {
+    title:'Close Between Queries', icon:'🔒', bg:'rgba(234,179,8,0.08)',
+    desc:'Close signal arrives while agent is idle between queries.',
+    steps:[
+      { on:['agentRunner','ipcChannel'], t:'Waiting for message', d:'Blocked on <code>waitForMessage()</code> after completed query.', arrows:[['agentRunner','ipcChannel']] },
+      { on:['ipcChannel'], t:'Close detected', d:'Wait poll calls <code>shouldClose()</code>, finds <code>_close</code> sentinel.', data:'_close found!' },
+      { on:['agentRunner','ipcChannel'], t:'Atomic drainAndClose()', d:'Atomically drains remaining messages AND acknowledges close. Prevents message loss.', arrows:[['agentRunner','ipcChannel']], data:'drainAndClose() → []' },
+      { on:['agentRunner'], t:'Clean exit', d:'No remaining messages. Agent exits cleanly.', data:'exit' },
+    ],
+  },
+  orphan: {
+    title:'Orphan Detection', icon:'👻', bg:'var(--comp-bg)',
+    desc:'New container spawned for same group — this one is orphaned.',
+    steps:[
+      { on:['index','ipcChannel'], t:'Startup: check owner token', d:'<code>setOwnerToken()</code> then <code>isStillOwner()</code>. Reads <code>/workspace/ipc/_owner</code>.', arrows:[['index','ipcChannel']], data:'token: "abc123..."' },
+      { on:['ipcChannel'], t:'Owner file mismatch!', d:'<code>_owner</code> contains different token — host spawned new container.', data:'_owner: "xyz789..." ≠ "abc123..."' },
+      { on:['index'], t:'Orphan exits immediately', d:'Logs "Owner mismatch — orphan" and exits. No query ever started.', data:'process.exit(0)' },
+    ],
+  },
+  burst: {
+    title:'Message Burst Recovery', icon:'📨', bg:'var(--domain-bg)',
+    desc:'Multiple messages arrive quickly. Some may not be consumed by SDK.',
+    steps:[
+      { on:['queryRunner','messageStream','ipcBridge'], t:'Query + bridge active', d:'Claude processing. Bridge pushes two messages into stream quickly.', arrows:[['ipcBridge','messageStream']], data:'push("msg2"), push("msg3")' },
+      { on:['queryRunner'], t:'SDK finishes early', d:'SDK completes after reading msg2 but before consuming msg3.', data:'msg3 still in queue!' },
+      { on:['queryRunner','messageStream'], t:'Stream drain recovers msg3', d:'<code>stream.drain()</code> returns the unconsumed message.', arrows:[['queryRunner','messageStream']], data:'drain() → ["msg3"]' },
+      { on:['agentRunner','ipcChannel'], t:'Also check fresh IPC', d:'<code>ipc.drain()</code> finds msg4 that arrived after bridge stopped.', arrows:[['agentRunner','ipcChannel']], data:'drain() → ["msg4"]' },
+      { on:['agentRunner'], t:'Immediate follow-up', d:'Pending messages exist. Joins into new prompt, loops immediately.', data:'prompt = "msg3\\nmsg4"' },
+      { on:['agentRunner','queryRunner'], t:'New query processes rest', d:'SdkQueryRunner runs with recovered messages. Nothing lost.', arrows:[['agentRunner','queryRunner']], data:'Claude processes msg3+msg4' },
+    ],
+  },
+};
+
+// ═══════════════════════════════════════════
+// VIEW SWITCHING
+// ═══════════════════════════════════════════
+
+let view = 'arch', selNode = null, fStep = 0, fPlaying = false, fTimer = null, curScene = 'normal';
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  view = t.dataset.v;
+  document.getElementById('arch-view').style.display = view === 'arch' ? '' : 'none';
+  document.getElementById('flow-view').className = view === 'flow' ? 'visible' : '';
+  document.getElementById('scene-view').className = view === 'scene' ? 'visible' : '';
+  if (view === 'arch') requestAnimationFrame(drawArrows);
+  if (view === 'flow') { stopPlay(); fStep = 0; renderFlow(); }
+}));
+
+// ═══════════════════════════════════════════
+// ARCHITECTURE VIEW
+// ═══════════════════════════════════════════
+
+function buildArch() {
+  const grid = document.getElementById('arch-grid');
+  const layerCls = { found:'l-found', infra:'l-infra', domain:'l-domain', orch:'l-orch', comp:'l-comp' };
+
+  for (const row of LAYER_ROWS) {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'arch-row';
+    const label = document.createElement('div');
+    label.className = 'arch-row-label';
+    label.textContent = row.label;
+    label.style.color = `var(--${row.layer === 'found' ? 'foundation' : row.layer === 'comp' ? 'comp' : row.layer})`;
+    rowEl.appendChild(label);
+
+    for (const id of row.ids) {
+      const c = C[id];
+      const n = document.createElement('div');
+      n.className = `node ${layerCls[row.layer]}`;
+      n.id = `n-${id}`;
+      n.innerHTML = `<div class="node-label">${row.label}</div><div class="node-name">${c.name}</div><div class="node-desc">${c.desc}</div>`;
+      n.addEventListener('click', () => pickNode(id));
+      rowEl.appendChild(n);
+    }
+    grid.appendChild(rowEl);
+  }
+}
+
+function nodeRect(id) {
+  const el = document.getElementById(`n-${id}`);
+  const container = document.getElementById('arch-view');
+  if (!el || !container) return null;
+  const cr = container.getBoundingClientRect();
+  const nr = el.getBoundingClientRect();
+  return { x: nr.left - cr.left, y: nr.top - cr.top, w: nr.width, h: nr.height, cx: nr.left - cr.left + nr.width/2, cy: nr.top - cr.top + nr.height/2 };
+}
+
+function drawArrows() {
+  const svg = document.getElementById('arch-svg');
+  svg.querySelectorAll('path.dep-arrow').forEach(p => p.remove());
+
+  const drawn = new Set();
+  for (const [from, to] of DEPS) {
+    const key = `${from}-${to}`;
+    if (drawn.has(key)) continue;
+    drawn.add(key);
+
+    const a = nodeRect(from);
+    const b = nodeRect(to);
+    if (!a || !b) continue;
+
+    // Connect from edge of source to edge of target
+    let x1, y1, x2, y2;
+    if (Math.abs(a.cy - b.cy) > Math.abs(a.cx - b.cx)) {
+      // Mostly vertical
+      if (a.cy > b.cy) { x1 = a.cx; y1 = a.y; x2 = b.cx; y2 = b.y + b.h; }
+      else { x1 = a.cx; y1 = a.y + a.h; x2 = b.cx; y2 = b.y; }
+    } else {
+      // Mostly horizontal
+      if (a.cx > b.cx) { x1 = a.x; y1 = a.cy; x2 = b.x + b.w; y2 = b.cy; }
+      else { x1 = a.x + a.w; y1 = a.cy; x2 = b.x; y2 = b.cy; }
+    }
+
+    const isLit = selNode && (from === selNode || to === selNode);
+    const isDim = selNode && !isLit;
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', `M${x1},${y1} L${x2},${y2}`);
+    path.setAttribute('marker-end', isLit ? 'url(#ah-lit)' : 'url(#ah)');
+    path.classList.add('dep-arrow');
+    if (isLit) path.classList.add('lit');
+    if (isDim) path.classList.add('dim');
+    svg.appendChild(path);
+  }
+}
+
+function pickNode(id) {
+  document.querySelectorAll('.node.active').forEach(n => n.classList.remove('active'));
+  if (selNode === id) { selNode = null; document.getElementById('detail-panel').classList.add('collapsed'); syncArrowsDuringTransition(); return; }
+  selNode = id;
+  document.getElementById(`n-${id}`).classList.add('active');
+  showDetail(id);
+  syncArrowsDuringTransition();
+}
+
+// Continuously redraw arrows during the panel open/close transition
+function syncArrowsDuringTransition() {
+  const start = performance.now();
+  (function tick() {
+    drawArrows();
+    if (performance.now() - start < 350) requestAnimationFrame(tick);
+  })();
+}
+
+const tagCls = { found:'t-found', infra:'t-infra', domain:'t-domain', orch:'t-orch', comp:'t-comp' };
+
+function showDetail(id) {
+  const c = C[id];
+  const p = document.getElementById('detail-panel');
+  p.classList.remove('collapsed');
+  document.getElementById('dp-title').textContent = c.name;
+  document.getElementById('dp-file').textContent = c.file;
+
+  let h = `<div class="dp-section"><h3>Description</h3><p>${c.full}</p></div>`;
+  h += `<div class="dp-section"><h3>Methods</h3><ul class="method-list">${c.methods.map(m=>`<li>${m.s}<span class="mdesc">${m.d}</span></li>`).join('')}</ul></div>`;
+
+  if (c.deps.length) {
+    h += `<div class="dp-section"><h3>Dependencies (constructor-injected)</h3><div class="dep-list">${c.deps.map(d=>`<span class="dep-tag ${tagCls[C[d].layer]}" onclick="pickNode('${d}')">${C[d].name}</span>`).join('')}</div></div>`;
+  }
+
+  const usedBy = Object.entries(C).filter(([_,x])=>x.deps.includes(id)).map(([did])=>did);
+  if (usedBy.length) {
+    h += `<div class="dp-section"><h3>Used By</h3><div class="dep-list">${usedBy.map(d=>`<span class="dep-tag ${tagCls[C[d].layer]}" onclick="pickNode('${d}')">${C[d].name}</span>`).join('')}</div></div>`;
+  }
+
+  document.getElementById('dp-body').innerHTML = h;
+}
+
+document.getElementById('dp-close').addEventListener('click', () => {
+  selNode = null; document.querySelectorAll('.node.active').forEach(n=>n.classList.remove('active'));
+  document.getElementById('detail-panel').classList.add('collapsed'); syncArrowsDuringTransition();
+});
+
+// ═══════════════════════════════════════════
+// FLOW VIEW
+// ═══════════════════════════════════════════
+
+const FLOW_IDS = ['index','types','logger','outputWriter','messageStream','ipcChannel','telemetry','archiver','contextBuilder','hookFactory','ipcBridge','queryRunner','agentRunner'];
+const FLOW_GRID = {
+  // grid-column / grid-row
+  index:'1/1', types:'2/1', logger:'3/1', outputWriter:'4/1',
+  messageStream:'1/2', ipcChannel:'2/2', contextBuilder:'3/2', hookFactory:'4/2',
+  telemetry:'1/3', archiver:'2/3', ipcBridge:'3/3', queryRunner:'4/3',
+  agentRunner:'2/4',
+};
+const fcls = { found:'f-found', infra:'f-infra', domain:'f-domain', orch:'f-orch', comp:'f-comp' };
+
+function buildFlow() {
+  const stage = document.getElementById('flow-stage');
+  for (const id of FLOW_IDS) {
+    const c = C[id];
+    const n = document.createElement('div');
+    n.className = `fn ${fcls[c.layer]}`;
+    n.id = `fn-${id}`;
+    const [col,row] = FLOW_GRID[id].split('/');
+    n.style.gridColumn = col;
+    n.style.gridRow = row;
+    n.innerHTML = `${c.name}<span class="fn-sub">${c.desc}</span>`;
+    stage.appendChild(n);
+  }
+}
+
+function fnCenter(id) {
+  const el = document.getElementById(`fn-${id}`);
+  const canvas = document.getElementById('flow-canvas');
+  if (!el || !canvas) return {x:0,y:0};
+  const cr = canvas.getBoundingClientRect();
+  const nr = el.getBoundingClientRect();
+  return { x: nr.left - cr.left + nr.width/2, y: nr.top - cr.top + nr.height/2 };
+}
+
+function renderFlow() {
+  const sc = SC[curScene];
+  const steps = sc.steps;
+  const step = steps[fStep];
+
+  // Timeline
+  document.getElementById('tl-fill').style.width = `${(fStep / Math.max(steps.length-1,1))*100}%`;
+  const dots = document.getElementById('tl-dots');
+  dots.innerHTML = '';
+  for (let i = 0; i < steps.length; i++) {
+    const d = document.createElement('div');
+    d.className = 'tdot' + (i === fStep ? ' on' : i < fStep ? ' past' : '');
+    d.addEventListener('click', e => { e.stopPropagation(); fStep = i; renderFlow(); });
+    dots.appendChild(d);
+  }
+  document.getElementById('step-info').innerHTML = `<b>${fStep+1}</b> / ${steps.length}`;
+  document.getElementById('f-prev').disabled = fStep === 0;
+  document.getElementById('f-next').disabled = fStep >= steps.length - 1;
+
+  // Nodes
+  document.querySelectorAll('.fn').forEach(n => { n.classList.remove('on','lit'); });
+  for (const id of FLOW_IDS) {
+    const el = document.getElementById(`fn-${id}`);
+    if (step.on.includes(id)) { el.classList.add('lit'); }
+    el.classList.add('on');
+  }
+
+  // Arrows
+  const svg = document.getElementById('flow-svg');
+  svg.querySelectorAll('line').forEach(l => l.remove());
+  document.querySelectorAll('.packet').forEach(p => p.remove());
+
+  if (step.arrows) {
+    for (const [from, to] of step.arrows) {
+      const a = fnCenter(from);
+      const b = fnCenter(to);
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+      line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+      line.setAttribute('marker-end', 'url(#fah)');
+      line.classList.add('show');
+      svg.appendChild(line);
+
+      // Animate packet
+      const pkt = document.createElement('div');
+      pkt.className = 'packet';
+      document.getElementById('flow-canvas').appendChild(pkt);
+      const start = performance.now();
+      (function ani(now) {
+        const t = ((now - start) % 1200) / 1200;
+        pkt.style.left = (a.x + (b.x - a.x) * t - 3.5) + 'px';
+        pkt.style.top = (a.y + (b.y - a.y) * t - 3.5) + 'px';
+        if (document.contains(pkt)) requestAnimationFrame(ani);
+      })(performance.now());
+    }
+  }
+
+  // Explain box
+  const box = document.getElementById('flow-explain');
+  let dataHtml = '';
+  if (step.data) dataHtml = `<div class="fe-data">${esc(step.data)}</div>`;
+  box.querySelector('.fe-title').textContent = step.t;
+  box.querySelector('.fe-desc').innerHTML = step.d + dataHtml;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Controls
+document.getElementById('f-prev').addEventListener('click', () => { if (fStep > 0) { fStep--; renderFlow(); } });
+document.getElementById('f-next').addEventListener('click', () => { if (fStep < SC[curScene].steps.length-1) { fStep++; renderFlow(); } });
+document.getElementById('f-play').addEventListener('click', () => { fPlaying ? stopPlay() : startPlay(); });
+document.getElementById('scene-sel').addEventListener('change', e => { curScene = e.target.value; fStep = 0; stopPlay(); renderFlow(); });
+document.getElementById('timeline').addEventListener('click', e => {
+  const r = e.currentTarget.getBoundingClientRect();
+  fStep = Math.round(((e.clientX - r.left) / r.width) * (SC[curScene].steps.length - 1));
+  renderFlow();
+});
+
+function startPlay() {
+  fPlaying = true;
+  const btn = document.getElementById('f-play');
+  btn.classList.add('playing'); btn.innerHTML = '&#9646;&#9646;';
+  fTimer = setInterval(() => {
+    if (fStep < SC[curScene].steps.length - 1) { fStep++; renderFlow(); } else stopPlay();
+  }, 2500);
+}
+function stopPlay() {
+  fPlaying = false; clearInterval(fTimer);
+  const btn = document.getElementById('f-play');
+  btn.classList.remove('playing'); btn.innerHTML = '&#9654;';
+}
+
+// ═══════════════════════════════════════════
+// SCENARIOS VIEW
+// ═══════════════════════════════════════════
+
+function buildScenes() {
+  const grid = document.getElementById('scene-grid');
+  for (const [key, sc] of Object.entries(SC)) {
+    const card = document.createElement('div');
+    card.className = 'scard';
+    card.innerHTML = `<div class="scard-icon" style="background:${sc.bg}">${sc.icon}</div><h3>${sc.title}</h3><p>${sc.desc}</p><div class="scard-steps">${sc.steps.length} steps →</div>`;
+    card.addEventListener('click', () => {
+      curScene = key; fStep = 0; stopPlay();
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelector('[data-v="flow"]').classList.add('active');
+      view = 'flow';
+      document.getElementById('arch-view').style.display = 'none';
+      document.getElementById('scene-view').className = '';
+      document.getElementById('flow-view').className = 'visible';
+      document.getElementById('scene-sel').value = key;
+      requestAnimationFrame(renderFlow);
+    });
+    grid.appendChild(card);
+  }
+}
+
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
+
+window.addEventListener('resize', () => {
+  if (view === 'arch') drawArrows();
+  if (view === 'flow') renderFlow();
+});
+
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  buildArch();
+  buildFlow();
+  buildScenes();
+  drawArrows();
+}));
+</script>
+</body>
+</html>

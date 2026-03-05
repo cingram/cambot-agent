@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 // --- Mocks ---
 
 // Mock config
-vi.mock('../config.js', () => ({
+vi.mock('../config/config.js', () => ({
   STORE_DIR: '/tmp/cambot-agent-test-store',
   ASSISTANT_NAME: 'Andy',
   ASSISTANT_HAS_OWN_NUMBER: false,
@@ -21,7 +21,7 @@ vi.mock('../logger.js', () => ({
 }));
 
 // Mock db
-vi.mock('../db.js', () => ({
+vi.mock('../db/index.js', () => ({
   getLastGroupSync: vi.fn(() => null),
   setLastGroupSync: vi.fn(),
   updateChatName: vi.fn(),
@@ -96,13 +96,13 @@ vi.mock('@whiskeysockets/baileys', () => {
 });
 
 import { WhatsAppChannel, WhatsAppChannelOpts } from './whatsapp.js';
-import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db.js';
+import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db/index.js';
 import { MessageBus } from '../types.js';
 
 // --- Test helpers ---
 
 function stubBus(): MessageBus {
-  return { emit: vi.fn(), emitAsync: vi.fn(), on: vi.fn(() => () => {}) };
+  return new MessageBus();
 }
 
 function createTestOpts(overrides?: Partial<WhatsAppChannelOpts>): WhatsAppChannelOpts {

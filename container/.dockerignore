@@ -1,4 +1,4 @@
-agent-runner/node_modules
-agent-runner/dist
-cambot-agents/node_modules
-cambot-agents/dist
+cambot-agent-runner/node_modules
+cambot-agent-runner/dist
+cambot-llm/node_modules
+cambot-llm/dist

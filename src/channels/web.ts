@@ -1,9 +1,18 @@
 import http from 'http';
 
-import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, WEB_CHANNEL_PORT } from '../config.js';
-import { getChatHistory, getConversationHistory } from '../db.js';
+import { randomUUID } from 'node:crypto';
+
+import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, WEB_CHANNEL_PORT } from '../config/config.js';
+import {
+  getChatHistory,
+  listConversations,
+  upsertConversation,
+  renameConversation as dbRenameConversation,
+  deleteConversation as dbDeleteConversation,
+} from '../db/index.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts, NewMessage } from '../types.js';
+import { ChatMetadata, InboundMessage } from '../bus/index.js';
 import { createWebSocketManager, WebSocketManager } from './web-ws.js';
 
 const WEB_JID = 'web:ui';
@@ -190,7 +199,7 @@ export class WebChannel implements Channel {
 
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
@@ -200,6 +209,9 @@ export class WebChannel implements Channel {
     }
 
     const url = new URL(req.url || '/', 'http://localhost');
+
+    // Extract conversation ID from /conversations/:id paths
+    const convoMatch = url.pathname.match(/^\/conversations\/([^/]+)$/);
 
     if (req.method === 'GET' && url.pathname === '/channels') {
       this.handleChannels(res);
@@ -215,6 +227,14 @@ export class WebChannel implements Channel {
       this.handleBody(req, res, (body) => this.handleRunWorkflow(body, res));
     } else if (req.method === 'POST' && url.pathname === '/cancel-workflow-run') {
       this.handleBody(req, res, (body) => this.handleCancelWorkflowRun(body, res));
+    } else if (req.method === 'GET' && url.pathname === '/conversations') {
+      this.handleListConversations(res);
+    } else if (req.method === 'POST' && url.pathname === '/conversations') {
+      this.handleBody(req, res, (body) => this.handleCreateConversation(body, res));
+    } else if (convoMatch && req.method === 'PATCH') {
+      this.handleBody(req, res, (body) => this.handleRenameConversation(convoMatch[1], body, res));
+    } else if (convoMatch && req.method === 'DELETE') {
+      this.handleDeleteConversation(convoMatch[1], res);
     } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
@@ -257,8 +277,10 @@ export class WebChannel implements Channel {
 
   private handleHistory(url: URL, res: http.ServerResponse): void {
     const limit = parseInt(url.searchParams.get('limit') || '200', 10);
+    const conversationId = url.searchParams.get('conversation_id');
+    const jid = conversationId ? `${WEB_JID}:${conversationId}` : WEB_JID;
     try {
-      const messages = getChatHistory(WEB_JID, limit);
+      const messages = getChatHistory(jid, limit);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ messages }));
     } catch (err) {
@@ -358,7 +380,7 @@ export class WebChannel implements Channel {
     });
 
     req.on('end', () => {
-      let parsed: { message: string; sender_name?: string };
+      let parsed: { message: string; sender_name?: string; conversation_id?: string };
       try {
         parsed = JSON.parse(body);
       } catch {
@@ -371,6 +393,21 @@ export class WebChannel implements Channel {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Message is required' }));
         return;
+      }
+
+      // Derive composite JID from conversation_id
+      const jid = parsed.conversation_id ? `${WEB_JID}:${parsed.conversation_id}` : WEB_JID;
+
+      // Auto-create conversation record + register the composite JID group
+      if (parsed.conversation_id) {
+        upsertConversation(parsed.conversation_id, 'New conversation', '');
+        this.opts.registerGroup(jid, {
+          name: 'Web UI',
+          folder: MAIN_GROUP_FOLDER,
+          trigger: `@${ASSISTANT_NAME}`,
+          added_at: new Date().toISOString(),
+          requiresTrigger: false,
+        });
       }
 
       // Start SSE response
@@ -398,23 +435,23 @@ export class WebChannel implements Channel {
       // Promise resolved when agent calls sendMessage()
       const responsePromise = new Promise<string>((resolve) => {
         const timer = setTimeout(() => {
-          this.pending.delete(WEB_JID);
+          this.pending.delete(jid);
           clearInterval(heartbeat);
           enqueue({ type: 'error', message: 'Agent did not respond within timeout' });
           enqueue({ type: 'done' });
           res.end();
         }, RESPONSE_TIMEOUT_MS);
 
-        this.pending.set(WEB_JID, { resolve, timer });
+        this.pending.set(jid, { resolve, timer });
       });
 
       // Cleanup on client disconnect
       res.on('close', () => {
         clearInterval(heartbeat);
-        const entry = this.pending.get(WEB_JID);
+        const entry = this.pending.get(jid);
         if (entry) {
           clearTimeout(entry.timer);
-          this.pending.delete(WEB_JID);
+          this.pending.delete(jid);
         }
       });
 
@@ -422,7 +459,7 @@ export class WebChannel implements Channel {
       const timestamp = new Date().toISOString();
       const message: NewMessage = {
         id: `web-${Date.now()}`,
-        chat_jid: WEB_JID,
+        chat_jid: jid,
         sender: 'web:user',
         sender_name: parsed.sender_name || 'User',
         content: parsed.message.trim(),
@@ -431,18 +468,8 @@ export class WebChannel implements Channel {
         is_bot_message: false,
       };
 
-      this.opts.messageBus.emitAsync({
-        type: 'chat.metadata',
-        source: 'web',
-        timestamp,
-        data: { jid: WEB_JID, timestamp, name: 'Web UI', channel: 'web', isGroup: false },
-      }).catch(() => {});
-      this.opts.messageBus.emitAsync({
-        type: 'message.inbound',
-        source: 'web',
-        timestamp,
-        data: { jid: WEB_JID, message, channel: 'web' },
-      }).catch(() => {});
+      this.opts.messageBus.emit(new ChatMetadata('web', jid, { name: 'Web UI', channel: 'web', isGroup: false })).catch(() => {});
+      this.opts.messageBus.emit(new InboundMessage('web', jid, message, 'web')).catch(() => {});
 
       // When agent responds, send the full text and close the stream
       responsePromise.then((text) => {
@@ -454,5 +481,65 @@ export class WebChannel implements Channel {
         }
       });
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Conversation CRUD endpoints
+  // -------------------------------------------------------------------------
+
+  private handleListConversations(res: http.ServerResponse): void {
+    try {
+      const conversations = listConversations();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ conversations }));
+    } catch (err) {
+      logger.error({ err }, 'Failed to list conversations');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to list conversations' }));
+    }
+  }
+
+  private handleCreateConversation(body: Record<string, unknown>, res: http.ServerResponse): void {
+    const id = (body.id as string) || randomUUID();
+    const title = (body.title as string) || 'New conversation';
+    try {
+      upsertConversation(id, title, '');
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id, title }));
+    } catch (err) {
+      logger.error({ err }, 'Failed to create conversation');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to create conversation' }));
+    }
+  }
+
+  private handleRenameConversation(id: string, body: Record<string, unknown>, res: http.ServerResponse): void {
+    const title = body.title as string | undefined;
+    if (!title) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'title is required' }));
+      return;
+    }
+    try {
+      dbRenameConversation(id, title);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      logger.error({ err }, 'Failed to rename conversation');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to rename conversation' }));
+    }
+  }
+
+  private handleDeleteConversation(id: string, res: http.ServerResponse): void {
+    try {
+      dbDeleteConversation(id);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      logger.error({ err }, 'Failed to delete conversation');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to delete conversation' }));
+    }
   }
 }

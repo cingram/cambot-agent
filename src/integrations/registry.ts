@@ -8,10 +8,10 @@ import path from 'path';
 
 import type { McpServerConfig } from 'cambot-integrations';
 
-import { STORE_DIR, WORKSPACE_MCP_PORT } from '../config.js';
+import { STORE_DIR, WORKSPACE_MCP_PORT } from '../config/config.js';
 import { channelDefinitions } from '../channels/registry.js';
-import { readEnvFile } from '../env.js';
-import { createWorkspaceMcpService, type WorkspaceMcpService } from '../workspace-mcp-service.js';
+import { readEnvFile } from '../config/env.js';
+import { createWorkspaceMcpService, type WorkspaceMcpService } from '../utils/workspace-mcp-service.js';
 import type { IntegrationDefinition, IntegrationContext, IntegrationHandle } from './types.js';
 
 /** Build the built-in integration definitions from channels + known MCP servers. */

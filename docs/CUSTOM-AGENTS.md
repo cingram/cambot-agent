@@ -186,7 +186,7 @@ Write a JSON file to the group's IPC tasks directory:
 
 ### How It Works
 
-In the main message processing loop (`src/index.ts` `processGroupMessages()`), custom agent triggers are checked **before** the normal trigger pattern:
+In the main message processing loop (`src/orchestrator/group-message-processor.ts` `processGroupMessages()`), custom agent triggers are checked **before** the normal trigger pattern:
 
 ```
 Message arrives
@@ -670,10 +670,10 @@ Ensure `mcp:*` or specific MCP tool names are in the agent's `tools` array. The 
 
 ### Rebuild container after changes
 
-If you modify `cambot-agents/` source code, rebuild the container:
+If you modify `cambot-llm/` source code, rebuild the container:
 
 ```bash
 ./container/build.sh
 ```
 
-The build script copies `cambot-agents/` into the Docker build context automatically.
+The build script copies `cambot-llm/` into the Docker build context automatically.

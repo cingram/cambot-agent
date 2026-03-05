@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 
 // --- Mocks ---
 
-vi.mock('../config.js', () => ({
+vi.mock('../config/config.js', () => ({
   ASSISTANT_NAME: 'Andy',
   MAIN_GROUP_FOLDER: 'main',
 }));
@@ -33,7 +33,7 @@ import { CliChannel } from './cli.js';
 import { ChannelOpts, MessageBus } from '../types.js';
 
 function stubBus(): MessageBus {
-  return { emit: vi.fn(), emitAsync: vi.fn(), on: vi.fn(() => () => {}) };
+  return new MessageBus();
 }
 
 function createTestOpts(overrides?: Partial<ChannelOpts>): ChannelOpts {

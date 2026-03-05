@@ -7,3 +7,6 @@ export const CUSTOM_DIR = '.cambot-agent/custom';
 export const RESOLUTIONS_DIR = '.cambot-agent/resolutions';
 export const SHIPPED_RESOLUTIONS_DIR = '.claude/resolutions';
 export const SKILLS_SCHEMA_VERSION = '0.1.0';
+
+// Top-level paths to include in base snapshot (also read by fetch-upstream.sh)
+export const BASE_INCLUDES = ['src/', 'package.json', '.env.example', 'container/'];

@@ -25,11 +25,11 @@ fi
 echo "Building CamBot-Agent agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
-# Copy cambot-agents into build context (Dockerfile COPY needs it local)
-AGENTS_SRC="$(cd "$SCRIPT_DIR/../../cambot-agents" && pwd)"
-AGENTS_DST="$SCRIPT_DIR/cambot-agents"
+# Copy cambot-llm into build context (Dockerfile COPY needs it local)
+AGENTS_SRC="$(cd "$SCRIPT_DIR/../../cambot-llm" && pwd)"
+AGENTS_DST="$SCRIPT_DIR/cambot-llm"
 if [ -d "$AGENTS_SRC" ]; then
-  echo "Copying cambot-agents into build context..."
+  echo "Copying cambot-llm into build context..."
   rm -rf "$AGENTS_DST"
   mkdir -p "$AGENTS_DST"
   cp -r "$AGENTS_SRC/src" "$AGENTS_DST/src"
@@ -37,10 +37,24 @@ if [ -d "$AGENTS_SRC" ]; then
   cp "$AGENTS_SRC/tsconfig.json" "$AGENTS_DST/"
 fi
 
+# Copy agent-runner into build context (now lives at repo root, not inside container/)
+RUNNER_SRC="$(cd "$SCRIPT_DIR/../agent-runner" && pwd)"
+RUNNER_DST="$SCRIPT_DIR/cambot-agent-runner"
+if [ -d "$RUNNER_SRC" ]; then
+  echo "Copying agent-runner into build context..."
+  rm -rf "$RUNNER_DST"
+  mkdir -p "$RUNNER_DST"
+  cp -r "$RUNNER_SRC/src" "$RUNNER_DST/src"
+  find "$RUNNER_DST/src" -name '*.test.ts' -delete
+  cp "$RUNNER_SRC/package.json" "$RUNNER_DST/"
+  cp "$RUNNER_SRC/tsconfig.json" "$RUNNER_DST/"
+fi
+
 ${CONTAINER_RUNTIME} build -t "${IMAGE_NAME}:${TAG}" .
 
-# Clean up copied cambot-agents from build context
+# Clean up copied sources from build context
 rm -rf "$AGENTS_DST"
+rm -rf "$RUNNER_DST"
 
 echo ""
 echo "Build complete!"

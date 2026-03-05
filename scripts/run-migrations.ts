@@ -5,14 +5,20 @@ import path from 'path';
 
 import { compareSemver } from '../skills-engine/state.js';
 
-// Resolve tsx binary once to avoid npx race conditions across migrations
+// Resolve tsx binary once to avoid npx race conditions across migrations.
+// Uses the script's own directory (not cwd) so it works when tests run in a temp dir.
 function resolveTsx(): string {
-  // Check local node_modules first
-  const local = path.resolve('node_modules/.bin/tsx');
+  const scriptDir = import.meta.dirname;
+  const projectRoot = path.resolve(scriptDir, '..');
+  const local = path.join(projectRoot, 'node_modules', '.bin', 'tsx');
   if (fs.existsSync(local)) return local;
+  // Also check cwd-relative as a fallback
+  const cwdLocal = path.resolve('node_modules/.bin/tsx');
+  if (fs.existsSync(cwdLocal)) return cwdLocal;
   // Fall back to whichever tsx is in PATH
   try {
-    return execSync('which tsx', { encoding: 'utf-8' }).trim();
+    const whichCmd = process.platform === 'win32' ? 'where tsx' : 'which tsx';
+    return execSync(whichCmd, { encoding: 'utf-8' }).trim().split('\n')[0];
   } catch {
     return 'npx'; // last resort
   }

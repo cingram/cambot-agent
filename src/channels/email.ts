@@ -7,7 +7,7 @@
  * Polls workspace-mcp's Gmail search tool via HTTP (MCP JSON-RPC protocol)
  * to discover unread messages. Tracks last-seen timestamp in SQLite.
  */
-import { ASSISTANT_NAME } from '../config.js';
+import { ASSISTANT_NAME } from '../config/config.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
 

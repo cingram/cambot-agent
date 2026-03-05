@@ -101,11 +101,11 @@
 <table>
 <thead><tr><th>Component</th><th>File</th><th>Coupling</th></tr></thead>
 <tbody>
-<tr><td>Agent runner</td><td><code>container/agent-runner/src/index.ts</code></td><td>Imports <code>query</code> from <code>@anthropic-ai/claude-agent-sdk</code>, uses Claude-specific options (<code>resume</code>, <code>resumeSessionAt</code>, <code>systemPrompt</code>, <code>allowedTools</code>, <code>permissionMode</code>, <code>hooks</code>)</td></tr>
+<tr><td>Agent runner</td><td><code>agent-runner/src/index.ts</code></td><td>Imports <code>query</code> from <code>@anthropic-ai/claude-agent-sdk</code>, uses Claude-specific options (<code>resume</code>, <code>resumeSessionAt</code>, <code>systemPrompt</code>, <code>allowedTools</code>, <code>permissionMode</code>, <code>hooks</code>)</td></tr>
 <tr><td>Secret injection</td><td><code>src/container-runner.ts:184-186</code></td><td><code>readSecrets()</code> reads <code>CLAUDE_CODE_OAUTH_TOKEN</code> and <code>ANTHROPIC_API_KEY</code></td></tr>
 <tr><td>Container image</td><td><code>src/config.ts:37-38</code></td><td>Single global <code>CONTAINER_IMAGE = 'cambot-agent-agent:latest'</code></td></tr>
-<tr><td>Session management</td><td><code>container/agent-runner/src/index.ts:416-456</code></td><td><code>query()</code> call with Claude SDK session resume semantics</td></tr>
-<tr><td>Secret stripping</td><td><code>container/agent-runner/src/index.ts:190</code></td><td><code>SECRET_ENV_VARS</code> hardcodes <code>['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']</code></td></tr>
+<tr><td>Session management</td><td><code>agent-runner/src/index.ts:416-456</code></td><td><code>query()</code> call with Claude SDK session resume semantics</td></tr>
+<tr><td>Secret stripping</td><td><code>agent-runner/src/index.ts:190</code></td><td><code>SECRET_ENV_VARS</code> hardcodes <code>['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']</code></td></tr>
 <tr><td>SDK settings</td><td><code>src/container-runner.ts:107-121</code></td><td>Writes <code>.claude/settings.json</code> with Claude Code environment variables</td></tr>
 </tbody>
 </table>
@@ -116,7 +116,7 @@
 <tbody>
 <tr><td>Group queue</td><td><code>src/group-queue.ts</code></td><td>Manages <code>ChildProcess</code> instances. Knows nothing about what runs inside.</td></tr>
 <tr><td>IPC watcher</td><td><code>src/ipc.ts</code></td><td>Reads JSON files from per-group IPC directories. Provider-agnostic.</td></tr>
-<tr><td>MCP server</td><td><code>container/agent-runner/src/ipc-mcp-stdio.ts</code></td><td>Pure file-based IPC. No SDK imports. Any agent runtime can spawn it.</td></tr>
+<tr><td>MCP server</td><td><code>agent-runner/src/ipc-mcp-stdio.ts</code></td><td>Pure file-based IPC. No SDK imports. Any agent runtime can spawn it.</td></tr>
 <tr><td>Container runner protocol</td><td><code>src/container-runner.ts:29-44</code></td><td><code>ContainerInput</code>/<code>ContainerOutput</code> are plain JSON — no provider types.</td></tr>
 <tr><td>Volume mounts</td><td><code>src/container-runner.ts:52-177</code></td><td>Builds mounts from group config. Provider-irrelevant.</td></tr>
 <tr><td>Database</td><td><code>src/db.ts</code></td><td><code>registered_groups.container_config</code> is a JSON blob — already extensible.</td></tr>
@@ -241,7 +241,7 @@ XAI_API_KEY=xai-...</code></pre>
 <hr>
 <h2>Provider Containers</h2>
 <h3>Claude (Existing — Minimal Changes)</h3>
-<p>Rename <code>container/agent-runner/</code> to <code>container/agent-runner-claude/</code>. The existing code is nearly unchanged:</p>
+<p>Rename <code>agent-runner/</code> to <code>agent-runner-claude/</code>. The existing code is nearly unchanged:</p>
 <ul>
 <li><code>index.ts</code> — already correct. Uses <code>@anthropic-ai/claude-agent-sdk</code>.</li>
 <li><code>SECRET_ENV_VARS</code> — stays <code>['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']</code>.</li>
@@ -251,7 +251,7 @@ XAI_API_KEY=xai-...</code></pre>
 </ul>
 <p>The <code>.claude/settings.json</code> setup moves into this image's entrypoint (out of host <code>container-runner.ts</code>).</p>
 <h3>OpenAI (New Image, ~200 Lines)</h3>
-<p>New <code>container/agent-runner-openai/src/index.ts</code>:</p>
+<p>New <code>agent-runner-openai/src/index.ts</code>:</p>
 <pre><code>// Pseudocode — same stdin/stdout protocol, different SDK
 import OpenAI from 'openai';
 
@@ -364,7 +364,7 @@ Scheduled tasks:
 </ol>
 <h3>Phase 3: OpenAI Provider Container</h3>
 <ol>
-<li>Create <code>container/agent-runner-openai/</code> with OpenAI SDK agent runner.</li>
+<li>Create <code>agent-runner-openai/</code> with OpenAI SDK agent runner.</li>
 <li>Implement the stdin/stdout contract with sentinel markers.</li>
 <li>Bridge MCP tools to OpenAI function-calling format.</li>
 <li>Build <code>cambot-agent-openai:latest</code> image.</li>
@@ -396,7 +396,7 @@ Scheduled tasks:
 <tbody>
 <tr><td><strong>Group queue</strong> (<code>src/group-queue.ts</code>)</td><td>Manages <code>ChildProcess</code> lifecycle. Provider-blind.</td></tr>
 <tr><td><strong>IPC watcher</strong> (<code>src/ipc.ts</code>)</td><td>Reads JSON from filesystem. Provider-blind.</td></tr>
-<tr><td><strong>IPC MCP server</strong> (<code>container/agent-runner/src/ipc-mcp-stdio.ts</code>)</td><td>File-based IPC. No SDK imports. Shared across all providers.</td></tr>
+<tr><td><strong>IPC MCP server</strong> (<code>agent-runner/src/ipc-mcp-stdio.ts</code>)</td><td>File-based IPC. No SDK imports. Shared across all providers.</td></tr>
 <tr><td><strong>Router</strong> (<code>src/router.ts</code>)</td><td>Formats and dispatches messages. Provider-blind.</td></tr>
 <tr><td><strong>Scheduler</strong> (<code>src/task-scheduler.ts</code>)</td><td>Fires tasks by schedule. Provider-blind.</td></tr>
 <tr><td><strong>Channels</strong> (WhatsApp, Telegram, Discord)</td><td>Deliver messages. Provider-blind.</td></tr>

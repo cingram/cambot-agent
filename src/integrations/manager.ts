@@ -16,7 +16,7 @@ import {
   insertMcpServer,
   upsertIntegrationState,
   updateIntegrationHealthCheck,
-} from '../db.js';
+} from '../db/index.js';
 import { logger } from '../logger.js';
 import type { Channel } from '../types.js';
 import type {

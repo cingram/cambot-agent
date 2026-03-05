@@ -1,6 +1,6 @@
 import readline from 'readline';
 
-import { ASSISTANT_NAME, MAIN_GROUP_FOLDER } from '../config.js';
+import { ASSISTANT_NAME, MAIN_GROUP_FOLDER } from '../config/config.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
 

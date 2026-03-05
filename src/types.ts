@@ -32,6 +32,19 @@ export interface ContainerConfig {
   timeout?: number; // Default: 300000 (5 minutes)
 }
 
+/**
+ * The minimal execution environment needed to spawn a container agent.
+ * Decouples container spawning from conversation routing — agents,
+ * workflows, and shadow-admin can provide their own without faking
+ * a RegisteredGroup.
+ */
+export interface ExecutionContext {
+  name: string;                // human-readable name for logging
+  folder: string;              // workspace folder name
+  isMain: boolean;             // elevated mounts & permissions?
+  containerConfig?: ContainerConfig;
+}
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
@@ -39,6 +52,16 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+}
+
+/** Extract the execution context a container needs from a RegisteredGroup. */
+export function toExecutionContext(group: RegisteredGroup, isMain: boolean): ExecutionContext {
+  return {
+    name: group.name,
+    folder: group.folder,
+    isMain,
+    containerConfig: group.containerConfig,
+  };
 }
 
 export interface WorkerDefinition {
@@ -84,30 +107,22 @@ export interface TaskRunLog {
   error: string | null;
 }
 
-// --- Event Bus ---
+// --- Event Bus (re-exported from src/bus/) ---
 
-/** Minimal event shape for the message bus. Structurally compatible with cambot-core BusEvent. */
-export interface MessageBusEvent {
-  type: string;
-  source: string;
-  timestamp: string;
-  sessionKey?: string;
-  data: Record<string, unknown>;
-  tags?: string[];
-  /** When set to true by a handler, subsequent handlers are skipped. */
-  cancelled?: boolean;
-}
+import { MessageBus as _MessageBus } from './bus/index.js';
+export { BusEvent, MessageBus, createMessageBus } from './bus/index.js';
+export type { EventClass, HandlerOptions, BusLifecycleHooks } from './bus/index.js';
+export {
+  InboundMessage,
+  OutboundMessage,
+  ChatMetadata,
+  TypingUpdate,
+  AgentTelemetry,
+  AgentError,
+} from './bus/index.js';
 
-/** Narrow interface exposing only the EventBus methods the agent needs. */
-export interface MessageBus {
-  emit(event: MessageBusEvent): void;
-  emitAsync(event: MessageBusEvent): Promise<void>;
-  on(
-    eventType: string,
-    handler: (event: MessageBusEvent) => void | Promise<void>,
-    options?: { id?: string; priority?: number; source?: string },
-  ): () => void;
-}
+// Alias for local use in interfaces below
+type MessageBus = _MessageBus;
 
 // --- Channel abstraction ---
 

@@ -71,7 +71,7 @@ Add `'PARALLEL_API_KEY'` to the list of env var names in the `readSecrets()` fun
 
 ### 4. Configure MCP Servers in Agent Runner
 
-Update `container/agent-runner/src/index.ts`:
+Update `agent-runner/src/index.ts`:
 
 Find the section where `mcpServers` is configured (around line 237-252):
 ```typescript

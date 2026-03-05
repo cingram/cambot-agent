@@ -161,7 +161,7 @@ For Tool Mode, integrate Gmail MCP into the agent runner. Execute these changes 
 
 ### Step 1: Add Gmail MCP to Agent Runner
 
-Read `container/agent-runner/src/index.ts` and find the `mcpServers` config in the `query()` call.
+Read `agent-runner/src/index.ts` and find the `mcpServers` config in the `query()` call.
 
 Add `gmail` to the `mcpServers` object:
 
@@ -590,7 +590,7 @@ async function runEmailAgent(
 
 ### Step 7: Update IPC for Email Responses (Optional)
 
-If you want the agent to be able to send emails proactively from within a session, read `container/agent-runner/src/ipc-mcp.ts` and add this tool:
+If you want the agent to be able to send emails proactively from within a session, read `agent-runner/src/ipc-mcp.ts` and add this tool:
 
 ```typescript
 // Add to the MCP tools
@@ -710,7 +710,7 @@ npx -y @gongrzhe/server-gmail-autoauth-mcp
 
 To remove Gmail entirely:
 
-1. Remove from `container/agent-runner/src/index.ts`:
+1. Remove from `agent-runner/src/index.ts`:
    - Delete `gmail` from `mcpServers`
    - Remove `mcp__gmail__*` from `allowedTools`
 

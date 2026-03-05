@@ -181,7 +181,7 @@ if (!handled) {
 
 ---
 
-**2. Container side: `container/agent-runner/src/ipc-mcp.ts`**
+**2. Container side: `agent-runner/src/ipc-mcp.ts`**
 
 Add import after `cron-parser` import:
 ```typescript
@@ -220,12 +220,12 @@ COPY agent-runner/package*.json ./
 COPY agent-runner/ ./
 
 # Replace with:
-COPY container/agent-runner/package*.json ./
+COPY cambot-agent-runner/package*.json ./
 ...
-COPY container/agent-runner/ ./
+COPY cambot-agent-runner/ ./
 ```
 
-Then add COPY line after `COPY container/agent-runner/ ./` and before `RUN npm run build`:
+Then add COPY line after `COPY cambot-agent-runner/ ./` and before `RUN npm run build`:
 ```dockerfile
 # Copy skill MCP tools
 COPY .claude/skills/x-integration/agent.ts ./src/skills/x-integration/

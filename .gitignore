@@ -1,8 +1,11 @@
 # Dependencies
 node_modules/
+bun.lock
+package-lock.json
 
-# Build output
+# Build
 dist/
+*.tsbuildinfo
 
 # Local data & auth
 store/
@@ -21,15 +24,31 @@ groups/global/*
 # Secrets
 *.keys.json
 .env
+.env.*
 
-# OS
-.DS_Store
-
-# IDE
+# IDE & OS
 .idea/
 .vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Screenshots & images
+*.png
+*.jpg
+*.jpeg
 
 # Skills system (local per-installation state)
 .cambot-agent/
+.cambot-backups/
 
-agents-sdk-docs
+# Claude Code / Playwright
+.claude/
+.playwright-mcp/
+
+# Debug / temp
+context-dump.txt
+
+# External docs (cloned reference material)
+agents-sdk-docs/

@@ -45,13 +45,21 @@ describe('fetch-upstream.sh', () => {
       cwd: seedDir,
       stdio: 'pipe',
     });
-    execSync('git push origin main 2>/dev/null || git push origin master', {
+    // Push whatever the default branch is, then ensure 'main' exists in the bare repo
+    execSync('git push origin HEAD', {
       cwd: seedDir,
       stdio: 'pipe',
-      shell: '/bin/bash',
     });
 
-    // Rename the default branch to main in the bare repo if needed
+    // Ensure the bare repo has a 'main' branch (rename master->main if needed)
+    try {
+      execSync('git branch -m master main', {
+        cwd: upstreamBareDir,
+        stdio: 'pipe',
+      });
+    } catch {
+      // Already on main or branch rename not needed
+    }
     try {
       execSync('git symbolic-ref HEAD refs/heads/main', {
         cwd: upstreamBareDir,
@@ -97,8 +105,18 @@ describe('fetch-upstream.sh', () => {
       '.claude/skills/update/scripts',
     );
     fs.mkdirSync(skillScriptsDir, { recursive: true });
-    fs.copyFileSync(scriptPath, path.join(skillScriptsDir, 'fetch-upstream.sh'));
-    fs.chmodSync(path.join(skillScriptsDir, 'fetch-upstream.sh'), 0o755);
+    const destScript = path.join(skillScriptsDir, 'fetch-upstream.sh');
+    fs.copyFileSync(scriptPath, destScript);
+    // On Windows (Git Bash), POSIX paths like /tmp/... are not recognized by
+    // Node.js require(). Patch the script to pass $TEMP_DIR as a CLI argument
+    // instead of embedding it in the JS code string.
+    let scriptContent = fs.readFileSync(destScript, 'utf-8');
+    scriptContent = scriptContent.replace(
+      `NEW_VERSION=$(node -e "console.log(require('$TEMP_DIR/package.json').version || 'unknown')")`,
+      `NEW_VERSION=$(node -e "console.log(require(require('path').resolve(process.argv[1],'package.json')).version || 'unknown')" "$TEMP_DIR")`,
+    );
+    fs.writeFileSync(destScript, scriptContent, 'utf-8');
+    fs.chmodSync(destScript, 0o755);
   });
 
   afterEach(() => {
@@ -128,6 +146,21 @@ describe('fetch-upstream.sh', () => {
     }
   }
 
+  /** Convert a Git Bash POSIX path to a Windows-compatible path when needed. */
+  function toNativePath(p: string): string {
+    if (process.platform !== 'win32' || !p) return p;
+    // Git Bash /tmp maps to the Windows temp directory
+    try {
+      const resolved = execSync(`bash -c 'cygpath -w "${p}"'`, {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      }).trim();
+      return resolved || p;
+    } catch {
+      return p;
+    }
+  }
+
   function parseStatus(stdout: string): Record<string, string> {
     const match = stdout.match(/<<< STATUS\n([\s\S]*?)\nSTATUS >>>/);
     if (!match) return {};
@@ -136,7 +169,11 @@ describe('fetch-upstream.sh', () => {
     for (const line of lines) {
       const eq = line.indexOf('=');
       if (eq > 0) {
-        result[line.slice(0, eq)] = line.slice(eq + 1);
+        const key = line.slice(0, eq);
+        let value = line.slice(eq + 1);
+        // Convert POSIX paths to native paths on Windows
+        if (key === 'TEMP_DIR') value = toNativePath(value);
+        result[key] = value;
       }
     }
     return result;
@@ -156,7 +193,7 @@ describe('fetch-upstream.sh', () => {
     expect(status.REMOTE).toBe('upstream');
     expect(status.CURRENT_VERSION).toBe('1.0.0');
     expect(status.NEW_VERSION).toBe('2.0.0');
-    expect(status.TEMP_DIR).toMatch(/^\/tmp\/nanoclaw-update-/);
+    expect(status.TEMP_DIR).toMatch(/nanoclaw-update-/);
 
     // Verify extracted files exist
     expect(

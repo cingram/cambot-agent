@@ -309,13 +309,13 @@ const NODES = [
     role: 'node:22-slim base. Installs Chromium, fonts, a/v libs, claude-code CLI. Entrypoint recompiles agent-runner TypeScript on every start.' },
 
   // ── Agent In-Container (y ~500) ──
-  { id: 'agent-runner', label: 'Agent Runner', subtitle: 'container/agent-runner/src/index.ts',
+  { id: 'agent-runner', label: 'Agent Runner', subtitle: 'agent-runner/src/index.ts',
     x: 80, y: 500, w: 170, h: 48, layer: 'agent',
     role: 'Container entrypoint. Reads ContainerInput from stdin, runs Claude Agent SDK query loop. Polls IPC for follow-up messages via MessageStream. Archives transcripts before compaction.' },
-  { id: 'mcp-server', label: 'MCP Server', subtitle: 'container/agent-runner/src/ipc-mcp-stdio.ts',
+  { id: 'mcp-server', label: 'MCP Server', subtitle: 'agent-runner/src/ipc-mcp-stdio.ts',
     x: 290, y: 500, w: 150, h: 48, layer: 'agent',
     role: 'Exposes MCP tools to the agent: send_message, schedule_task, list/pause/resume/cancel tasks, register_group, delegate_to_worker. All IPC writes are atomic.' },
-  { id: 'msg-stream', label: 'MessageStream', subtitle: 'container/agent-runner/src/index.ts',
+  { id: 'msg-stream', label: 'MessageStream', subtitle: 'agent-runner/src/index.ts',
     x: 490, y: 500, w: 145, h: 48, layer: 'agent',
     role: 'Push-based async iterable. Keeps SDK session alive for follow-up messages during idle. Prevents isSingleUserTurn mode for agent teams support.' },
   { id: 'claude-sdk', label: 'Claude Agent SDK', subtitle: '@anthropic-ai/claude-agent-sdk',
@@ -360,7 +360,7 @@ const NODES = [
   { id: 'ipc-auth', label: 'IPC Authorization', subtitle: 'src/ipc.ts (auth logic)',
     x: 270, y: 830, w: 155, h: 48, layer: 'security',
     role: 'Non-main groups can only send messages to their own JID and schedule tasks for themselves. Main group has elevated privileges for cross-group operations.' },
-  { id: 'secret-isolation', label: 'Secret Isolation', subtitle: 'container/agent-runner (hooks)',
+  { id: 'secret-isolation', label: 'Secret Isolation', subtitle: 'agent-runner (hooks)',
     x: 470, y: 830, w: 160, h: 48, layer: 'security',
     role: 'Secrets passed via stdin JSON, never in process.env. PreToolUse[Bash] hook strips API keys from bash environments. env.ts reads .env without polluting global env.' },
 ];

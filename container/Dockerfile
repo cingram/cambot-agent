@@ -36,38 +36,40 @@ RUN npm install -g agent-browser @anthropic-ai/claude-code
 # Create app directory
 WORKDIR /app
 
-# Copy cambot-agents package (local dependency for custom agent support)
-COPY cambot-agents/ /cambot-agents/
-RUN cd /cambot-agents && npm install --legacy-peer-deps && npm run build
+# Copy cambot-llm package (local dependency for custom agent support)
+COPY cambot-llm/ /cambot-llm/
+RUN cd /cambot-llm && npm install --legacy-peer-deps && npm run build \
+    && find /cambot-llm/src -name '*.ts' -not -path '*/node_modules/*' -exec md5sum {} + | sort | md5sum | cut -d' ' -f1 > /cambot-llm/.source-hash
 
 # Copy package.json only (not lockfile — it has stale file: paths from local dev)
-COPY agent-runner/package.json ./
+COPY cambot-agent-runner/package.json ./
 
-# Fix cambot-agents path for container context (local dev uses ../../../cambot-agents)
-RUN sed -i 's|"cambot-agents": "file:../../../cambot-agents"|"cambot-agents": "file:/cambot-agents"|' package.json
+# Fix cambot-llm path for container context (local dev uses ../../cambot-llm)
+RUN sed -i 's|"cambot-llm": "file:../../cambot-llm"|"cambot-llm": "file:/cambot-llm"|' package.json
 
 # Install dependencies (fresh resolve, no stale lockfile)
 RUN npm install --legacy-peer-deps
 
 # Copy source code and config (not package.json — already sed-fixed above)
-COPY agent-runner/src/ ./src/
-COPY agent-runner/tsconfig.json ./
+COPY cambot-agent-runner/src/ ./src/
+COPY cambot-agent-runner/tsconfig.json ./
 
-# Build TypeScript
-RUN npm run build
+# Build TypeScript and save source hash for entrypoint cache check
+RUN npm run build \
+    && find /app/src -name '*.ts' -not -path '*/node_modules/*' -exec md5sum {} + | sort | md5sum | cut -d' ' -f1 > /app/.source-hash
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
-# Create entrypoint script
+# Copy entrypoint script (smart recompilation — skips tsc when source unchanged)
 # Secrets are passed via stdin JSON — temp file is deleted immediately after Node reads it
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-# Rebuilds cambot-agents first (source is hot-mounted from host) then agent-runner
-RUN printf '#!/bin/bash\nset -e\ncd /cambot-agents && npx tsc 2>&1 >&2\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
-# /cambot-agents needs write access so the entrypoint can rebuild from hot-mounted source
-RUN chown -R node:node /workspace /cambot-agents && chmod 777 /home/node
+# /cambot-llm needs write access so the entrypoint can rebuild from hot-mounted source
+RUN chown -R node:node /workspace /cambot-llm && chmod 777 /home/node
 
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node

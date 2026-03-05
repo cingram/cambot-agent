@@ -45,12 +45,12 @@ These components are tightly coupled to the Anthropic/Claude ecosystem:
 
 | Component | File | Coupling |
 |-----------|------|----------|
-| Agent runner | `container/agent-runner/src/index.ts` | Imports `query` from `@anthropic-ai/claude-agent-sdk`, uses Claude-specific options (`resume`, `resumeSessionAt`, `systemPrompt`, `allowedTools`, `permissionMode`, `hooks`) |
-| Secret injection | `src/container-runner.ts:184-186` | `readSecrets()` reads `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` |
-| Container image | `src/config.ts:37-38` | Single global `CONTAINER_IMAGE = 'cambot-agent-agent:latest'` |
-| Session management | `container/agent-runner/src/index.ts:416-456` | `query()` call with Claude SDK session resume semantics |
-| Secret stripping | `container/agent-runner/src/index.ts:190` | `SECRET_ENV_VARS` hardcodes `['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']` |
-| SDK settings | `src/container-runner.ts:107-121` | Writes `.claude/settings.json` with Claude Code environment variables |
+| Agent runner | `agent-runner/src/index.ts` | Imports `query` from `@anthropic-ai/claude-agent-sdk`, uses Claude-specific options (`resume`, `resumeSessionAt`, `systemPrompt`, `allowedTools`, `permissionMode`, `hooks`) |
+| Secret injection | `src/container/runner.ts` | `readSecrets()` reads `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` |
+| Container image | `src/config/config.ts` | Single global `CONTAINER_IMAGE = 'cambot-agent-agent:latest'` |
+| Session management | `agent-runner/src/index.ts:416-456` | `query()` call with Claude SDK session resume semantics |
+| Secret stripping | `agent-runner/src/index.ts:190` | `SECRET_ENV_VARS` hardcodes `['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']` |
+| SDK settings | `src/container/runner.ts` | Writes `.claude/settings.json` with Claude Code environment variables |
 
 ### Already Generic (Host-Side)
 
@@ -58,14 +58,14 @@ These components have zero provider awareness and work with any container that s
 
 | Component | File | Why It's Generic |
 |-----------|------|-----------------|
-| Group queue | `src/group-queue.ts` | Manages `ChildProcess` instances. Knows nothing about what runs inside. |
-| IPC watcher | `src/ipc.ts` | Reads JSON files from per-group IPC directories. Provider-agnostic. |
-| MCP server | `container/agent-runner/src/ipc-mcp-stdio.ts` | Pure file-based IPC. No SDK imports. Any agent runtime can spawn it. |
-| Container runner protocol | `src/container-runner.ts:29-44` | `ContainerInput`/`ContainerOutput` are plain JSON — no provider types. |
-| Volume mounts | `src/container-runner.ts:52-177` | Builds mounts from group config. Provider-irrelevant. |
-| Database | `src/db.ts` | `registered_groups.container_config` is a JSON blob — already extensible. |
-| Scheduler | `src/task-scheduler.ts` | Triggers container runs by group. Doesn't know what's inside. |
-| Router | `src/router.ts` | Formats messages, strips tags, dispatches to channels. |
+| Group queue | `src/groups/group-queue.ts` | Manages `ChildProcess` instances. Knows nothing about what runs inside. |
+| IPC watcher | `src/ipc/watcher.ts` | Reads JSON files from per-group IPC directories. Provider-agnostic. |
+| MCP server | `agent-runner/src/ipc-mcp-stdio.ts` | Pure file-based IPC. No SDK imports. Any agent runtime can spawn it. |
+| Container runner protocol | `src/container/runner.ts` | `ContainerInput`/`ContainerOutput` are plain JSON — no provider types. |
+| Volume mounts | `src/container/runner.ts` | Builds mounts from group config. Provider-irrelevant. |
+| Database | `src/db/` | `registered_groups.container_config` is a JSON blob — already extensible. |
+| Scheduler | `src/scheduling/task-scheduler.ts` | Triggers container runs by group. Doesn't know what's inside. |
+| Router | `src/utils/router.ts` | Formats messages, strips tags, dispatches to channels. |
 | Channels | `src/types.ts:81-98` | `Channel` interface is fully abstract. |
 
 ### The Seam
@@ -366,7 +366,7 @@ If the user wants to manage workers explicitly (power user), they can talk to th
 
 Add `WorkerDefinition` interface.
 
-### 2. Database (`src/db.ts`)
+### 2. Database (`src/db/`)
 
 New table for worker definitions (seeded from `agents.yaml`, also writable at runtime):
 ```sql
@@ -387,22 +387,22 @@ CREATE TABLE IF NOT EXISTS provider_images (
 );
 ```
 
-### 3. Config (`src/config.ts`)
+### 3. Config (`src/config/config.ts`)
 
 Remove `CONTAINER_IMAGE` global constant. All images (lead and workers) resolve via `agent.provider → provider_images.container_image`. The lead agent ID is loaded from `agents.yaml` at startup.
 
-### 4. Container Runner (`src/container-runner.ts`)
+### 4. Container Runner (`src/container/runner.ts`)
 
 - `readSecrets()` becomes `readSecrets(secretKeys: string[])` — reads only the keys the agent needs.
 - `buildContainerArgs()` takes `containerImage: string` parameter instead of using the global.
 - `buildVolumeMounts()` — workers get minimal mounts (no `.claude/` settings, no project root). Just the IPC directory and a temp workspace.
 - New `runWorkerAgent()` function — simplified version of `runContainerAgent()` for stateless workers (no session, no idle timeout, no follow-up messages).
 
-### 5. MCP Server (`container/agent-runner/src/ipc-mcp-stdio.ts`)
+### 5. MCP Server (`agent-runner/src/ipc-mcp-stdio.ts`)
 
 New tool: `delegate_to_worker`. Writes an IPC file that the host picks up, spawns the worker container, waits for the result, and writes it back as another IPC file the lead reads.
 
-### 6. IPC (`src/ipc.ts`)
+### 6. IPC (`src/ipc/task-handler.ts`)
 
 New IPC message type: `delegate_worker`. The host processes it by:
 1. Looking up the `WorkerDefinition`
@@ -410,7 +410,7 @@ New IPC message type: `delegate_worker`. The host processes it by:
 3. Spawning the worker container with `runWorkerAgent()`
 4. Writing the result back to the lead's IPC input directory
 
-### 7. Orchestrator (`src/index.ts`)
+### 7. Orchestrator (`src/orchestrator/app.ts`)
 
 Minimal changes. The lead container is still spawned exactly as today. Worker delegation happens through IPC, which the existing watcher already handles.
 
@@ -420,7 +420,7 @@ Minimal changes. The lead container is still spawned exactly as today. Worker de
 
 ### Claude (Existing — Minimal Changes)
 
-Rename `container/agent-runner/` to `container/agent-runner-claude/`. The existing code is nearly unchanged:
+Rename `agent-runner/` to `agent-runner-claude/`. The existing code is nearly unchanged:
 
 - `index.ts` — already correct. Uses `@anthropic-ai/claude-agent-sdk`.
 - `SECRET_ENV_VARS` — stays `['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']`.
@@ -432,7 +432,7 @@ Used for both lead and worker roles. When used as lead, gets full session manage
 
 ### OpenAI (New Image, ~200 Lines)
 
-New `container/agent-runner-openai/src/index.ts`:
+New `agent-runner-openai/src/index.ts`:
 
 ```typescript
 // Pseudocode — same stdin/stdout protocol, different SDK
@@ -558,21 +558,21 @@ If the pool is full, worker requests queue in `GroupQueue` and execute when a sl
 1. Add `WorkerDefinition` type and `worker_definitions` DB table.
 2. Add `provider_images` DB table.
 3. Create `agents.yaml` loader — validates, seeds DB at startup.
-4. Refactor `container-runner.ts`: parameterize `readSecrets()`, `buildContainerArgs()`.
+4. Refactor `src/container/runner.ts`: parameterize `readSecrets()`, `buildContainerArgs()`.
 5. Add `runWorkerAgent()` — simplified container runner for stateless workers.
 6. Existing groups continue working identically — lead is still the only agent.
 
 ### Phase 2: Delegation MCP Tool
 
 1. Add `delegate_to_worker` MCP tool to `ipc-mcp-stdio.ts`.
-2. Add `delegate_worker` IPC message type to `src/ipc.ts`.
+2. Add `delegate_worker` IPC message type to `src/ipc/task-handler.ts`.
 3. Host-side handler: resolve worker → spawn container → return result via IPC.
 4. Write `available_workers.json` to each group's workspace at container start.
 5. Test: lead agent can successfully delegate to a Claude worker (same provider, different model).
 
 ### Phase 3: OpenAI Provider Container
 
-1. Create `container/agent-runner-openai/` with OpenAI SDK agent runner.
+1. Create `agent-runner-openai/` with OpenAI SDK agent runner.
 2. Implement the stdin/stdout contract with sentinel markers.
 3. Bridge MCP tools to OpenAI function-calling format.
 4. Build `cambot-agent-openai:latest` image.
@@ -603,13 +603,13 @@ These components require zero modifications:
 
 | Component | Why |
 |-----------|-----|
-| **Group queue** (`src/group-queue.ts`) | Manages `ChildProcess` lifecycle. Provider-blind. Workers are just more processes. |
-| **IPC MCP server** (`container/agent-runner/src/ipc-mcp-stdio.ts`) | Gains one new tool (`delegate_to_worker`), but the file-based IPC mechanism is unchanged. |
-| **Router** (`src/router.ts`) | Formats and dispatches messages. Only talks to the lead. Provider-blind. |
-| **Scheduler** (`src/task-scheduler.ts`) | Fires tasks by schedule. Provider-blind. |
+| **Group queue** (`src/groups/group-queue.ts`) | Manages `ChildProcess` lifecycle. Provider-blind. Workers are just more processes. |
+| **IPC MCP server** (`agent-runner/src/ipc-mcp-stdio.ts`) | Gains one new tool (`delegate_to_worker`), but the file-based IPC mechanism is unchanged. |
+| **Router** (`src/utils/router.ts`) | Formats and dispatches messages. Only talks to the lead. Provider-blind. |
+| **Scheduler** (`src/scheduling/task-scheduler.ts`) | Fires tasks by schedule. Provider-blind. |
 | **Channels** (WhatsApp, Telegram, Discord) | Deliver messages. Only interact with the lead. |
-| **Mount security** (`src/mount-security.ts`) | Validates mount paths. Provider-blind. |
-| **Container runtime** (`src/container-runtime.ts`) | Detects Docker/Podman/Apple Container. Provider-blind. |
+| **Mount security** (`src/container/mount-security.ts`) | Validates mount paths. Provider-blind. |
+| **Container runtime** (`src/container/runtime.ts`) | Detects Docker/Podman/Apple Container. Provider-blind. |
 | **Logger, env, group-folder** | Infrastructure utilities. |
 | **cambot-core** (memory, telemetry, security) | Operates on the host DB. No container awareness. |
 | **User experience** | User talks to one assistant. Always. The delegation is invisible. |

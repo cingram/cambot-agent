@@ -38,28 +38,33 @@ Single Node.js process + N Docker containers. The host orchestrates messaging, s
 
 ## Component Map
 
-| File | Purpose |
+| Directory / File | Purpose |
 |------|---------|
-| `src/index.ts` | Orchestrator: startup, message loop, state, agent invocation |
+| `src/orchestrator/app.ts` | CamBotApp facade: startup, shutdown, wiring |
+| `src/orchestrator/message-loop.ts` | Message polling and routing |
+| `src/orchestrator/router-state.ts` | In-memory state: cursors, sessions, groups |
 | `src/types.ts` | All TypeScript interfaces (`Channel`, `RegisteredGroup`, `NewMessage`, etc.) |
-| `src/config.ts` | Constants: paths, intervals, timeouts, trigger regex, env reads |
-| `src/env.ts` | Parses `.env` into typed record without polluting `process.env` |
+| `src/config/config.ts` | Constants: paths, intervals, timeouts, trigger regex, env reads |
+| `src/config/env.ts` | Parses `.env` into typed record without polluting `process.env` |
 | `src/logger.ts` | Pino logger; hooks `uncaughtException`/`unhandledRejection` |
-| `src/router.ts` | Formats messages to XML, strips `<internal>` tags, dispatches to channels |
-| `src/db.ts` | All SQLite operations: schema, migrations, queries |
-| `src/group-queue.ts` | Per-group concurrency with global container cap, retry/backoff |
-| `src/group-folder.ts` | Validates/resolves group folder paths; prevents path traversal |
-| `src/container-runner.ts` | Builds volume mounts, spawns Docker containers, streams stdout |
-| `src/container-runtime.ts` | Runtime abstraction: `readonlyMountArgs`, `stopContainer`, `cleanupOrphans` |
-| `src/ipc.ts` | File-based IPC watcher: polls per-group dirs, processes messages and tasks |
-| `src/task-scheduler.ts` | Polls SQLite for due tasks every 60s, dispatches to GroupQueue |
-| `src/mount-security.ts` | Validates `additionalMounts` against external allowlist |
-| `src/whatsapp-auth.ts` | Standalone script for WhatsApp QR/pairing-code auth |
+| `src/utils/router.ts` | Formats messages to XML, strips `<internal>` tags, dispatches to channels |
+| `src/db/` | SQLite repositories: chat, message, task, group, session, agent-def, integration, mcp |
+| `src/groups/group-queue.ts` | Per-group concurrency with global container cap, retry/backoff |
+| `src/groups/group-folder.ts` | Validates/resolves group folder paths; prevents path traversal |
+| `src/container/runner.ts` | Builds volume mounts, spawns Docker containers, streams stdout |
+| `src/container/runtime.ts` | Runtime abstraction: `readonlyMountArgs`, `stopContainer`, `cleanupOrphans` |
+| `src/container/snapshot-writers.ts` | Writes task/group/workflow snapshots for containers |
+| `src/ipc/watcher.ts` | File-based IPC watcher: polls per-group dirs |
+| `src/ipc/task-handler.ts` | Processes IPC task commands (schedule, workflows, agents, integrations) |
+| `src/ipc/message-handler.ts` | Processes IPC message files |
+| `src/scheduling/task-scheduler.ts` | Polls SQLite for due tasks every 60s, dispatches to GroupQueue |
+| `src/container/mount-security.ts` | Validates `additionalMounts` against external allowlist |
+| `src/utils/whatsapp-auth.ts` | Standalone script for WhatsApp QR/pairing-code auth |
 | `src/channels/registry.ts` | Discovers and loads configured channels; auto-detects WhatsApp |
 | `src/channels/whatsapp.ts` | Baileys WebSocket: LID translation, outgoing queue, metadata sync |
 | `src/channels/cli.ts` | Interactive stdin/stdout channel for local dev |
-| `container/agent-runner/src/index.ts` | In-container query loop: Claude Agent SDK, IPC input polling |
-| `container/agent-runner/src/ipc-mcp-stdio.ts` | MCP server: `send_message`, `schedule_task`, `list/pause/cancel_task` |
+| `agent-runner/src/index.ts` | In-container query loop: Claude Agent SDK, IPC input polling |
+| `agent-runner/src/ipc-mcp-stdio.ts` | MCP server: `send_message`, `schedule_task`, `list/pause/cancel_task` |
 
 ---
 
@@ -87,7 +92,7 @@ Channel {
 
 ## Layer 2: Orchestrator
 
-`src/index.ts` — the central coordinator.
+`src/orchestrator/app.ts` — the central coordinator.
 
 **Startup sequence** (`main()`):
 1. Verify Docker is running (`docker info`)
@@ -110,7 +115,7 @@ Channel {
 
 ## Layer 3: Queue & Concurrency
 
-`src/group-queue.ts` — per-group serialization with a global container pool.
+`src/groups/group-queue.ts` — per-group serialization with a global container pool.
 
 **Concurrency model**: Up to `MAX_CONCURRENT_CONTAINERS` (default 5) containers run simultaneously across all groups. Each group runs at most one container at a time.
 
@@ -290,7 +295,7 @@ Scheduler (60s poll)
 
 **Mount security**: Additional mounts validated against `~/.config/cambot-agent/mount-allowlist.json` (outside project root — agents cannot read or modify it). Blocked patterns include `.ssh`, `.aws`, `.env`, `credentials`, private keys. Non-main groups forced read-only if `nonMainReadOnly=true`. Symlinks resolved before validation.
 
-**Group folders**: `group-folder.ts` validates paths, blocks traversal (`..`), ensures folders resolve within `groups/` directory.
+**Group folders**: `src/groups/group-folder.ts` validates paths, blocks traversal (`..`), ensures folders resolve within `groups/` directory.
 
 ---
 

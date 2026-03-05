@@ -98,30 +98,73 @@ cambot-agent/
 ├── .gitignore
 │
 ├── src/
-│   ├── index.ts                   # Orchestrator: state, message loop, agent invocation
-│   ├── channels/
-│   │   └── whatsapp.ts            # WhatsApp connection, auth, send/receive
-│   ├── ipc.ts                     # IPC watcher and task processing
-│   ├── router.ts                  # Message formatting and outbound routing
-│   ├── config.ts                  # Configuration constants
+│   ├── main.ts                    # Entry point (~15 lines, boots CamBotApp)
 │   ├── types.ts                   # TypeScript interfaces (includes Channel)
 │   ├── logger.ts                  # Pino logger setup
-│   ├── db.ts                      # SQLite database initialization and queries
-│   ├── group-queue.ts             # Per-group queue with global concurrency limit
-│   ├── mount-security.ts          # Mount allowlist validation for containers
-│   ├── whatsapp-auth.ts           # Standalone WhatsApp authentication
-│   ├── task-scheduler.ts          # Runs scheduled tasks when due
-│   └── container-runner.ts        # Spawns agents in containers
+│   ├── config/
+│   │   ├── config.ts              # Configuration constants
+│   │   └── env.ts                 # .env parser
+│   ├── db/
+│   │   ├── connection.ts          # SQLite init and getDatabase()
+│   │   ├── chat-repository.ts     # Chat metadata queries
+│   │   ├── message-repository.ts  # Message storage and retrieval
+│   │   ├── task-repository.ts     # Scheduled task CRUD
+│   │   ├── group-repository.ts    # Registered group storage
+│   │   ├── session-repository.ts  # Session and router state
+│   │   └── ...                    # custom-agent, agent-def, integration, mcp repos
+│   ├── orchestrator/
+│   │   ├── app.ts                 # CamBotApp facade: init, shutdown, wiring
+│   │   ├── message-loop.ts        # Message polling and routing
+│   │   └── router-state.ts        # In-memory state: cursors, sessions, groups
+│   ├── container/
+│   │   ├── runner.ts              # Spawns agent containers with mounts
+│   │   ├── runtime.ts             # Container runtime abstraction (Docker/Apple)
+│   │   ├── mount-security.ts      # Mount allowlist validation
+│   │   └── snapshot-writers.ts    # Writes task/group/workflow snapshots
+│   ├── ipc/
+│   │   ├── watcher.ts             # IPC polling loop
+│   │   ├── task-handler.ts        # Task/workflow/agent IPC processing
+│   │   ├── message-handler.ts     # Message file processing
+│   │   └── result-writers.ts      # Delegation and workflow result writers
+│   ├── groups/
+│   │   ├── group-queue.ts         # Per-group queue with global concurrency limit
+│   │   └── group-folder.ts        # Group folder path validation
+│   ├── scheduling/
+│   │   └── task-scheduler.ts      # Runs scheduled tasks when due
+│   ├── agents/
+│   │   ├── agents.ts              # Agent definition loading and resolution
+│   │   ├── custom-agent-service.ts # Custom agent CRUD and invocation
+│   │   └── shadow-agent.ts        # Admin shadow agent
+│   ├── workflows/
+│   │   ├── workflow-service.ts    # Workflow execution engine
+│   │   ├── workflow-builder-service.ts # Workflow CRUD
+│   │   └── workflow-scheduler.ts  # Workflow scheduling loop
+│   ├── utils/
+│   │   ├── router.ts              # Message formatting and outbound routing
+│   │   ├── whatsapp-auth.ts       # Standalone WhatsApp authentication
+│   │   ├── workspace-mcp-service.ts # Google Workspace MCP manager
+│   │   └── ...                    # context-files, memory-context, ingestion-queue
+│   ├── channels/
+│   │   ├── registry.ts            # Channel discovery and loading
+│   │   ├── whatsapp.ts            # WhatsApp connection, auth, send/receive
+│   │   ├── cli.ts                 # Interactive stdin/stdout channel
+│   │   ├── web.ts                 # Web UI channel (HTTP + WebSocket)
+│   │   └── email.ts               # Email channel (Gmail polling + reply)
+│   ├── bus/                       # Message bus and event types
+│   └── integrations/              # Integration manager and types
 │
-├── container/
+├── agent-runner/                  # Code that runs inside the container (promoted to repo root)
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── src/
+│       ├── index.ts               # Entry point (query loop, IPC polling, session resume)
+│       └── ipc-mcp-stdio.ts       # Stdio-based MCP server for host communication
+│
+├── container/                     # Docker infrastructure only
 │   ├── Dockerfile                 # Container image (runs as 'node' user, includes Claude Code CLI)
 │   ├── build.sh                   # Build script for container image
-│   ├── agent-runner/              # Code that runs inside the container
-│   │   ├── package.json
-│   │   ├── tsconfig.json
-│   │   └── src/
-│   │       ├── index.ts           # Entry point (query loop, IPC polling, session resume)
-│   │       └── ipc-mcp-stdio.ts   # Stdio-based MCP server for host communication
+│   ├── build.ps1                  # Build script (Windows)
+│   ├── entrypoint.sh              # Container entrypoint
 │   └── skills/
 │       └── agent-browser.md       # Browser automation skill
 │
@@ -171,7 +214,7 @@ cambot-agent/
 
 ## Configuration
 
-Configuration constants are in `src/config.ts`:
+Configuration constants are in `src/config/config.ts`:
 
 ```typescript
 import path from 'path';
@@ -245,7 +288,7 @@ Set the `ASSISTANT_NAME` environment variable:
 ASSISTANT_NAME=Bot npm start
 ```
 
-Or edit the default in `src/config.ts`. This changes:
+Or edit the default in `src/config/config.ts`. This changes:
 - The trigger pattern (messages must start with `@YourName`)
 - The response prefix (`YourName:` added automatically)
 

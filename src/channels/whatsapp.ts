@@ -10,12 +10,12 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 
-import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, STORE_DIR } from '../config.js';
+import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, STORE_DIR } from '../config/config.js';
 import {
   getLastGroupSync,
   setLastGroupSync,
   updateChatName,
-} from '../db.js';
+} from '../db/index.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
 

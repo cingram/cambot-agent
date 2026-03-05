@@ -7,7 +7,7 @@
 
 import type { IntegrationBackend, IntegrationInfo, McpServerConfig } from 'cambot-integrations';
 import type { Channel, ChannelOpts, MessageBus } from '../types.js';
-import type { WorkspaceMcpService } from '../workspace-mcp-service.js';
+import type { WorkspaceMcpService } from '../utils/workspace-mcp-service.js';
 
 export type IntegrationType = 'channel' | 'mcp-server' | 'skill';
 

@@ -81,7 +81,7 @@ function setupLaunchd(projectRoot: string, nodePath: string, homeDir: string): v
     <key>ProgramArguments</key>
     <array>
         <string>${nodePath}</string>
-        <string>${projectRoot}/dist/index.js</string>
+        <string>${projectRoot}/dist/main.js</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${projectRoot}</string>
@@ -150,7 +150,7 @@ function setupLinux(projectRoot: string, nodePath: string, homeDir: string): voi
  */
 function killOrphanedProcesses(projectRoot: string): void {
   try {
-    execSync(`pkill -f '${projectRoot}/dist/index\\.js' || true`, {
+    execSync(`pkill -f '${projectRoot}/dist/main\\.js' || true`, {
       stdio: 'ignore',
     });
     logger.info('Stopped any orphaned cambot-agent processes');
@@ -218,7 +218,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${nodePath} ${projectRoot}/dist/index.js
+ExecStart=${nodePath} ${projectRoot}/dist/main.js
 WorkingDirectory=${projectRoot}
 Restart=always
 RestartSec=5
@@ -310,7 +310,7 @@ function setupNohupFallback(projectRoot: string, nodePath: string, homeDir: stri
     'fi',
     '',
     'echo "Starting CamBot-Agent..."',
-    `nohup ${JSON.stringify(nodePath)} ${JSON.stringify(projectRoot + '/dist/index.js')} \\`,
+    `nohup ${JSON.stringify(nodePath)} ${JSON.stringify(projectRoot + '/dist/main.js')} \\`,
     `  >> ${JSON.stringify(projectRoot + '/logs/cambot-agent.log')} \\`,
     `  2>> ${JSON.stringify(projectRoot + '/logs/cambot-agent.error.log')} &`,
     '',

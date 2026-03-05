@@ -138,7 +138,7 @@ Key files:
 - `src/task-scheduler.ts` - Runs scheduled tasks
 - `src/db.ts` - SQLite operations (messages, groups, sessions, agents, state)
 - `groups/*/CLAUDE.md` - Per-group memory
-- `../cambot-agents/` - Multi-provider agent framework (providers, tools, executor, memory)
+- `../cambot-llm/` - Multi-provider LLM runtime (providers, tools, executor, memory)
 
 ## FAQ
 

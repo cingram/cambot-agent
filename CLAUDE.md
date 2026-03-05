@@ -10,17 +10,20 @@ Single Node.js process that connects to WhatsApp, routes messages to Claude Agen
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | Orchestrator: state, message loop, agent invocation |
+| `src/main.ts` | Entry point (~15 lines, boots CamBotApp) |
+| `src/orchestrator/app.ts` | CamBotApp facade: init sequence, shutdown, wiring |
 | `src/channels/whatsapp.ts` | WhatsApp connection, auth, send/receive |
-| `src/ipc.ts` | IPC watcher and task processing |
-| `src/router.ts` | Message formatting and outbound routing |
-| `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
-| `src/task-scheduler.ts` | Runs scheduled tasks |
-| `src/db.ts` | SQLite operations |
+| `src/ipc/watcher.ts` | IPC watcher polling loop |
+| `src/ipc/task-handler.ts` | IPC task processing (schedule, workflows, agents) |
+| `src/utils/router.ts` | Message formatting and outbound routing |
+| `src/config/config.ts` | Trigger pattern, paths, intervals |
+| `src/container/runner.ts` | Spawns agent containers with mounts |
+| `src/scheduling/task-scheduler.ts` | Runs scheduled tasks |
+| `src/db/` | SQLite repositories (chat, message, task, group, session, etc.) |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
-| `src/workspace-mcp-service.ts` | Google Workspace MCP process manager |
+| `src/utils/workspace-mcp-service.ts` | Google Workspace MCP process manager |
 | `src/channels/email.ts` | Email channel (Gmail polling + reply) |
+| `agent-runner/src/index.ts` | In-container agent loop: Claude Agent SDK, IPC input polling |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
 
 ## Skills
@@ -109,7 +112,7 @@ CamBot integrates with Google Workspace (Gmail, Calendar, Tasks, Drive, Docs, Sh
 
 ### Architecture
 
-- **Host-side**: `workspace-mcp` runs as a persistent HTTP service on the host, spawned by `src/workspace-mcp-service.ts`
+- **Host-side**: `workspace-mcp` runs as a persistent HTTP service on the host, spawned by `src/utils/workspace-mcp-service.ts`
 - **Container access**: Docker containers connect via `http://host.docker.internal:{port}/mcp` using the Claude Agent SDK's native `type: "http"` MCP support
 - **No Docker changes**: Python/uv are only on the host — no changes to the container image
 - **Email channel**: `src/channels/email.ts` polls Gmail via workspace-mcp and routes inbound emails to the `email-inbox` group
@@ -118,7 +121,7 @@ CamBot integrates with Google Workspace (Gmail, Calendar, Tasks, Drive, Docs, Sh
 
 | File | Purpose |
 |------|---------|
-| `src/workspace-mcp-service.ts` | Host-side process manager for workspace-mcp |
+| `src/utils/workspace-mcp-service.ts` | Host-side process manager for workspace-mcp |
 | `src/channels/email.ts` | Email channel (Gmail polling + reply) |
 | `groups/email-inbox/CLAUDE.md` | Email group agent instructions |
 

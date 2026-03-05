@@ -12,6 +12,7 @@ export interface InboundWsMessage {
   type: 'message';
   text: string;
   sender_name?: string;
+  conversation_id?: string;
 }
 
 type InboundHandler = (msg: InboundWsMessage) => void;
@@ -76,7 +77,7 @@ export function createWebSocketManager(): WebSocketManager {
       (ws as any).__alive = true;
     });
 
-    ws.on('message', (raw) => {
+    ws.on('message', (raw: WebSocket.RawData) => {
       if (!inboundHandler) return;
       try {
         const data = JSON.parse(String(raw));
@@ -93,7 +94,7 @@ export function createWebSocketManager(): WebSocketManager {
       logger.info({ clientCount: clients.size }, 'WebSocket client disconnected');
     });
 
-    ws.on('error', (err) => {
+    ws.on('error', (err: Error) => {
       logger.warn({ err }, 'WebSocket client error');
       clients.delete(ws);
     });
@@ -109,7 +110,7 @@ export function createWebSocketManager(): WebSocketManager {
           socket.destroy();
           return;
         }
-        wss!.handleUpgrade(req, socket, head, (ws) => {
+        wss!.handleUpgrade(req, socket, head, (ws: WebSocket) => {
           wss!.emit('connection', ws, req);
         });
       });
