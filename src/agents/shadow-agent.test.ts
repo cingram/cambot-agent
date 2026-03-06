@@ -46,12 +46,7 @@ vi.mock('../utils/router.js', () => ({
 
 import { createShadowAgent } from './shadow-agent.js';
 import { NewMessage, MessageBus } from '../types.js';
-import { BusEvent, InboundMessage } from '../bus/index.js';
-import type { EventClass, HandlerOptions } from '../bus/index.js';
-
-function stubBus(): MessageBus {
-  return new MessageBus();
-}
+import { InboundMessage } from '../bus/index.js';
 
 const stubGetAgentOptions = () => ({ containerImage: 'test:latest', secretKeys: [] });
 
@@ -80,243 +75,57 @@ function makeChannel(ownsJid = true) {
   };
 }
 
+function makeBusEvent(content: string, sender = 'web:user'): InboundMessage {
+  return new InboundMessage(
+    'web',
+    'web:ui',
+    makeMsg({ sender, content, chat_jid: 'web:ui' }),
+    { channel: 'web' },
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockAdminKey = 'secretkey';
 });
 
-// --- Feature toggle ---
-
 describe('createShadowAgent', () => {
   describe('feature toggle', () => {
-    it('returns no-op when ADMIN_KEY is empty', () => {
+    it('does not register bus handler when ADMIN_KEY is empty', () => {
       mockAdminKey = '';
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin secretkey hello' });
-      expect(interceptor('group@g.us', msg)).toBe(false);
-    });
-  });
-
-  // --- Callback path (WhatsApp) ---
-
-  describe('callback path', () => {
-    it('gate 1: passes through when sender is not admin', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({
-        sender: '9999999999@s.whatsapp.net',
-        content: '!admin secretkey hello',
-      });
-      expect(interceptor('group@g.us', msg)).toBe(false);
-    });
-
-    it('gate 1: matches admin JID with device suffix', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [makeChannel()],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({
-        sender: '1234567890:5@s.whatsapp.net',
-        content: '!admin secretkey hello',
-      });
-      expect(interceptor('group@g.us', msg)).toBe(true);
-    });
-
-    it('gate 2: passes through when no trigger prefix', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: 'just a normal message' });
-      expect(interceptor('group@g.us', msg)).toBe(false);
-    });
-
-    it('gate 2: passes through for partial trigger match', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!adminfoo secretkey hello' });
-      expect(interceptor('group@g.us', msg)).toBe(false);
-    });
-
-    it('gate 3: silently drops when key is wrong', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin wrongkey hello' });
-      expect(interceptor('group@g.us', msg)).toBe(true);
-    });
-
-    it('gate 3: silently drops when key only (no prompt)', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin secretkey' });
-      expect(interceptor('group@g.us', msg)).toBe(true);
-    });
-
-    it('gate 3: silently drops when key + only whitespace prompt', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin secretkey   ' });
-      expect(interceptor('group@g.us', msg)).toBe(true);
-    });
-
-    it('all gates pass: intercepts and spawns container', () => {
-      const channel = makeChannel();
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [channel],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin secretkey show me groups' });
-      expect(interceptor('group@g.us', msg)).toBe(true);
-      expect(mockRunContainerAgent).toHaveBeenCalled();
-    });
-
-    it('strips trigger and key from prompt sent to container', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [makeChannel()],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin secretkey show me groups' });
-      interceptor('group@g.us', msg);
-
-      const containerInput = mockRunContainerAgent.mock.calls[0][1];
-      expect(containerInput.prompt).toContain('show me groups');
-      expect(containerInput.prompt).not.toContain('secretkey');
-      expect(containerInput.prompt).not.toContain('!admin');
-    });
-
-    it('wraps prompt with admin_context tag', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [makeChannel()],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin secretkey hello' });
-      interceptor('some-chat@g.us', msg);
-
-      const containerInput = mockRunContainerAgent.mock.calls[0][1];
-      expect(containerInput.prompt).toContain('<admin_context source_chat="some-chat@g.us"');
-    });
-
-    it('spawns container with isMain: true', () => {
-      const interceptor = createShadowAgent({
-        adminJid: ADMIN_JID,
-        adminTrigger: '!admin',
-        channels: [makeChannel()],
-        messageBus: stubBus(),
-        getAgentOptions: stubGetAgentOptions,
-      });
-
-      const msg = makeMsg({ content: '!admin secretkey hello' });
-      interceptor('group@g.us', msg);
-
-      const containerInput = mockRunContainerAgent.mock.calls[0][1];
-      expect(containerInput.isMain).toBe(true);
-    });
-  });
-
-  // --- Bus path (Web channel) ---
-
-  describe('bus path', () => {
-    function makeBusEvent(content: string, sender = 'web:user'): InboundMessage {
-      return new InboundMessage(
-        'web',
-        'web:ui',
-        makeMsg({ sender, content, chat_jid: 'web:ui' }),
-        'web',
-      );
-    }
-
-    it('subscribes to InboundMessage', () => {
       const bus = new MessageBus();
       const onSpy = vi.spyOn(bus, 'on');
       createShadowAgent({
-        adminJid: '',
+        adminJid: ADMIN_JID,
         adminTrigger: '!admin',
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
       });
 
-      expect(onSpy).toHaveBeenCalledWith(
-        InboundMessage,
-        expect.any(Function),
-        expect.objectContaining({ priority: 10, sequential: true }),
-      );
+      expect(onSpy).not.toHaveBeenCalled();
     });
 
-    it('skips JID check — any sender with correct key is accepted', async () => {
+    it('passes through messages when disabled', async () => {
+      mockAdminKey = '';
       const bus = new MessageBus();
       createShadowAgent({
-        adminJid: '',
+        adminJid: ADMIN_JID,
         adminTrigger: '!admin',
-        channels: [makeChannel()],
+        channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
       });
 
-      const event = makeBusEvent('!admin secretkey hello', 'web:user');
+      const event = makeBusEvent('!admin secretkey hello');
       await bus.emit(event);
 
-      expect(event.cancelled).toBe(true);
-      expect(mockRunContainerAgent).toHaveBeenCalled();
+      expect(event.cancelled).toBe(false);
+      expect(mockRunContainerAgent).not.toHaveBeenCalled();
     });
+  });
 
+  describe('gate checks', () => {
     it('passes through normal messages without trigger', async () => {
       const bus = new MessageBus();
       createShadowAgent({
@@ -328,6 +137,22 @@ describe('createShadowAgent', () => {
       });
 
       const event = makeBusEvent('hello world');
+      await bus.emit(event);
+
+      expect(event.cancelled).toBe(false);
+    });
+
+    it('passes through for partial trigger match', async () => {
+      const bus = new MessageBus();
+      createShadowAgent({
+        adminJid: '',
+        adminTrigger: '!admin',
+        channels: [],
+        messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
+      });
+
+      const event = makeBusEvent('!adminfoo secretkey hello');
       await bus.emit(event);
 
       expect(event.cancelled).toBe(false);
@@ -350,7 +175,7 @@ describe('createShadowAgent', () => {
       expect(mockRunContainerAgent).not.toHaveBeenCalled();
     });
 
-    it('cancels event on empty prompt after key', async () => {
+    it('cancels event on key only (no prompt)', async () => {
       const bus = new MessageBus();
       createShadowAgent({
         adminJid: '',
@@ -367,7 +192,114 @@ describe('createShadowAgent', () => {
       expect(mockRunContainerAgent).not.toHaveBeenCalled();
     });
 
-    it('always subscribes to bus for message interception', () => {
+    it('cancels event on key + only whitespace prompt', async () => {
+      const bus = new MessageBus();
+      createShadowAgent({
+        adminJid: '',
+        adminTrigger: '!admin',
+        channels: [],
+        messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
+      });
+
+      const event = makeBusEvent('!admin secretkey   ');
+      await bus.emit(event);
+
+      expect(event.cancelled).toBe(true);
+      expect(mockRunContainerAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('bus interception', () => {
+    it('subscribes to InboundMessage at priority 10', () => {
+      const bus = new MessageBus();
+      const onSpy = vi.spyOn(bus, 'on');
+      createShadowAgent({
+        adminJid: '',
+        adminTrigger: '!admin',
+        channels: [],
+        messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
+      });
+
+      expect(onSpy).toHaveBeenCalledWith(
+        InboundMessage,
+        expect.any(Function),
+        expect.objectContaining({ priority: 10, sequential: true }),
+      );
+    });
+
+    it('any sender with correct key is accepted', async () => {
+      const bus = new MessageBus();
+      createShadowAgent({
+        adminJid: '',
+        adminTrigger: '!admin',
+        channels: [makeChannel()],
+        messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
+      });
+
+      const event = makeBusEvent('!admin secretkey hello', 'web:user');
+      await bus.emit(event);
+
+      expect(event.cancelled).toBe(true);
+      expect(mockRunContainerAgent).toHaveBeenCalled();
+    });
+
+    it('strips trigger and key from prompt sent to container', async () => {
+      const bus = new MessageBus();
+      createShadowAgent({
+        adminJid: '',
+        adminTrigger: '!admin',
+        channels: [makeChannel()],
+        messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
+      });
+
+      const event = makeBusEvent('!admin secretkey show me groups');
+      await bus.emit(event);
+
+      const containerInput = mockRunContainerAgent.mock.calls[0][1];
+      expect(containerInput.prompt).toContain('show me groups');
+      expect(containerInput.prompt).not.toContain('secretkey');
+      expect(containerInput.prompt).not.toContain('!admin');
+    });
+
+    it('wraps prompt with admin_context tag', async () => {
+      const bus = new MessageBus();
+      createShadowAgent({
+        adminJid: '',
+        adminTrigger: '!admin',
+        channels: [makeChannel()],
+        messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
+      });
+
+      const event = makeBusEvent('!admin secretkey hello');
+      await bus.emit(event);
+
+      const containerInput = mockRunContainerAgent.mock.calls[0][1];
+      expect(containerInput.prompt).toContain('<admin_context source_chat="web:ui"');
+    });
+
+    it('spawns container with isMain: true', async () => {
+      const bus = new MessageBus();
+      createShadowAgent({
+        adminJid: '',
+        adminTrigger: '!admin',
+        channels: [makeChannel()],
+        messageBus: bus,
+        getAgentOptions: stubGetAgentOptions,
+      });
+
+      const event = makeBusEvent('!admin secretkey hello');
+      await bus.emit(event);
+
+      const execution = mockRunContainerAgent.mock.calls[0][0];
+      expect(execution.isMain).toBe(true);
+    });
+
+    it('always subscribes to bus when key is set', () => {
       const bus = new MessageBus();
       const onSpy = vi.spyOn(bus, 'on');
       createShadowAgent({

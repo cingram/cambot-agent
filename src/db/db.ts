@@ -245,36 +245,6 @@ export function getConversationHistory(
   ).reverse();
 }
 
-export function getNewMessages(
-  jids: string[],
-  lastTimestamp: string,
-  botPrefix: string,
-): { messages: NewMessage[]; newTimestamp: string } {
-  if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
-
-  const placeholders = jids.map(() => '?').join(',');
-  // Filter bot messages using both the is_bot_message flag AND the content
-  // prefix as a backstop for messages written before the migration ran.
-  const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
-    FROM messages
-    WHERE timestamp > ? AND chat_jid IN (${placeholders})
-      AND is_bot_message = 0 AND content NOT LIKE ?
-    ORDER BY timestamp
-  `;
-
-  const rows = db
-    .prepare(sql)
-    .all(lastTimestamp, ...jids, `${botPrefix}:%`) as NewMessage[];
-
-  let newTimestamp = lastTimestamp;
-  for (const row of rows) {
-    if (row.timestamp > newTimestamp) newTimestamp = row.timestamp;
-  }
-
-  return { messages: rows, newTimestamp };
-}
-
 export function getMessagesSince(
   chatJid: string,
   sinceTimestamp: string,

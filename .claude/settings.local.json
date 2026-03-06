@@ -50,7 +50,12 @@
       "Bash(docker ps:*)",
       "mcp__plugin_playwright_playwright__browser_navigate",
       "mcp__plugin_playwright_playwright__browser_take_screenshot",
-      "mcp__plugin_playwright_playwright__browser_click"
+      "mcp__plugin_playwright_playwright__browser_click",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Read(//c/Dev/cambot/cambot-core/**)",
+      "Read(//c/Dev/cambot/**)",
+      "Bash(docker info:*)"
     ]
   }
 }

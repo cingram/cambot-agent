@@ -1,117 +1,256 @@
 import { BusEvent } from './bus-event.js';
+import type { EnvelopeOptions } from './envelope.js';
+import type { BusMiddleware } from './middleware.js';
 import { logger } from '../logger.js';
 
-/** Constructor type for routing — `on(InboundMessage, handler)`. */
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/** Constructor type for class-based routing — `on(InboundMessage, handler)`. */
 export type EventClass<T extends BusEvent = BusEvent> = abstract new (...args: never[]) => T;
 
 type AsyncHandler<T extends BusEvent> = (event: T) => void | Promise<void>;
-
-interface HandlerRegistration<T extends BusEvent = BusEvent> {
-  id: string;
-  eventClass: EventClass<T>;
-  handler: AsyncHandler<T>;
-  priority: number;
-  source: string;
-  sequential: boolean;
-}
 
 export interface HandlerOptions {
   id?: string;
   priority?: number;
   source?: string;
-  /** When true, forces ALL handlers for this event type to run sequentially. */
+  /**
+   * When true, forces ALL matching handlers for this emit to run sequentially
+   * in priority order. This is an all-or-nothing flag: if any one handler sets
+   * `sequential: true`, every handler for that event runs sequentially.
+   * The `cancelled` flag only works in sequential mode.
+   */
   sequential?: boolean;
+  /** Property filter — event must match every key/value to be delivered. */
+  filter?: Record<string, unknown>;
 }
 
-/** Lifecycle hooks for observing or intercepting bus events. */
-export interface BusLifecycleHooks {
-  onEventReceived?(event: BusEvent): boolean | void;
-  onAfterEmit?(event: BusEvent): void;
-  onHandlerError?(error: unknown, event: BusEvent, handlerId: string): boolean | void;
-  onHandlerStart?(event: BusEvent, handlerId: string): void;
-  onCancel?(event: BusEvent, cancelledByHandlerId: string): void;
+/** Descriptor returned by `listEventTypes()`. */
+export interface EventTypeDescriptor {
+  type: string;
+  description: string;
 }
+
+// ---------------------------------------------------------------------------
+// GenericEvent — for string-based events without a dedicated class
+// ---------------------------------------------------------------------------
+
+export class GenericEvent extends BusEvent {
+  readonly data: Record<string, unknown>;
+
+  constructor(
+    type: string,
+    source: string,
+    data: Record<string, unknown>,
+    envelope?: EnvelopeOptions,
+  ) {
+    super(type, source, envelope);
+    this.data = data;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal handler registration
+// ---------------------------------------------------------------------------
+
+interface HandlerRegistration<T extends BusEvent = BusEvent> {
+  id: string;
+  /** Set when registered with an EventClass; undefined for string/wildcard. */
+  eventClass?: EventClass<T>;
+  /** Set when registered with a string type or '*'. */
+  eventType?: string;
+  handler: AsyncHandler<T>;
+  priority: number;
+  source: string;
+  sequential: boolean;
+  filter?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// MessageBus
+// ---------------------------------------------------------------------------
 
 export class MessageBus {
   private handlers: HandlerRegistration[] = [];
+  private middlewares: BusMiddleware[] = [];
+  private eventTypes: EventTypeDescriptor[] = [];
   private idCounter = 0;
-  private hooks: BusLifecycleHooks;
 
-  constructor(hooks: BusLifecycleHooks = {}) {
-    this.hooks = hooks;
+  // -----------------------------------------------------------------------
+  // Middleware
+  // -----------------------------------------------------------------------
+
+  /** Add a middleware to the pipeline. Middlewares run in registration order. Returns unsubscribe. */
+  use(middleware: BusMiddleware): () => void {
+    this.middlewares.push(middleware);
+    return () => {
+      this.middlewares = this.middlewares.filter((m) => m !== middleware);
+    };
   }
 
-  /** Subscribe to events by class. Handler receives the concrete type. */
+  // -----------------------------------------------------------------------
+  // Event type registry
+  // -----------------------------------------------------------------------
+
+  /** Register a known event type for discoverability. */
+  registerEventType(type: string, description: string): void {
+    const existing = this.eventTypes.find((e) => e.type === type);
+    if (existing) {
+      existing.description = description;
+    } else {
+      this.eventTypes.push({ type, description });
+    }
+  }
+
+  /** List all registered event types. */
+  listEventTypes(): readonly EventTypeDescriptor[] {
+    return this.eventTypes;
+  }
+
+  // -----------------------------------------------------------------------
+  // Subscribe
+  // -----------------------------------------------------------------------
+
+  /**
+   * Subscribe to events.
+   *
+   * Accepts either:
+   * - An EventClass for instanceof matching (existing pattern)
+   * - A string type for exact-match or '*' wildcard (new pattern)
+   *
+   * Returns an unsubscribe function.
+   */
   on<T extends BusEvent>(
-    eventClass: EventClass<T>,
+    selector: EventClass<T> | string,
     handler: AsyncHandler<T>,
     options?: HandlerOptions,
   ): () => void {
     const id = options?.id ?? `handler_${++this.idCounter}`;
-    const registration: HandlerRegistration<T> = {
+
+    const registration: HandlerRegistration = {
       id,
-      eventClass,
-      handler,
+      handler: handler as AsyncHandler<BusEvent>,
       priority: options?.priority ?? 100,
       source: options?.source ?? 'cambot-agent',
       sequential: options?.sequential ?? false,
+      filter: options?.filter,
+      eventClass: typeof selector === 'string' ? undefined : selector as EventClass,
+      eventType: typeof selector === 'string' ? selector : undefined,
     };
-    this.handlers.push(registration as unknown as HandlerRegistration);
+
+    const reg = registration;
+    this.handlers.push(reg);
+
     return () => {
-      this.handlers = this.handlers.filter(h => h.id !== id);
+      this.handlers = this.handlers.filter((h) => h !== reg);
     };
   }
+
+  // -----------------------------------------------------------------------
+  // Emit
+  // -----------------------------------------------------------------------
 
   /**
-   * Emit an event. Auto-decides parallel vs sequential:
-   * - If ANY matching handler declares `sequential: true`, all run sequentially
-   *   in priority order (supports cancellation).
-   * - Otherwise, all run concurrently via `Promise.allSettled`.
+   * Emit an event through the middleware pipeline and to matching handlers.
+   *
+   * - Middleware `before` hooks run first; any returning `false` drops the event.
+   * - Handlers execute in priority order (parallel or sequential).
+   * - Middleware `after` hooks run after all handlers.
    */
   async emit(event: BusEvent): Promise<void> {
-    if (this.hooks.onEventReceived?.(event) === false) return;
-
-    const matching = this.handlers
-      .filter(h => event instanceof (h.eventClass as Function))
-      .sort((a, b) => a.priority - b.priority);
-
-    if (matching.length === 0) {
-      this.hooks.onAfterEmit?.(event);
-      return;
+    // --- before middleware ---
+    for (const mw of this.middlewares) {
+      if (!mw.before) continue;
+      try {
+        const result = await mw.before(event);
+        if (result === false) return;
+      } catch (err) {
+        logger.error({ err, middleware: mw.name }, 'Middleware before-hook threw');
+      }
     }
 
-    const needsSequential = matching.some(h => h.sequential);
+    // --- match handlers ---
+    const matching = this.matchHandlers(event);
 
-    if (needsSequential) {
-      await this.runSequential(matching, event);
-    } else {
-      await this.runParallel(matching, event);
+    if (matching.length > 0) {
+      const needsSequential = matching.some((h) => h.sequential);
+
+      if (needsSequential) {
+        await this.runSequential(matching, event);
+      } else {
+        await this.runParallel(matching, event);
+      }
     }
 
-    this.hooks.onAfterEmit?.(event);
+    // --- after middleware ---
+    for (const mw of this.middlewares) {
+      if (!mw.after) continue;
+      try {
+        await mw.after(event);
+      } catch (err) {
+        logger.error({ err, middleware: mw.name }, 'Middleware after-hook threw');
+      }
+    }
   }
 
-  private async runSequential(handlers: HandlerRegistration[], event: BusEvent): Promise<void> {
+  // -----------------------------------------------------------------------
+  // Matching
+  // -----------------------------------------------------------------------
+
+  private matchHandlers(event: BusEvent): HandlerRegistration[] {
+    return this.handlers
+      .filter((h) => this.matchesSelector(h, event) && this.matchesFilter(h, event))
+      .sort((a, b) => a.priority - b.priority);
+  }
+
+  private matchesSelector(reg: HandlerRegistration, event: BusEvent): boolean {
+    if (reg.eventClass) {
+      return event instanceof (reg.eventClass as Function);
+    }
+    if (reg.eventType === '*') {
+      return true;
+    }
+    return reg.eventType === event.type;
+  }
+
+  private matchesFilter(reg: HandlerRegistration, event: BusEvent): boolean {
+    if (!reg.filter) return true;
+    const ev = event as unknown as Record<string, unknown>;
+    return Object.entries(reg.filter).every(([key, value]) => key in ev && ev[key] === value);
+  }
+
+  // -----------------------------------------------------------------------
+  // Execution
+  // -----------------------------------------------------------------------
+
+  private async runSequential(
+    handlers: HandlerRegistration[],
+    event: BusEvent,
+  ): Promise<void> {
     for (const reg of handlers) {
-      if (event.cancelled) {
-        this.hooks.onCancel?.(event, reg.id);
-        break;
-      }
-      this.hooks.onHandlerStart?.(event, reg.id);
+      if (event.cancelled) break;
       try {
         await reg.handler(event);
       } catch (err) {
-        if (this.hooks.onHandlerError?.(err, event, reg.id) !== true) {
-          logger.error({ err, handlerId: reg.id, eventClass: reg.eventClass.name }, 'MessageBus handler failed');
+        if (!(await this.invokeOnError(err, event, reg.id))) {
+          logger.error(
+            { err, handlerId: reg.id, eventType: event.type },
+            'MessageBus handler failed',
+          );
         }
       }
     }
   }
 
-  private async runParallel(handlers: HandlerRegistration[], event: BusEvent): Promise<void> {
+  private async runParallel(
+    handlers: HandlerRegistration[],
+    event: BusEvent,
+  ): Promise<void> {
     const results = await Promise.allSettled(
       handlers.map(async (reg) => {
-        this.hooks.onHandlerStart?.(event, reg.id);
+        if (event.cancelled) return; // best-effort check before launch
         return reg.handler(event);
       }),
     );
@@ -120,17 +259,47 @@ export class MessageBus {
       const result = results[i];
       if (result.status === 'rejected') {
         const reg = handlers[i];
-        if (this.hooks.onHandlerError?.(result.reason, event, reg.id) !== true) {
+        if (!(await this.invokeOnError(result.reason, event, reg.id))) {
           logger.error(
-            { err: result.reason, handlerId: reg.id, eventClass: reg.eventClass.name },
+            { err: result.reason, handlerId: reg.id, eventType: event.type },
             'MessageBus handler failed',
           );
         }
       }
     }
   }
+
+  /**
+   * Run all middleware `onError` hooks. Returns `true` if any suppressed.
+   */
+  private async invokeOnError(
+    error: unknown,
+    event: BusEvent,
+    handlerId: string,
+  ): Promise<boolean> {
+    let suppressed = false;
+    for (const mw of this.middlewares) {
+      if (!mw.onError) continue;
+      try {
+        if ((await mw.onError(error, event, handlerId)) === true) {
+          suppressed = true;
+        }
+      } catch (mwErr) {
+        logger.error(
+          { err: mwErr, middleware: mw.name },
+          'Middleware onError hook threw',
+        );
+      }
+    }
+    return suppressed;
+  }
 }
 
-export function createMessageBus(hooks: BusLifecycleHooks = {}): MessageBus {
-  return new MessageBus(hooks);
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+/** Create a new MessageBus instance. */
+export function createMessageBus(): MessageBus {
+  return new MessageBus();
 }

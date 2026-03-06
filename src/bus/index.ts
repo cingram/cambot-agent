@@ -1,6 +1,14 @@
 export { BusEvent } from './bus-event.js';
-export { MessageBus, createMessageBus } from './message-bus.js';
-export type { EventClass, HandlerOptions, BusLifecycleHooks } from './message-bus.js';
+export type { EnvelopeOptions } from './envelope.js';
+export type { BusMiddleware } from './middleware.js';
+export { MessageBus, GenericEvent, createMessageBus } from './message-bus.js';
+export type { EventClass, HandlerOptions, EventTypeDescriptor } from './message-bus.js';
 export { createChannelBusAdapter } from './channel-bus-adapter.js';
 export type { ChannelMessageBus } from './channel-bus-adapter.js';
 export * from './events/index.js';
+export * from './durable-queue/index.js';
+export * from './write-queue/index.js';
+export * from './middleware/index.js';
+export * from './transport/index.js';
+export { EVENT_TYPES, registerAllEventTypes, type EventTypeEntry } from './event-types.js';
+export { createAppBus, type AppBus, type AppBusOptions } from './create-app-bus.js';

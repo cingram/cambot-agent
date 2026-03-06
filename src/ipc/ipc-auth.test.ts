@@ -10,7 +10,7 @@ import {
 } from '../db/index.js';
 import { processTaskIpc } from './task-handler.js';
 import type { IpcDeps } from './watcher.js';
-import { createMessageBus } from '../types.js';
+import { createMessageBus } from '../bus/index.js';
 import { RegisteredGroup, WorkerDefinition } from '../types.js';
 
 // Set up registered groups used across tests

@@ -9,6 +9,7 @@ import type { Logger } from 'pino';
 import type { CamBotCoreServices, PiiMapping, RedactionResult } from 'cambot-core';
 import type { NewMessage } from '../types.js';
 import type { ContainerTelemetry } from '../container/runner.js';
+import type { AuditEmitter } from '../audit/index.js';
 import { createIngestionQueue } from './ingestion-queue.js';
 import type { IngestionQueue } from './ingestion-queue.js';
 import crypto from 'node:crypto';
@@ -34,6 +35,7 @@ const BOOT_CONTEXT_TTL_MS = 60_000;
 export function createLifecycleInterceptor(
   core: CamBotCoreServices,
   logger: Logger,
+  auditEmitter?: AuditEmitter,
 ): LifecycleInterceptor {
   const queue: IngestionQueue = createIngestionQueue({
     maxConcurrency: 2,
@@ -275,12 +277,21 @@ export function createLifecycleInterceptor(
           agent: groupFolder,
         });
         currentSessionKey = sessionKey;
+
+        auditEmitter?.sessionLifecycle({
+          correlationId: `agent:${chatJid}`,
+          groupFolder,
+          chatJid,
+          sessionKey,
+          action: 'start',
+        });
       } catch (err) {
         logger.warn({ err }, 'Failed to start session');
       }
     },
 
     endSession(groupFolder: string, success: boolean): void {
+      const endedSessionKey = currentSessionKey;
       try {
         const status = success ? 'completed' : 'error';
         // Find the most recent active session for this group
@@ -292,6 +303,17 @@ export function createLifecycleInterceptor(
         logger.warn({ err }, 'Failed to end session');
       }
       currentSessionKey = null;
+
+      if (endedSessionKey) {
+        auditEmitter?.sessionLifecycle({
+          correlationId: `agent:${groupFolder}`,
+          groupFolder,
+          chatJid: endedSessionKey.split(':').slice(1, -1).join(':'),
+          sessionKey: endedSessionKey,
+          action: 'end',
+          success,
+        });
+      }
     },
 
     startPeriodicTasks(): void {

@@ -3,6 +3,7 @@ import path from 'path';
 
 import { resolveGroupIpcPath } from '../groups/group-folder.js';
 import { WorkerDefinition } from '../types.js';
+import type { StoredRawContent } from '../db/raw-content-repository.js';
 
 export function writeTasksSnapshot(
   groupFolder: string,
@@ -246,4 +247,44 @@ export function writeWorkersSnapshot(
 
   const workersFile = path.join(groupIpcDir, 'available_workers.json');
   fs.writeFileSync(workersFile, JSON.stringify(workers, null, 2));
+}
+
+/**
+ * Write raw content snapshots for the container's read_raw_content tool.
+ * Each entry becomes {ipcDir}/raw_content/{id}.json.
+ */
+export function writeRawContentSnapshots(
+  groupFolder: string,
+  entries: StoredRawContent[],
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  const rawDir = path.join(groupIpcDir, 'raw_content');
+  fs.mkdirSync(rawDir, { recursive: true });
+
+  // Clean up stale files
+  try {
+    const existing = fs.readdirSync(rawDir).filter((f) => f.endsWith('.json'));
+    const entryIds = new Set(entries.map((e) => e.id));
+    for (const file of existing) {
+      const id = file.replace(/\.json$/, '');
+      if (!entryIds.has(id)) {
+        fs.unlinkSync(path.join(rawDir, file));
+      }
+    }
+  } catch {
+    // Directory may not exist yet
+  }
+
+  for (const entry of entries) {
+    const filePath = path.join(rawDir, `${entry.id}.json`);
+    fs.writeFileSync(filePath, JSON.stringify({
+      id: entry.id,
+      channel: entry.channel,
+      source: entry.source,
+      body: entry.body,
+      metadata: entry.metadata,
+      safetyFlags: entry.safetyFlags,
+      receivedAt: entry.receivedAt,
+    }, null, 2));
+  }
 }

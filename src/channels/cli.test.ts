@@ -30,19 +30,18 @@ vi.mock('readline', () => ({
 }));
 
 import { CliChannel } from './cli.js';
-import { ChannelOpts, MessageBus } from '../types.js';
+import { ChannelOpts } from '../types.js';
+import { InboundMessage, ChatMetadata } from '../bus/index.js';
 
-function stubBus(): MessageBus {
-  return new MessageBus();
+function stubBus() {
+  return { emit: vi.fn().mockResolvedValue(undefined) };
 }
 
 function createTestOpts(overrides?: Partial<ChannelOpts>): ChannelOpts {
   return {
-    onMessage: vi.fn(),
-    onChatMetadata: vi.fn(),
     registeredGroups: vi.fn(() => ({})),
     registerGroup: vi.fn(),
-    messageBus: stubBus(),
+    messageBus: stubBus() as any,
     ...overrides,
   };
 }
@@ -121,7 +120,7 @@ describe('CliChannel', () => {
   });
 
   describe('message delivery', () => {
-    it('delivers user input as messages via onMessage', async () => {
+    it('delivers user input as InboundMessage via messageBus', async () => {
       const opts = createTestOpts();
       const channel = new CliChannel(opts);
 
@@ -130,20 +129,23 @@ describe('CliChannel', () => {
       // Simulate user typing a line
       mockRlInstance.emit('line', 'Hello Andy');
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'cli:console',
-        expect.objectContaining({
-          chat_jid: 'cli:console',
-          sender: 'cli:user',
-          sender_name: 'User',
-          content: 'Hello Andy',
-          is_from_me: false,
-          is_bot_message: false,
-        }),
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeDefined();
+
+      const event = inboundCall![0] as InboundMessage;
+      expect(event.jid).toBe('cli:console');
+      expect(event.message).toMatchObject({
+        chat_jid: 'cli:console',
+        sender: 'cli:user',
+        sender_name: 'User',
+        content: 'Hello Andy',
+        is_from_me: false,
+        is_bot_message: false,
+      });
     });
 
-    it('emits chat metadata before message', async () => {
+    it('emits ChatMetadata before InboundMessage via messageBus', async () => {
       const opts = createTestOpts();
       const channel = new CliChannel(opts);
 
@@ -151,13 +153,19 @@ describe('CliChannel', () => {
 
       mockRlInstance.emit('line', 'test');
 
-      expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        'cli:console',
-        expect.any(String),
-        'CLI',
-        'cli',
-        false,
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const metaCall = emitCalls.find(([e]) => e instanceof ChatMetadata);
+      expect(metaCall).toBeDefined();
+
+      const event = metaCall![0] as ChatMetadata;
+      expect(event.jid).toBe('cli:console');
+      expect(event.name).toBe('CLI');
+      expect(event.isGroup).toBe(false);
+
+      // ChatMetadata should be emitted before InboundMessage
+      const metaIndex = emitCalls.findIndex(([e]) => e instanceof ChatMetadata);
+      const msgIndex = emitCalls.findIndex(([e]) => e instanceof InboundMessage);
+      expect(metaIndex).toBeLessThan(msgIndex);
     });
 
     it('ignores empty lines', async () => {
@@ -169,7 +177,9 @@ describe('CliChannel', () => {
       mockRlInstance.emit('line', '');
       mockRlInstance.emit('line', '   ');
 
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeUndefined();
     });
   });
 

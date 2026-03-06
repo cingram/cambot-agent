@@ -1,3 +1,4 @@
+import type { EnvelopeOptions } from '../envelope.js';
 import { BusEvent } from '../bus-event.js';
 
 export class OutboundMessage extends BusEvent {
@@ -11,9 +12,9 @@ export class OutboundMessage extends BusEvent {
     source: string,
     jid: string,
     text: string,
-    opts?: { groupFolder?: string; broadcast?: boolean; agentId?: string },
+    opts?: { groupFolder?: string; broadcast?: boolean; agentId?: string } & EnvelopeOptions,
   ) {
-    super(source);
+    super('message.outbound', source, opts);
     this.jid = jid;
     this.text = text;
     this.groupFolder = opts?.groupFolder;

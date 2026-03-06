@@ -1,3 +1,4 @@
+import type { EnvelopeOptions } from '../envelope.js';
 import { BusEvent } from '../bus-event.js';
 
 export class AgentTelemetry extends BusEvent {
@@ -15,9 +16,9 @@ export class AgentTelemetry extends BusEvent {
       inputTokens?: number;
       outputTokens?: number;
       totalCostUsd?: number;
-    },
+    } & EnvelopeOptions,
   ) {
-    super(source);
+    super('agent.telemetry', source, opts);
     this.chatJid = chatJid;
     this.durationMs = opts.durationMs;
     this.inputTokens = opts.inputTokens;

@@ -16,6 +16,8 @@ import type { CustomAgentService } from '../agents/custom-agent-service.js';
 import type { IntegrationManager } from '../integrations/types.js';
 import { processMessageFiles } from './message-handler.js';
 import { processTaskIpc } from './task-handler.js';
+import type { ContentPipe } from '../pipes/content-pipe.js';
+import type { RawContentRepository } from '../db/raw-content-repository.js';
 
 export interface IpcDeps {
   messageBus: MessageBus;
@@ -39,6 +41,12 @@ export interface IpcDeps {
   getAgentDefinition: (id: string) => WorkerDefinition | undefined;
   /** Integration manager. When present, integration IPC commands are handled. */
   integrationManager?: IntegrationManager;
+  /** Content pipe for email IPC handlers. */
+  contentPipe?: ContentPipe;
+  /** Raw content store for email IPC handlers. */
+  rawContentStore?: RawContentRepository;
+  /** Workspace MCP URL for email IPC handlers. */
+  workspaceMcpUrl?: string;
 }
 
 let ipcWatcherRunning = false;

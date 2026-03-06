@@ -135,6 +135,7 @@ export interface ContainerPaths {
   contextDumpFile: string;
   conversationsDir: string;
   tempInputFile: string;
+  mcpConfigPath: string;
 }
 
 export function createDefaultContainerPaths(): ContainerPaths {
@@ -151,6 +152,7 @@ export function createDefaultContainerPaths(): ContainerPaths {
     contextDumpFile: '/workspace/ipc/context-dump.md',
     conversationsDir: '/workspace/group/conversations',
     tempInputFile: '/tmp/input.json',
+    mcpConfigPath: '/home/node/.claude/mcp-servers.json',
   };
 }
 

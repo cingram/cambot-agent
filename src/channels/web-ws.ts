@@ -3,6 +3,7 @@ import http from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { logger } from '../logger.js';
+import type { WebAuth } from './web-auth.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,7 +22,7 @@ type ConnectHandler = () => void;
 
 export interface WebSocketManager {
   /** Attach to an existing HTTP server (noServer mode upgrade on /ws). */
-  attach(server: http.Server): void;
+  attach(server: http.Server, auth: WebAuth, allowedOrigins: string[]): void;
   /** Broadcast a JSON payload to every connected client. */
   broadcast(msg: Record<string, unknown>): void;
   /** Number of currently connected clients. */
@@ -101,7 +102,7 @@ export function createWebSocketManager(): WebSocketManager {
   }
 
   return {
-    attach(server: http.Server): void {
+    attach(server: http.Server, auth: WebAuth, allowedOrigins: string[]): void {
       wss = new WebSocketServer({ noServer: true });
 
       server.on('upgrade', (req, socket, head) => {
@@ -110,6 +111,32 @@ export function createWebSocketManager(): WebSocketManager {
           socket.destroy();
           return;
         }
+
+        // Origin check: reject cross-origin WebSocket upgrades
+        const origin = req.headers.origin ?? '';
+        const ip = req.socket.remoteAddress;
+        if (origin && !allowedOrigins.includes(origin)) {
+          logger.warn(
+            { origin, ip },
+            'WebSocket: rejected connection from disallowed origin',
+          );
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
+        // Auth check: require token in query param
+        const token = url.searchParams.get('token');
+        if (!auth.validate(token ?? undefined)) {
+          logger.warn(
+            { ip },
+            'WebSocket: rejected unauthenticated connection',
+          );
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+
         wss!.handleUpgrade(req, socket, head, (ws: WebSocket) => {
           wss!.emit('connection', ws, req);
         });
@@ -117,7 +144,7 @@ export function createWebSocketManager(): WebSocketManager {
 
       wss.on('connection', handleConnection);
       startHeartbeat();
-      logger.info('WebSocket manager attached to HTTP server');
+      logger.info('WebSocket manager attached to HTTP server (auth + origin check enabled)');
     },
 
     broadcast(msg: Record<string, unknown>): void {

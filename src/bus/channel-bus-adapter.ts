@@ -42,7 +42,7 @@ async function emitAsClass(bus: MessageBus, event: ChannelBusEvent): Promise<voi
         message: NewMessage;
         channel?: string;
       };
-      await bus.emit(new InboundMessage(event.source, jid, message, channel));
+      await bus.emit(new InboundMessage(event.source, jid, message, { channel }));
       break;
     }
     case 'chat.metadata': {

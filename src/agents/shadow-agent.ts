@@ -2,12 +2,9 @@
  * Shadow Admin Agent
  *
  * Intercepts messages matching a three-gate auth check (JID + trigger + key)
- * before they reach the DB or event bus. Spawns an elevated container and
- * routes responses directly to the admin via DM — invisible to normal flow.
- *
- * Works on both paths:
- * - Callback path (WhatsApp): onMessage interceptor returns true to consume
- * - Bus path (Web channel): message.inbound subscriber cancels the event
+ * via a bus handler at priority 10 (before all other handlers). Spawns an
+ * elevated container and routes responses directly to the admin via DM —
+ * invisible to normal flow.
  */
 import fs from 'fs';
 import path from 'path';
@@ -17,7 +14,7 @@ import { runContainerAgent } from '../container/runner.js';
 import { getSession, setSession } from '../db/index.js';
 import { formatOutbound } from '../utils/router.js';
 import { logger } from '../logger.js';
-import { Channel, ExecutionContext, MessageBus, NewMessage } from '../types.js';
+import { Channel, ExecutionContext, MessageBus } from '../types.js';
 import { InboundMessage } from '../bus/index.js';
 import type { AgentOptions } from './agents.js';
 
@@ -184,13 +181,13 @@ function checkGates(
  * If a messageBus is provided, also subscribes at priority 10 to intercept
  * bus-routed messages (web channel) before the DB store at priority 100.
  */
-export function createShadowAgent(deps: ShadowAgentDeps): (chatJid: string, msg: NewMessage) => boolean {
+export function createShadowAgent(deps: ShadowAgentDeps): void {
   const { adminJid, adminTrigger, channels, messageBus, getAgentOptions } = deps;
 
   // Feature disabled — KEY is required; JID is only needed for WhatsApp path
   if (!ADMIN_KEY) {
     logger.info('Shadow admin disabled (ADMIN_KEY not set)');
-    return () => false;
+    return;
   }
 
   ensureShadowGroup();
@@ -222,17 +219,4 @@ export function createShadowAgent(deps: ShadowAgentDeps): (chatJid: string, msg:
     }
   }, { id: 'shadow-admin-intercept', priority: 10, source: 'shadow-admin', sequential: true });
 
-  // Callback path: for channels that don't use the bus (WhatsApp fallback)
-  return (chatJid: string, msg: NewMessage): boolean => {
-    const result = checkGates(adminPhone, triggerPrefix, msg.sender, msg.content);
-
-    if (result.action === 'pass') return false;
-    if (result.action === 'drop') return true;
-
-    logger.info({ sourceChatJid: chatJid }, 'Shadow admin command accepted');
-    spawnShadowContainer(result.prompt, chatJid, adminJid, channels, getAgentOptions()).catch((err) => {
-      logger.error({ err }, 'Shadow container error');
-    });
-    return true;
-  };
 }

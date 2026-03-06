@@ -2,7 +2,7 @@ import http from 'http';
 
 import { randomUUID } from 'node:crypto';
 
-import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, WEB_CHANNEL_PORT } from '../config/config.js';
+import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, WEB_ALLOWED_ORIGINS, WEB_AUTH_TOKEN, WEB_CHANNEL_PORT } from '../config/config.js';
 import {
   getChatHistory,
   listConversations,
@@ -13,6 +13,7 @@ import {
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts, NewMessage } from '../types.js';
 import { ChatMetadata, InboundMessage } from '../bus/index.js';
+import { createWebAuth, WebAuth } from './web-auth.js';
 import { createWebSocketManager, WebSocketManager } from './web-ws.js';
 
 const WEB_JID = 'web:ui';
@@ -65,10 +66,12 @@ export class WebChannel implements Channel {
   private pending = new Map<string, PendingResponse>();
   private wsManager: WebSocketManager;
   private messageBuffer: BufferedMessage[] = [];
+  private auth: WebAuth;
 
   constructor(opts: ChannelOpts, port?: number) {
     this.opts = opts;
     this.port = port ?? DEFAULT_PORT;
+    this.auth = createWebAuth(WEB_AUTH_TOKEN);
     this.wsManager = createWebSocketManager();
   }
 
@@ -84,22 +87,22 @@ export class WebChannel implements Channel {
     this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
     await new Promise<void>((resolve) => {
-      this.server!.listen(this.port, () => {
-        logger.info({ port: this.port }, 'Web channel HTTP server started');
+      this.server!.listen(this.port, '127.0.0.1', () => {
+        logger.info({ port: this.port }, 'Web channel HTTP server started (bound to 127.0.0.1)');
         resolve();
       });
     });
 
     // Attach WebSocket upgrade handler to the HTTP server
-    this.wsManager.attach(this.server!);
+    this.wsManager.attach(this.server!, this.auth, WEB_ALLOWED_ORIGINS);
 
     // Flush buffered messages when a client connects
     this.wsManager.onClientConnect(() => this.flushBuffer());
 
     this.wsManager.onInboundMessage((msg) => {
       const timestamp = new Date().toISOString();
-      this.opts.onChatMetadata(WEB_JID, timestamp, 'Web UI', 'web', false);
-      this.opts.onMessage(WEB_JID, {
+      this.opts.messageBus.emit(new ChatMetadata('web', WEB_JID, { name: 'Web UI', channel: 'web', isGroup: false })).catch(() => {});
+      this.opts.messageBus.emit(new InboundMessage('web', WEB_JID, {
         id: `ws-${Date.now()}`,
         chat_jid: WEB_JID,
         sender: 'web:user',
@@ -108,7 +111,7 @@ export class WebChannel implements Channel {
         timestamp,
         is_from_me: false,
         is_bot_message: false,
-      });
+      }, { channel: 'web' })).catch(() => {});
     });
 
     this.connected = true;
@@ -132,6 +135,12 @@ export class WebChannel implements Channel {
       this.pending.delete(jid);
       delivered = true;
     }
+
+    this.opts.onAuditEvent?.({
+      type: 'audit.delivery_result',
+      channel: 'web',
+      data: { chatJid: jid, accepted: delivered, durationMs: 0 },
+    });
 
     if (!delivered) {
       // Buffer the message for delivery when a client next connects
@@ -198,13 +207,31 @@ export class WebChannel implements Channel {
   // -------------------------------------------------------------------------
 
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // CORS: only allow configured origins (not wildcard)
+    const requestOrigin = req.headers.origin ?? '';
+    const allowedOrigin = WEB_ALLOWED_ORIGINS.includes(requestOrigin) ? requestOrigin : '';
+    if (allowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+      res.setHeader('Vary', 'Origin');
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // Auth: require valid Bearer token on all non-OPTIONS requests
+    const authHeader = req.headers.authorization;
+    if (!this.auth.validate(authHeader)) {
+      logger.warn(
+        { ip: req.socket.remoteAddress, path: req.url },
+        'Web channel: rejected unauthenticated request',
+      );
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
       return;
     }
 
@@ -455,6 +482,23 @@ export class WebChannel implements Channel {
         }
       });
 
+      // Audit: webhook received (web has full HTTP metadata)
+      this.opts.onAuditEvent?.({
+        type: 'audit.webhook_received',
+        channel: 'web',
+        data: {
+          sourceIp: req.socket.remoteAddress ?? 'unknown',
+          method: 'POST',
+          path: '/message',
+          userAgent: req.headers['user-agent'] ?? '',
+          authProvided: true,
+          authValid: true,
+          responseCode: 200,
+          durationMs: 0,
+          contentLength: body.length,
+        },
+      });
+
       // Build and emit the inbound message
       const timestamp = new Date().toISOString();
       const message: NewMessage = {
@@ -469,7 +513,7 @@ export class WebChannel implements Channel {
       };
 
       this.opts.messageBus.emit(new ChatMetadata('web', jid, { name: 'Web UI', channel: 'web', isGroup: false })).catch(() => {});
-      this.opts.messageBus.emit(new InboundMessage('web', jid, message, 'web')).catch(() => {});
+      this.opts.messageBus.emit(new InboundMessage('web', jid, message, { channel: 'web' })).catch(() => {});
 
       // When agent responds, send the full text and close the stream
       responsePromise.then((text) => {

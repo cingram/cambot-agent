@@ -159,6 +159,29 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     }, null, 2) + '\n');
   }
 
+  // Sync template files into each group's .claude/ directory
+  // These give Claude Code global instructions and MCP config inside the container
+  const containerDir = path.join(process.cwd(), 'container');
+  const claudeMdSrc = path.join(containerDir, 'CLAUDE.md');
+  if (fs.existsSync(claudeMdSrc)) {
+    fs.copyFileSync(claudeMdSrc, path.join(groupSessionsDir, 'CLAUDE.md'));
+  }
+
+  // MCP servers template — substitute host-side variables before writing
+  const mcpSrc = path.join(containerDir, 'mcp-servers.json');
+  if (fs.existsSync(mcpSrc)) {
+    const hostVars: Record<string, string> = {
+      WORKSPACE_MCP_PORT: String(
+        process.env.WORKSPACE_MCP_PORT || '8000',
+      ),
+    };
+    let mcpContent = fs.readFileSync(mcpSrc, 'utf-8');
+    for (const [key, value] of Object.entries(hostVars)) {
+      mcpContent = mcpContent.replaceAll(`\${${key}}`, value);
+    }
+    fs.writeFileSync(path.join(groupSessionsDir, 'mcp-servers.json'), mcpContent);
+  }
+
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');

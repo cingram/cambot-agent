@@ -30,3 +30,17 @@ export function writeWorkflowBuildResult(
   fs.writeFileSync(tempFile, JSON.stringify(result, null, 2));
   fs.renameSync(tempFile, resultFile);
 }
+
+export function writeEmailResult(
+  sourceGroup: string,
+  requestId: string,
+  result: { status: string; result?: string; error?: string },
+): void {
+  const resultDir = path.join(resolveGroupIpcPath(sourceGroup), 'email-results');
+  fs.mkdirSync(resultDir, { recursive: true });
+
+  const resultFile = path.join(resultDir, `${requestId}.json`);
+  const tempFile = `${resultFile}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(result, null, 2));
+  fs.renameSync(tempFile, resultFile);
+}

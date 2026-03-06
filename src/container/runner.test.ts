@@ -55,6 +55,25 @@ vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
 }));
 
+// Mock runtime
+vi.mock('./runtime.js', () => ({
+  CONTAINER_RUNTIME_BIN: 'docker',
+  killContainersForGroup: vi.fn(),
+  readonlyMountArgs: vi.fn((host: string, container: string) => ['-v', `${host}:${container}:ro`]),
+  stopContainer: vi.fn((name: string) => `docker stop ${name}`),
+}));
+
+// Mock group-folder
+vi.mock('../groups/group-folder.js', () => ({
+  resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/cambot-agent-test-groups/${folder}`),
+  resolveGroupIpcPath: vi.fn((folder: string) => `/tmp/cambot-agent-test-data/ipc/${folder}`),
+}));
+
+// Mock config/env
+vi.mock('../config/env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
+}));
+
 // Mock heartbeat monitor
 const mockMonitor = {
   start: vi.fn(),
@@ -125,14 +144,13 @@ function emitOutputMarker(proc: ReturnType<typeof createFakeProcess>, output: Co
 }
 
 describe('container-runner heartbeat and exit behavior', () => {
+  // These tests don't need fake timers — they control the fake process directly.
+  // Using real timers avoids microtask starvation from deeply chained promises.
+  const tick = () => new Promise(resolve => setTimeout(resolve, 20));
+
   beforeEach(() => {
-    vi.useFakeTimers();
     fakeProc = createFakeProcess();
     vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
   });
 
   it('starts and stops heartbeat monitor', async () => {
@@ -145,15 +163,12 @@ describe('container-runner heartbeat and exit behavior', () => {
       testAgentOptions,
     );
 
-    // Heartbeat monitor should be started
     expect(mockMonitor.start).toHaveBeenCalledTimes(1);
 
-    // Normal exit
     fakeProc.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(10);
+    await tick();
 
     await resultPromise;
-    // Monitor should be stopped on close
     expect(mockMonitor.stop).toHaveBeenCalledTimes(1);
   });
 
@@ -167,20 +182,17 @@ describe('container-runner heartbeat and exit behavior', () => {
       testAgentOptions,
     );
 
-    // Emit output with a result
     emitOutputMarker(fakeProc, {
       status: 'success',
       result: 'Here is my response',
       newSessionId: 'session-123',
     });
 
-    await vi.advanceTimersByTimeAsync(10);
-
-    // acknowledgeActivity should have been called
+    await tick();
     expect(mockMonitor.acknowledgeActivity).toHaveBeenCalledTimes(1);
 
     fakeProc.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(10);
+    await tick();
 
     const result = await resultPromise;
     expect(result.status).toBe('success');
@@ -203,11 +215,11 @@ describe('container-runner heartbeat and exit behavior', () => {
       newSessionId: 'session-123',
     });
 
-    await vi.advanceTimersByTimeAsync(10);
+    await tick();
 
     // Container killed by heartbeat escalation (code 137 = SIGKILL)
     fakeProc.emit('close', 137);
-    await vi.advanceTimersByTimeAsync(10);
+    await tick();
 
     const result = await resultPromise;
     expect(result.status).toBe('success');
@@ -226,7 +238,7 @@ describe('container-runner heartbeat and exit behavior', () => {
 
     // No output emitted — container killed by heartbeat
     fakeProc.emit('close', 137);
-    await vi.advanceTimersByTimeAsync(10);
+    await tick();
 
     const result = await resultPromise;
     expect(result.status).toBe('error');
@@ -244,18 +256,16 @@ describe('container-runner heartbeat and exit behavior', () => {
       testAgentOptions,
     );
 
-    // Emit output
     emitOutputMarker(fakeProc, {
       status: 'success',
       result: 'Done',
       newSessionId: 'session-456',
     });
 
-    await vi.advanceTimersByTimeAsync(10);
+    await tick();
 
-    // Normal exit (no timeout)
     fakeProc.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(10);
+    await tick();
 
     const result = await resultPromise;
     expect(result.status).toBe('success');

@@ -110,8 +110,8 @@ export interface TaskRunLog {
 // --- Event Bus (re-exported from src/bus/) ---
 
 import { MessageBus as _MessageBus } from './bus/index.js';
-export { BusEvent, MessageBus, createMessageBus } from './bus/index.js';
-export type { EventClass, HandlerOptions, BusLifecycleHooks } from './bus/index.js';
+export { BusEvent, MessageBus } from './bus/index.js';
+export type { EventClass, HandlerOptions } from './bus/index.js';
 export {
   InboundMessage,
   OutboundMessage,
@@ -138,9 +138,13 @@ export interface Channel {
   syncMetadata?(force?: boolean): Promise<void>;
 }
 
+export interface ChannelAuditEvent {
+  type: string;
+  channel: string;
+  data: Record<string, unknown>;
+}
+
 export interface ChannelOpts {
-  onMessage: OnInboundMessage;
-  onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   messageBus: MessageBus;
@@ -152,18 +156,23 @@ export interface ChannelOpts {
   };
   /** Returns the names of all loaded channels. Used by the web channel to expose GET /channels. */
   channelNames?: () => string[];
+  /** Fire-and-forget audit event callback for request lifecycle logging. */
+  onAuditEvent?: (event: ChannelAuditEvent) => void;
 }
 
-// Callback type that channels use to deliver inbound messages
-export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
+export interface RegisteredAgent {
+  id: string;
+  name: string;
+  description: string;
+  folder: string;
+  channels: string[];       // JSON parsed
+  mcpServers: string[];     // JSON parsed
+  capabilities: string[];   // JSON parsed
+  concurrency: number;
+  timeoutMs: number;
+  isMain: boolean;
+  agentDefId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
-// Callback for chat metadata discovery.
-// name is optional — channels that deliver names inline (Telegram) pass it here;
-// channels that sync names separately (WhatsApp syncGroupMetadata) omit it.
-export type OnChatMetadata = (
-  chatJid: string,
-  timestamp: string,
-  name?: string,
-  channel?: string,
-  isGroup?: boolean,
-) => void;

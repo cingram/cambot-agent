@@ -6,7 +6,12 @@ vi.mock('../config/config.js', () => ({
   ASSISTANT_NAME: 'Andy',
   MAIN_GROUP_FOLDER: 'main',
   WEB_CHANNEL_PORT: 0, // random port for tests
+  WEB_AUTH_TOKEN: 'test-web-auth-token-for-tests-1234567890abcdef',
+  WEB_ALLOWED_ORIGINS: ['http://localhost:3000'],
+  STORE_DIR: '/tmp/cambot-test-store',
 }));
+
+const TEST_AUTH_TOKEN = 'test-web-auth-token-for-tests-1234567890abcdef';
 
 vi.mock('../logger.js', () => ({
   logger: {
@@ -42,15 +47,21 @@ vi.mock('../db/index.js', () => ({
 }));
 
 import { WebChannel } from './web.js';
-import { ChannelOpts, MessageBus } from '../types.js';
+import { ChannelOpts } from '../types.js';
+import { InboundMessage, ChatMetadata } from '../bus/index.js';
+
+function createMockMessageBus() {
+  return {
+    emit: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn(),
+  };
+}
 
 function createTestOpts(overrides?: Partial<ChannelOpts>): ChannelOpts {
   return {
-    onMessage: vi.fn(),
-    onChatMetadata: vi.fn(),
     registeredGroups: vi.fn(() => ({})),
     registerGroup: vi.fn(),
-    messageBus: new MessageBus(),
+    messageBus: createMockMessageBus() as unknown as ChannelOpts['messageBus'],
     ...overrides,
   };
 }
@@ -65,6 +76,14 @@ function getPort(channel: WebChannel): number {
 
 function buildUrl(channel: WebChannel, path: string): string {
   return `http://127.0.0.1:${getPort(channel)}${path}`;
+}
+
+const authHeaders = { Authorization: `Bearer ${TEST_AUTH_TOKEN}` };
+
+/** fetch with auth token pre-applied */
+function authedFetch(url: string, init?: RequestInit): Promise<Response> {
+  const headers = { ...authHeaders, ...(init?.headers as Record<string, string>) };
+  return fetch(url, { ...init, headers });
 }
 
 describe('WebChannel', () => {
@@ -144,7 +163,7 @@ describe('WebChannel', () => {
     it('returns status ok', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/health'));
+      const res = await authedFetch(buildUrl(channel, '/health'));
       const body = await res.json();
 
       expect(res.status).toBe(200);
@@ -161,7 +180,7 @@ describe('WebChannel', () => {
     it('returns conversation history', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/history'));
+      const res = await authedFetch(buildUrl(channel, '/history'));
       const body = (await res.json()) as { messages: Array<{ content: string }> };
 
       expect(res.status).toBe(200);
@@ -175,7 +194,7 @@ describe('WebChannel', () => {
     it('rejects empty message', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: '' }),
@@ -187,7 +206,7 @@ describe('WebChannel', () => {
     it('rejects invalid JSON', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: 'not-json',
@@ -199,17 +218,16 @@ describe('WebChannel', () => {
     it('delivers message to orchestrator and streams response', async () => {
       await channel.connect();
 
-      // The web channel now uses messageBus.emit for message delivery.
-      // Subscribe to InboundMessage on the bus to simulate the orchestrator
-      // responding via sendMessage.
-      const { InboundMessage } = await import('../bus/index.js');
-      opts.messageBus.on(InboundMessage, () => {
-        setTimeout(() => {
-          channel.sendMessage('web:ui', 'Hello from the agent!');
-        }, 50);
+      // When emit is called, simulate the agent responding via sendMessage
+      vi.mocked(opts.messageBus.emit).mockImplementation(async (event) => {
+        if (event instanceof InboundMessage) {
+          setTimeout(() => {
+            channel.sendMessage('web:ui', 'Hello from the agent!');
+          }, 50);
+        }
       });
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'Hello', sender_name: 'Test User' }),
@@ -228,24 +246,35 @@ describe('WebChannel', () => {
       expect(deltaChunk).toBeDefined();
       expect(deltaChunk.text).toBe('Hello from the agent!');
       expect(doneChunk).toBeDefined();
+
+      // Verify messageBus.emit was called with InboundMessage and ChatMetadata
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      expect(emitCalls.some(([e]) => e instanceof ChatMetadata)).toBe(true);
+      expect(emitCalls.some(([e]) => e instanceof InboundMessage)).toBe(true);
     });
 
     it('uses default sender_name when not provided', async () => {
       await channel.connect();
 
-      const { InboundMessage } = await import('../bus/index.js');
-      opts.messageBus.on(InboundMessage, (event) => {
-        expect(event.message.sender_name).toBe('User');
-        setTimeout(() => channel.sendMessage('web:ui', 'ok'), 10);
+      vi.mocked(opts.messageBus.emit).mockImplementation(async (event) => {
+        if (event instanceof InboundMessage) {
+          setTimeout(() => channel.sendMessage('web:ui', 'ok'), 10);
+        }
       });
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'test' }),
       });
 
       await res.text(); // consume the response
+
+      const inboundCall = vi.mocked(opts.messageBus.emit).mock.calls.find(
+        ([e]) => e instanceof InboundMessage,
+      );
+      expect(inboundCall).toBeDefined();
+      expect((inboundCall![0] as InboundMessage).message.sender_name).toBe('User');
     });
   });
 
@@ -266,21 +295,59 @@ describe('WebChannel', () => {
     it('returns 404 for unknown routes', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/unknown'));
+      const res = await authedFetch(buildUrl(channel, '/unknown'));
       expect(res.status).toBe(404);
     });
   });
 
   describe('CORS', () => {
-    it('handles OPTIONS preflight', async () => {
+    it('handles OPTIONS preflight with allowed origin', async () => {
       await channel.connect();
 
       const res = await fetch(buildUrl(channel, '/health'), {
         method: 'OPTIONS',
+        headers: { Origin: 'http://localhost:3000' },
       });
 
       expect(res.status).toBe(204);
-      expect(res.headers.get('access-control-allow-origin')).toBe('*');
+      expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
+    });
+
+    it('does not set CORS header for disallowed origin', async () => {
+      await channel.connect();
+
+      const res = await fetch(buildUrl(channel, '/health'), {
+        method: 'OPTIONS',
+        headers: { Origin: 'http://evil.com' },
+      });
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    });
+  });
+
+  describe('authentication', () => {
+    it('rejects requests without auth token', async () => {
+      await channel.connect();
+
+      const res = await fetch(buildUrl(channel, '/health'));
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects requests with wrong auth token', async () => {
+      await channel.connect();
+
+      const res = await fetch(buildUrl(channel, '/health'), {
+        headers: { Authorization: 'Bearer wrong-token' },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('accepts requests with correct auth token', async () => {
+      await channel.connect();
+
+      const res = await authedFetch(buildUrl(channel, '/health'));
+      expect(res.status).toBe(200);
     });
   });
 
@@ -291,7 +358,7 @@ describe('WebChannel', () => {
       await channel.connect();
       const { getChatHistory } = await import('../db/index.js');
 
-      const res = await fetch(buildUrl(channel, '/history?conversation_id=conv-1'));
+      const res = await authedFetch(buildUrl(channel, '/history?conversation_id=conv-1'));
       const body = (await res.json()) as { messages: Array<{ content: string }> };
 
       expect(res.status).toBe(200);
@@ -304,7 +371,7 @@ describe('WebChannel', () => {
       await channel.connect();
       const { getChatHistory } = await import('../db/index.js');
 
-      const res = await fetch(buildUrl(channel, '/history'));
+      const res = await authedFetch(buildUrl(channel, '/history'));
       await res.json();
 
       expect(getChatHistory).toHaveBeenCalledWith('web:ui', 200);
@@ -315,31 +382,38 @@ describe('WebChannel', () => {
     it('stores message under composite JID web:ui:{id}', async () => {
       await channel.connect();
 
-      const { InboundMessage } = await import('../bus/index.js');
-      opts.messageBus.on(InboundMessage, (event) => {
-        expect(event.message.chat_jid).toBe('web:ui:conv-1');
-        setTimeout(() => channel.sendMessage('web:ui:conv-1', 'ok'), 10);
+      vi.mocked(opts.messageBus.emit).mockImplementation(async (event) => {
+        if (event instanceof InboundMessage) {
+          setTimeout(() => channel.sendMessage('web:ui:conv-1', 'ok'), 10);
+        }
       });
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'test', conversation_id: 'conv-1' }),
       });
 
       await res.text();
+
+      const inboundCall = vi.mocked(opts.messageBus.emit).mock.calls.find(
+        ([e]) => e instanceof InboundMessage,
+      );
+      expect(inboundCall).toBeDefined();
+      expect((inboundCall![0] as InboundMessage).message.chat_jid).toBe('web:ui:conv-1');
     });
 
     it('auto-creates conversation if not exists', async () => {
       await channel.connect();
       const { upsertConversation } = await import('../db/index.js');
 
-      const { InboundMessage } = await import('../bus/index.js');
-      opts.messageBus.on(InboundMessage, () => {
-        setTimeout(() => channel.sendMessage('web:ui:new-conv', 'ok'), 10);
+      vi.mocked(opts.messageBus.emit).mockImplementation(async (event) => {
+        if (event instanceof InboundMessage) {
+          setTimeout(() => channel.sendMessage('web:ui:new-conv', 'ok'), 10);
+        }
       });
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'hello', conversation_id: 'new-conv' }),
@@ -353,12 +427,13 @@ describe('WebChannel', () => {
       await channel.connect();
       vi.mocked(opts.registerGroup).mockClear();
 
-      const { InboundMessage } = await import('../bus/index.js');
-      opts.messageBus.on(InboundMessage, () => {
-        setTimeout(() => channel.sendMessage('web:ui:conv-1', 'ok'), 10);
+      vi.mocked(opts.messageBus.emit).mockImplementation(async (event) => {
+        if (event instanceof InboundMessage) {
+          setTimeout(() => channel.sendMessage('web:ui:conv-1', 'ok'), 10);
+        }
       });
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'test', conversation_id: 'conv-1' }),
@@ -375,19 +450,25 @@ describe('WebChannel', () => {
     it('works without conversation_id (backward compat)', async () => {
       await channel.connect();
 
-      const { InboundMessage } = await import('../bus/index.js');
-      opts.messageBus.on(InboundMessage, (event) => {
-        expect(event.message.chat_jid).toBe('web:ui');
-        setTimeout(() => channel.sendMessage('web:ui', 'ok'), 10);
+      vi.mocked(opts.messageBus.emit).mockImplementation(async (event) => {
+        if (event instanceof InboundMessage) {
+          setTimeout(() => channel.sendMessage('web:ui', 'ok'), 10);
+        }
       });
 
-      const res = await fetch(buildUrl(channel, '/message'), {
+      const res = await authedFetch(buildUrl(channel, '/message'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'no convo id' }),
       });
 
       await res.text();
+
+      const inboundCall = vi.mocked(opts.messageBus.emit).mock.calls.find(
+        ([e]) => e instanceof InboundMessage,
+      );
+      expect(inboundCall).toBeDefined();
+      expect((inboundCall![0] as InboundMessage).message.chat_jid).toBe('web:ui');
     });
   });
 
@@ -395,7 +476,7 @@ describe('WebChannel', () => {
     it('returns list of conversations', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/conversations'));
+      const res = await authedFetch(buildUrl(channel, '/conversations'));
       const body = (await res.json()) as { conversations: Array<{ id: string }> };
 
       expect(res.status).toBe(200);
@@ -409,7 +490,7 @@ describe('WebChannel', () => {
       await channel.connect();
       const { upsertConversation } = await import('../db/index.js');
 
-      const res = await fetch(buildUrl(channel, '/conversations'), {
+      const res = await authedFetch(buildUrl(channel, '/conversations'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: 'my-conv', title: 'My Conversation' }),
@@ -424,7 +505,7 @@ describe('WebChannel', () => {
     it('generates id if not provided', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/conversations'), {
+      const res = await authedFetch(buildUrl(channel, '/conversations'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'Auto ID' }),
@@ -442,7 +523,7 @@ describe('WebChannel', () => {
       await channel.connect();
       const { renameConversation } = await import('../db/index.js');
 
-      const res = await fetch(buildUrl(channel, '/conversations/conv-1'), {
+      const res = await authedFetch(buildUrl(channel, '/conversations/conv-1'), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: 'Renamed' }),
@@ -455,7 +536,7 @@ describe('WebChannel', () => {
     it('returns 400 for missing title', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/conversations/conv-1'), {
+      const res = await authedFetch(buildUrl(channel, '/conversations/conv-1'), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -470,7 +551,7 @@ describe('WebChannel', () => {
       await channel.connect();
       const { deleteConversation } = await import('../db/index.js');
 
-      const res = await fetch(buildUrl(channel, '/conversations/conv-1'), {
+      const res = await authedFetch(buildUrl(channel, '/conversations/conv-1'), {
         method: 'DELETE',
       });
 
@@ -481,7 +562,7 @@ describe('WebChannel', () => {
     it('returns 200 for non-existent (idempotent)', async () => {
       await channel.connect();
 
-      const res = await fetch(buildUrl(channel, '/conversations/nope'), {
+      const res = await authedFetch(buildUrl(channel, '/conversations/nope'), {
         method: 'DELETE',
       });
 

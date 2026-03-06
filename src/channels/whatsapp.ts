@@ -18,6 +18,7 @@ import {
 } from '../db/index.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
+import { InboundMessage, ChatMetadata } from '../bus/index.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -155,10 +156,17 @@ export class WhatsAppChannel implements Channel {
 
         // Always notify about chat metadata for group discovery
         const isGroup = chatJid.endsWith('@g.us');
-        this.opts.onChatMetadata(chatJid, timestamp, undefined, 'whatsapp', isGroup);
+        this.opts.messageBus.emit(new ChatMetadata('whatsapp', chatJid, { channel: 'whatsapp', isGroup })).catch(() => {});
 
         // Only deliver full message for registered groups
         const groups = this.opts.registeredGroups();
+        if (!groups[chatJid]) {
+          this.opts.onAuditEvent?.({
+            type: 'audit.authorization_decision',
+            channel: 'whatsapp',
+            data: { chatJid, sender: msg.key.participant || rawJid, messageId: msg.key.id || '', decision: 'dropped_unregistered' },
+          });
+        }
         if (groups[chatJid]) {
           const content =
             msg.message?.conversation ||
@@ -182,7 +190,19 @@ export class WhatsAppChannel implements Channel {
             ? fromMe
             : content.startsWith(`${ASSISTANT_NAME}:`);
 
-          this.opts.onMessage(chatJid, {
+          this.opts.onAuditEvent?.({
+            type: 'audit.authorization_decision',
+            channel: 'whatsapp',
+            data: {
+              chatJid,
+              sender,
+              messageId: msg.key.id || '',
+              decision: 'allowed',
+              groupFolder: groups[chatJid].folder,
+            },
+          });
+
+          this.opts.messageBus.emit(new InboundMessage('whatsapp', chatJid, {
             id: msg.key.id || '',
             chat_jid: chatJid,
             sender,
@@ -191,7 +211,7 @@ export class WhatsAppChannel implements Channel {
             timestamp,
             is_from_me: fromMe,
             is_bot_message: isBotMessage,
-          });
+          }, { channel: 'whatsapp' })).catch(() => {});
         }
       }
     });
@@ -211,10 +231,21 @@ export class WhatsAppChannel implements Channel {
       logger.info({ jid, length: prefixed.length, queueSize: this.outgoingQueue.length }, 'WA disconnected, message queued');
       return;
     }
+    const startMs = Date.now();
     try {
       await this.sock.sendMessage(jid, { text: prefixed });
+      this.opts.onAuditEvent?.({
+        type: 'audit.delivery_result',
+        channel: 'whatsapp',
+        data: { chatJid: jid, accepted: true, durationMs: Date.now() - startMs },
+      });
       logger.info({ jid, length: prefixed.length }, 'Message sent');
     } catch (err) {
+      this.opts.onAuditEvent?.({
+        type: 'audit.delivery_result',
+        channel: 'whatsapp',
+        data: { chatJid: jid, accepted: false, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - startMs },
+      });
       // If send fails, queue it for retry on reconnect
       this.outgoingQueue.push({ jid, text: prefixed });
       logger.warn({ jid, err, queueSize: this.outgoingQueue.length }, 'Failed to send, message queued');

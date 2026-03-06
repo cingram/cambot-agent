@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { _initTestDatabase, createTask, getTaskById } from '../db/index.js';
-import { createMessageBus } from '../types.js';
+import { createMessageBus } from '../bus/index.js';
 import {
   _resetSchedulerLoopForTests,
   startSchedulerLoop,

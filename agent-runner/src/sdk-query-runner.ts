@@ -2,7 +2,6 @@
  * Executes a single SDK query and processes the message stream.
  * IPC polling is delegated to IpcQueryBridge.
  */
-import path from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
   SDKMessage,
@@ -19,6 +18,7 @@ import type { ContextBuilder } from './context-builder.js';
 import type { HeartbeatWriter } from './heartbeat-writer.js';
 import { MessageStream } from './message-stream.js';
 import { IpcQueryBridge } from './ipc-query-bridge.js';
+import { loadMcpConfig } from './mcp-config.js';
 
 export interface QueryResult {
   newSessionId?: string;
@@ -37,7 +37,7 @@ export class SdkQueryRunner {
     private readonly hookFactory: HookFactory,
     private readonly contextBuilder: ContextBuilder,
     private readonly telemetry: TelemetryCollector,
-    private readonly mcpServerPath: string,
+    private readonly scriptDir: string,
     private readonly heartbeat?: HeartbeatWriter,
   ) {}
 
@@ -154,8 +154,16 @@ export class SdkQueryRunner {
     sessionId?: string,
     resumeAt?: string,
   ) {
-    const mcpServers = input.mcpServers ?? [];
-    const workflowMcpPath = path.join(path.dirname(this.mcpServerPath), 'workflow-mcp-stdio.js');
+    const mcpConfig = loadMcpConfig(
+      this.paths.mcpConfigPath,
+      {
+        scriptDir: this.scriptDir,
+        chatJid: input.chatJid,
+        groupFolder: input.groupFolder,
+        isMain: input.isMain,
+      },
+      input.mcpServers,
+    );
 
     return {
       cwd: this.paths.groupDir,
@@ -175,39 +183,13 @@ export class SdkQueryRunner {
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__cambot-agent__*',
-        'mcp__workflow-builder__*',
-        ...mcpServers.map(s => `mcp__${s.name}__*`),
+        ...mcpConfig.allowedTools,
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'] as SettingSource[],
-      mcpServers: {
-        'cambot-agent': {
-          command: 'node',
-          args: [this.mcpServerPath],
-          env: {
-            CAMBOT_AGENT_CHAT_JID: input.chatJid,
-            CAMBOT_AGENT_GROUP_FOLDER: input.groupFolder,
-            CAMBOT_AGENT_IS_MAIN: input.isMain ? '1' : '0',
-          },
-        },
-        'workflow-builder': {
-          command: 'node',
-          args: [workflowMcpPath],
-          env: {
-            CAMBOT_AGENT_GROUP_FOLDER: input.groupFolder,
-            CAMBOT_AGENT_IS_MAIN: input.isMain ? '1' : '0',
-          },
-        },
-        ...Object.fromEntries(
-          mcpServers.map(s => [
-            s.name,
-            { type: s.transport as 'http' | 'sse', url: s.url },
-          ]),
-        ),
-      },
+      mcpServers: mcpConfig.servers,
       hooks: this.hookFactory.buildHooks(),
     };
   }

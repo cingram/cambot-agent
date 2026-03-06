@@ -100,13 +100,12 @@ async function main(): Promise<void> {
 
   // Wire dependency graph
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   const telemetry = new TelemetryCollector();
   const archiver = new TranscriptArchiver(paths, logger);
   const hookFactory = new HookFactory(telemetry, archiver, logger, heartbeat);
   const contextBuilder = new ContextBuilder(paths, logger);
-  const queryRunner = new SdkQueryRunner(paths, logger, outputWriter, ipc, hookFactory, contextBuilder, telemetry, mcpServerPath, heartbeat);
+  const queryRunner = new SdkQueryRunner(paths, logger, outputWriter, ipc, hookFactory, contextBuilder, telemetry, __dirname, heartbeat);
   const agentRunner = new AgentRunner(logger, outputWriter, ipc, queryRunner, {}, heartbeat);
 
   heartbeat.start();

@@ -1,5 +1,7 @@
 # Message Bus
 
+> **Superseded**: See [BUS-ARCHITECTURE.md](BUS-ARCHITECTURE.md) for the definitive bus reference including handler chain, middleware pipeline, message flow, and reactive routing.
+
 Type-safe event bus for decoupling producers (agent output, IPC, channels) from consumers (DB storage, channel delivery, interceptors).
 
 ## Architecture

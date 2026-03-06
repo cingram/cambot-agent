@@ -2,35 +2,38 @@
 
 Single Node.js process + N Docker containers. The host orchestrates messaging, state, and scheduling. Containers run Claude Agent SDK in isolation per group.
 
+> **Bus architecture**: See [BUS-ARCHITECTURE.md](BUS-ARCHITECTURE.md) for the definitive reference on the event bus, handler chain, middleware, and message flow.
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Host Process (Node.js)                                     │
 │                                                             │
 │  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌───────────┐  │
-│  │ WhatsApp │  │   CLI    │  │ Scheduler │  │    IPC    │  │
-│  │ Channel  │  │ Channel  │  │  (60s)    │  │  Watcher  │  │
+│  │ WhatsApp │  │  Email   │  │   Web     │  │   CLI     │  │
+│  │ Channel  │  │ Channel  │  │ Channel   │  │ Channel   │  │
 │  └────┬─────┘  └────┬─────┘  └─────┬─────┘  └─────┬─────┘  │
 │       │              │              │              │         │
-│       └──────┬───────┘              │              │         │
-│              ▼                      ▼              ▼         │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │  Orchestrator (index.ts)                              │  │
-│  │  Message loop · State · Agent invocation              │  │
-│  └──────────────────────┬────────────────────────────────┘  │
-│                         ▼                                   │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │  GroupQueue                                           │  │
-│  │  Per-group serialization · Global pool (max 5)        │  │
-│  └──────────────────────┬────────────────────────────────┘  │
-│                         ▼                                   │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐                     │
-│  │Container│  │Container│  │Container│  (up to 5)           │
-│  │ Group A │  │ Group B │  │ Group C │                      │
-│  └─────────┘  └─────────┘  └─────────┘                     │
-│       │              │              │         SQLite         │
-│       └──────────────┼──────────────┘     (messages.db)     │
-│                      ▼                                      │
-│               Docker Engine                                 │
+│       └──────────────┴──────┬───────┴──────────────┘         │
+│                             │  emit(InboundMessage)          │
+│  ┌──────────────────────────▼──────────────────────────────┐ │
+│  │  MessageBus                                             │ │
+│  │  Middleware: dedup → backpressure → event journal       │ │
+│  │  Handlers: sequential by priority (10 → 200)           │ │
+│  └──────────────────────────┬──────────────────────────────┘ │
+│                             │                                │
+│  ┌──────────────────────────▼──────────────────────────────┐ │
+│  │  GroupQueue                                             │ │
+│  │  Per-group serialization · Global pool (max 5)          │ │
+│  └──────────────────────────┬──────────────────────────────┘ │
+│                             │                                │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐                      │
+│  │Container│  │Container│  │Container│  (up to 5)            │
+│  │ Group A │  │ Group B │  │ Group C │                       │
+│  └─────────┘  └─────────┘  └─────────┘                      │
+│       │              │              │         SQLite          │
+│       └──────────────┼──────────────┘     (cambot.sqlite)    │
+│                      ▼                                       │
+│               Docker Engine                                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,13 +44,16 @@ Single Node.js process + N Docker containers. The host orchestrates messaging, s
 | Directory / File | Purpose |
 |------|---------|
 | `src/orchestrator/app.ts` | CamBotApp facade: startup, shutdown, wiring |
-| `src/orchestrator/message-loop.ts` | Message polling and routing |
-| `src/orchestrator/router-state.ts` | In-memory state: cursors, sessions, groups |
+| `src/orchestrator/message-router.ts` | Reactive bus handler: routes inbound messages to containers |
+| `src/orchestrator/message-recovery.ts` | Startup recovery for pending messages |
+| `src/orchestrator/bus-handlers.ts` | Core handler registrations (storage, delivery, audit) |
+| `src/bus/` | MessageBus, events, middleware, durable queue, transport |
+| `src/bus/create-app-bus.ts` | Composition root: bus + middleware wiring |
 | `src/types.ts` | All TypeScript interfaces (`Channel`, `RegisteredGroup`, `NewMessage`, etc.) |
 | `src/config/config.ts` | Constants: paths, intervals, timeouts, trigger regex, env reads |
 | `src/config/env.ts` | Parses `.env` into typed record without polluting `process.env` |
 | `src/logger.ts` | Pino logger; hooks `uncaughtException`/`unhandledRejection` |
-| `src/utils/router.ts` | Formats messages to XML, strips `<internal>` tags, dispatches to channels |
+| `src/utils/router.ts` | Formats messages to XML, strips `<internal>` tags |
 | `src/db/` | SQLite repositories: chat, message, task, group, session, agent-def, integration, mcp |
 | `src/groups/group-queue.ts` | Per-group concurrency with global container cap, retry/backoff |
 | `src/groups/group-folder.ts` | Validates/resolves group folder paths; prevents path traversal |
@@ -59,9 +65,10 @@ Single Node.js process + N Docker containers. The host orchestrates messaging, s
 | `src/ipc/message-handler.ts` | Processes IPC message files |
 | `src/scheduling/task-scheduler.ts` | Polls SQLite for due tasks every 60s, dispatches to GroupQueue |
 | `src/container/mount-security.ts` | Validates `additionalMounts` against external allowlist |
-| `src/utils/whatsapp-auth.ts` | Standalone script for WhatsApp QR/pairing-code auth |
-| `src/channels/registry.ts` | Discovers and loads configured channels; auto-detects WhatsApp |
+| `src/channels/registry.ts` | Discovers and loads configured channels |
 | `src/channels/whatsapp.ts` | Baileys WebSocket: LID translation, outgoing queue, metadata sync |
+| `src/channels/email.ts` | Gmail polling + reply via workspace-mcp |
+| `src/channels/web.ts` | HTTP + WebSocket channel |
 | `src/channels/cli.ts` | Interactive stdin/stdout channel for local dev |
 | `agent-runner/src/index.ts` | In-container query loop: Claude Agent SDK, IPC input polling |
 | `agent-runner/src/ipc-mcp-stdio.ts` | MCP server: `send_message`, `schedule_task`, `list/pause/cancel_task` |
@@ -80,36 +87,33 @@ Channel {
 }
 ```
 
-**Callback injection**: Channels receive `onMessage`, `onChatMetadata`, `registeredGroups`, and `registerGroup` via `ChannelOpts` at construction. The orchestrator owns the callbacks; channels are passive producers.
+**Bus integration**: Channels emit `InboundMessage` and `ChatMetadata` events directly to the MessageBus. Outbound delivery is handled by the `channel-delivery` bus handler (priority 50), which finds the owning channel and calls `sendMessage()`.
 
 **Registry** (`channels/registry.ts`): Hard-coded `ChannelDefinition[]` with `isConfigured()` guards. WhatsApp auto-activates if `store/auth/creds.json` exists. CLI activates only via `CHANNELS=cli` env var. Dynamic imports defer heavy dependencies.
 
-**Routing**: Each channel implements `ownsJid(jid)` — the orchestrator iterates channels to find the owner. WhatsApp JIDs look like `12345@s.whatsapp.net`; CLI uses `cli:console`.
+**Routing**: Each channel implements `ownsJid(jid)` — the bus handler iterates channels to find the owner. WhatsApp JIDs look like `12345@s.whatsapp.net`; CLI uses `cli:console`; Web uses `web:ui`.
 
-**Adding a channel**: Implement `Channel`, add a `ChannelDefinition` to the registry array. No other files need changes.
+**Adding a channel**: Implement `Channel`, add a `ChannelDefinition` to the registry array. Emit `InboundMessage` to the bus on receive. No other files need changes.
 
 ---
 
-## Layer 2: Orchestrator
+## Layer 2: MessageBus
 
-`src/orchestrator/app.ts` — the central coordinator.
+The event backbone. All inter-component communication flows through it. See [BUS-ARCHITECTURE.md](BUS-ARCHITECTURE.md) for the complete reference.
 
-**Startup sequence** (`main()`):
-1. Verify Docker is running (`docker info`)
-2. Kill orphaned `cambot-agent-*` containers
-3. Open SQLite DB, create schema, migrate legacy JSON files
-4. Load state: cursors, sessions, registered groups
-5. Register SIGTERM/SIGINT handlers (graceful shutdown)
-6. Load and connect all channels
-7. Start scheduler loop (60s)
-8. Start IPC watcher (1s)
-9. Wire `queue.setProcessMessagesFn(processGroupMessages)`
-10. Recover pending messages (re-enqueue groups with lagging cursors)
-11. Enter message loop (2s poll, runs forever)
+**Startup sequence** (`CamBotApp.start()`):
+1. Verify Docker is running, kill orphaned containers
+2. Open SQLite DB, create schema, migrate
+3. Load state: cursors, sessions, registered groups
+4. Create bus via `createAppBus()` (installs middleware)
+5. Register bus handlers (storage, delivery, audit, routing)
+6. Initialize integrations and channels
+7. Install shadow-admin, persistent agents, content pipes
+8. Wire GroupQueue with GroupMessageProcessor
+9. Recover pending messages (re-enqueue groups with lagging cursors)
+10. Register message-router handler (priority 110, reactive routing)
 
-**Message loop**: Polls `getNewMessages(jids, lastTimestamp)` from SQLite. Advances `lastTimestamp` *before* processing (crash safety — recovery handles the gap). Non-main groups require `@Andy` trigger unless `requiresTrigger=false`. If a container is already active for the group, messages are injected via IPC; otherwise the group is enqueued.
-
-**`processGroupMessages(chatJid)`**: Fetches all messages since `lastAgentTimestamp[chatJid]` (catch-up window), starts a container via `runAgent()`, manages typing indicators, and handles the 30-minute idle timeout.
+**Message routing**: The `message-router` bus handler fires instantly on every `InboundMessage` event. Guards check registration, channel ownership, and trigger pattern. Routes to active containers via IPC or enqueues for new containers. No polling.
 
 ---
 
@@ -177,50 +181,36 @@ Streamed incrementally via stdout. Each marker pair triggers `onOutput` callback
 
 ---
 
-## Layer 5: Skills Engine
-
-Transformation system for adding features via three-way merge. See [cambot-agent-architecture-final.md](cambot-agent-architecture-final.md) for full details.
-
-**What skills are**: Self-contained packages with `manifest.yaml`, `add/` (new files), and `modify/` (files to merge). Applied programmatically — no monolithic code changes.
-
-**Apply flow**: Pre-flight → backup → file ops → copy adds → three-way merge (`git merge-file` against `.cambot-agent/base/`) → conflict resolution (rerere → Claude → user) → structured ops (npm deps, env vars, docker-compose) → tests → record state.
-
-**Three-way merge**: `current` (working tree) × `base` (clean core) × `skill` (skill's modified version). Git's context matching handles moved code. Conflicts auto-resolve via `git rerere` with a shared resolution cache.
-
-**State**: `.cambot-agent/state.yaml` tracks applied skills, file hashes, structured outcomes, custom patches. Enables deterministic replay and instant drift detection.
-
----
-
 ## Data Flows
 
 ### Inbound Message → Response
 
 ```
-WhatsApp ─────► onMessage() ─────► storeMessage() ──► SQLite
-                                                         │
-Message Loop (2s poll) ◄─────── getNewMessages(cursor) ──┘
-       │
-       ├── container active? ──► queue.sendMessage() ──► IPC input file
-       │
-       └── no container ──► queue.enqueueMessageCheck()
-                                    │
-                           processGroupMessages()
-                                    │
-                              runContainerAgent()
-                                    │
-                          ┌─────────┴─────────┐
-                          │  Docker Container  │
-                          │  Claude Agent SDK  │
-                          │  query() loop      │
-                          └─────────┬──────────┘
-                                    │
-                        stdout markers (streaming)
-                                    │
-                              onOutput callback
-                                    │
-                          channel.sendMessage(jid, text)
-                                    │
-                                WhatsApp ────► User
+Channel ─────► bus.emit(InboundMessage) ──► MessageBus
+                                                │ sequential handlers
+                                                ├── shadow-admin (10) — may cancel
+                                                ├── input-sanitizer (15)
+                                                ├── content-pipe (20) — may cancel
+                                                ├── persistent-agent-handler (20) — may cancel
+                                                ├── db-store (100) — writes to SQLite
+                                                ├── lifecycle-ingest (100)
+                                                ├── message-router (110) ──► route
+                                                │       │
+                                                │       ├── active container? → IPC pipe
+                                                │       └── no container → enqueue
+                                                │                              │
+                                                │                    GroupMessageProcessor
+                                                │                              │
+                                                │                     runContainerAgent()
+                                                │                              │
+                                                │                    ┌─────────┴──────────┐
+                                                │                    │  Docker Container   │
+                                                │                    │  Claude Agent SDK   │
+                                                │                    └─────────┬──────────┘
+                                                │                              │
+                                                │                    IPC output → bus.emit(OutboundMessage)
+                                                │                              │
+                                                └── audit (200)      channel.sendMessage() → User
 ```
 
 ### IPC: Container → Host
@@ -236,7 +226,7 @@ Write JSON to                       Scan data/ipc/*/
   or /tasks/                          ├── messages/*.json
                                       │     ├── Auth check (main can send anywhere,
                                       │     │   non-main only to own JID)
-                                      │     └── channel.sendMessage()
+                                      │     └── bus.emit(OutboundMessage)
                                       │
                                       └── tasks/*.json
                                             ├── schedule_task → createTask (SQLite)
@@ -272,8 +262,8 @@ Scheduler (60s poll)
 
 | Pattern | Where Used |
 |---------|------------|
-| **Callback injection** | Channels receive `onMessage`/`onChatMetadata` at construction |
-| **Cursor-based recovery** | Two-tier timestamps (`lastTimestamp` + `lastAgentTimestamp`) prevent message loss on crash |
+| **Event-driven bus** | All inter-component communication via MessageBus with priority-ordered handlers |
+| **Cursor-based recovery** | Per-group `agentTimestamp` cursors prevent message loss on crash |
 | **Strategy pattern** | Channel registry (pluggable I/O); container runtime abstraction |
 | **File-based IPC** | Containers write JSON files, host polls and processes (atomic rename for safety) |
 | **Per-group isolation** | Separate mounts, sessions, IPC namespaces per group folder |
@@ -282,6 +272,7 @@ Scheduler (60s poll)
 | **Streaming markers** | `OUTPUT_START`/`OUTPUT_END` pairs enable incremental result delivery |
 | **Idle preemption** | Tasks arriving while container is idle trigger `closeStdin` to recycle it |
 | **Graceful degradation** | Shutdown lets active containers finish; orphan cleanup on restart |
+| **Cancellation chain** | Sequential handlers can cancel propagation (shadow-admin, content-pipe) |
 
 ---
 
@@ -301,7 +292,7 @@ Scheduler (60s poll)
 
 ## Persistence (SQLite)
 
-All state lives in `store/messages.db` via `better-sqlite3`.
+All state lives in `store/cambot.sqlite` via `better-sqlite3`.
 
 | Table | Purpose |
 |-------|---------|
@@ -309,8 +300,9 @@ All state lives in `store/messages.db` via `better-sqlite3`.
 | `messages` | Message history — content, sender, timestamps, bot flag |
 | `scheduled_tasks` | Task definitions — prompt, schedule, next_run, status |
 | `task_run_logs` | Execution history — duration, status, result, errors |
-| `router_state` | Key-value for cursors (`last_timestamp`, `last_agent_timestamp`) |
+| `router_state` | Key-value for cursors (`last_agent_timestamp`) |
 | `sessions` | Claude SDK session IDs per group folder |
 | `registered_groups` | Group config — JID, folder, trigger pattern, container config |
+| `bus_events` | Event journal — all bus events for audit/replay |
 
-**Cursor recovery**: On startup, `recoverPendingMessages()` compares each group's `lastAgentTimestamp` against the DB. Groups with unprocessed messages are re-enqueued. This handles crashes between cursor advance and agent completion.
+**Cursor recovery**: On startup, `recoverPendingMessages()` compares each group's `agentTimestamp` against the DB. Groups with unprocessed messages are re-enqueued.

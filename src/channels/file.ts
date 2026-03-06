@@ -2,10 +2,11 @@ import fs from 'fs';
 import path from 'path';
 
 import { logger } from '../logger.js';
-import type { Channel } from '../types.js';
+import type { Channel, ChannelAuditEvent } from '../types.js';
 
 export interface FileConfig {
   baseDir: string;
+  onAuditEvent?: (event: ChannelAuditEvent) => void;
 }
 
 /**
@@ -20,9 +21,11 @@ export class FileChannel implements Channel {
 
   private connected = false;
   private baseDir: string;
+  private onAuditEvent?: (event: ChannelAuditEvent) => void;
 
   constructor(config: FileConfig) {
     this.baseDir = config.baseDir;
+    this.onAuditEvent = config.onAuditEvent;
   }
 
   async connect(): Promise<void> {
@@ -53,6 +56,11 @@ export class FileChannel implements Channel {
     }
 
     fs.writeFileSync(fullPath, text, 'utf-8');
+    this.onAuditEvent?.({
+      type: 'audit.delivery_result',
+      channel: 'file',
+      data: { chatJid: jid, accepted: true, durationMs: 0, filePath: relativePath },
+    });
     logger.info({ path: relativePath }, 'File written');
   }
 

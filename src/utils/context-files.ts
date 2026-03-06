@@ -6,7 +6,7 @@
  * and injected into the system prompt alongside CLAUDE.md.
  *
  * Files are numbered to control injection order:
- *   01-SOUL.md, 02-IDENTITY.md, 03-USER.md, 04-TOOLS.md, 05-AGENTS.md, 06-HEARTBEAT.md
+ *   01-SOUL.md, 02-USER.md, 03-TOOLS.md, 04-AGENTS.md, 05-HEARTBEAT.md, 06-CHANNELS.md
  */
 import fs from 'fs';
 import path from 'path';
@@ -58,7 +58,7 @@ export interface ContextFileDeps {
   customAgents: CustomAgentRow[];
   tasks: ScheduledTaskRow[];
   workflows: WorkflowSummary[];
-  globalDir: string; // groups/global/ — source for static context files (SOUL.md, IDENTITY.md)
+  globalDir: string; // groups/global/ — source for static context files (SOUL.md)
   chatJid?: string;                    // current message's JID
   getChats?: () => ChatInfo[];         // getAllChats from db.ts
 }
@@ -288,29 +288,28 @@ export function writeContextFiles(
   try {
     // Static context files — copied from groups/global/ if they exist
     copyStaticContextFile(deps.globalDir, contextDir, 'SOUL.md', '01-SOUL.md');
-    copyStaticContextFile(deps.globalDir, contextDir, 'IDENTITY.md', '02-IDENTITY.md');
 
-    // 03-USER.md is intentionally empty — agent queries the DB on demand
-    fs.writeFileSync(path.join(contextDir, '03-USER.md'), '');
+    // 02-USER.md is intentionally empty — agent queries the DB on demand
+    fs.writeFileSync(path.join(contextDir, '02-USER.md'), '');
 
     fs.writeFileSync(
-      path.join(contextDir, '04-TOOLS.md'),
+      path.join(contextDir, '03-TOOLS.md'),
       generateToolsMd(deps),
     );
 
     fs.writeFileSync(
-      path.join(contextDir, '05-AGENTS.md'),
+      path.join(contextDir, '04-AGENTS.md'),
       generateAgentsMd(deps.customAgents),
     );
 
     fs.writeFileSync(
-      path.join(contextDir, '06-HEARTBEAT.md'),
+      path.join(contextDir, '05-HEARTBEAT.md'),
       generateHeartbeatMd(deps.tasks, deps.workflows),
     );
 
     if (deps.chatJid) {
       fs.writeFileSync(
-        path.join(contextDir, '07-CHANNELS.md'),
+        path.join(contextDir, '06-CHANNELS.md'),
         generateChannelsMd(deps),
       );
     }

@@ -1,15 +1,19 @@
 import type { NewMessage } from '../../types.js';
+import type { EnvelopeOptions } from '../envelope.js';
 import { BusEvent } from '../bus-event.js';
 
 export class InboundMessage extends BusEvent {
   readonly jid: string;
   readonly message: NewMessage;
-  readonly channel?: string;
 
-  constructor(source: string, jid: string, message: NewMessage, channel?: string) {
-    super(source);
+  constructor(
+    source: string,
+    jid: string,
+    message: NewMessage,
+    opts?: { channel?: string } & EnvelopeOptions,
+  ) {
+    super('message.inbound', source, opts);
     this.jid = jid;
     this.message = message;
-    this.channel = channel;
   }
 }

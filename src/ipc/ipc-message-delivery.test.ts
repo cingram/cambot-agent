@@ -35,7 +35,6 @@ vi.mock('../config/config.js', () => ({
   MAIN_GROUP_FOLDER: 'main',
   STORE_DIR: '/tmp/cambot-ipc-test-store',
   IDLE_TIMEOUT: 1800000,
-  POLL_INTERVAL: 2000,
   TRIGGER_PATTERN: /^@Andy\b/i,
   MAX_CONCURRENT_CONTAINERS: 5,
   CONTAINER_TIMEOUT: 1800000,

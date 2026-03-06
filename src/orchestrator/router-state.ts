@@ -16,13 +16,11 @@ import type { RegisteredGroup } from '../types.js';
 import type { AvailableGroup } from '../container/snapshot-writers.js';
 
 export class RouterState {
-  private lastTimestamp = '';
   private lastAgentTimestamp: Record<string, string> = {};
   private sessions: Record<string, string> = {};
   private registeredGroups: Record<string, RegisteredGroup> = {};
 
   load(): void {
-    this.lastTimestamp = getRouterState('last_timestamp') || '';
     const agentTs = getRouterState('last_agent_timestamp');
     try {
       this.lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
@@ -39,19 +37,10 @@ export class RouterState {
   }
 
   save(): void {
-    setRouterState('last_timestamp', this.lastTimestamp);
     setRouterState(
       'last_agent_timestamp',
       JSON.stringify(this.lastAgentTimestamp),
     );
-  }
-
-  getLastTimestamp(): string {
-    return this.lastTimestamp;
-  }
-
-  setLastTimestamp(ts: string): void {
-    this.lastTimestamp = ts;
   }
 
   getAgentTimestamp(jid: string): string {
@@ -60,10 +49,6 @@ export class RouterState {
 
   setAgentTimestamp(jid: string, ts: string): void {
     this.lastAgentTimestamp[jid] = ts;
-  }
-
-  getAllAgentTimestamps(): Record<string, string> {
-    return this.lastAgentTimestamp;
   }
 
   getSession(key: string): string | undefined {

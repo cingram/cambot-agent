@@ -10,6 +10,7 @@
 import { ASSISTANT_NAME } from '../config/config.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
+import { InboundMessage, ChatMetadata } from '../bus/index.js';
 
 export interface EmailChannelConfig {
   /** Full URL to the workspace-mcp streamable-http endpoint */
@@ -145,6 +146,7 @@ export class EmailChannel implements Channel {
         ? `Re: ${threadInfo.subject.replace(/^Re:\s*/i, '')}`
         : `Message from ${ASSISTANT_NAME}`;
 
+      const startMs = Date.now();
       await callMcpTool(this.config.workspaceMcpUrl, 'send_gmail_message', {
         to: recipient,
         subject,
@@ -152,8 +154,18 @@ export class EmailChannel implements Channel {
         ...(threadInfo?.threadId ? { thread_id: threadInfo.threadId } : {}),
       });
 
+      this.opts.onAuditEvent?.({
+        type: 'audit.delivery_result',
+        channel: 'email',
+        data: { chatJid: jid, accepted: true, durationMs: Date.now() - startMs },
+      });
       logger.info({ to: recipient, subject }, 'Email sent');
     } catch (err) {
+      this.opts.onAuditEvent?.({
+        type: 'audit.delivery_result',
+        channel: 'email',
+        data: { chatJid: jid, accepted: false, error: err instanceof Error ? err.message : String(err), durationMs: 0 },
+      });
       logger.error({ err, jid }, 'Failed to send email');
       throw err;
     }
@@ -222,10 +234,10 @@ export class EmailChannel implements Channel {
         const content = formatEmailContent(email);
 
         // Emit chat metadata
-        this.opts.onChatMetadata(jid, timestamp, senderName, 'email', false);
+        this.opts.messageBus.emit(new ChatMetadata('email', jid, { name: senderName, channel: 'email', isGroup: false })).catch(() => {});
 
         // Emit the message
-        this.opts.onMessage(jid, {
+        const emailMessage = {
           id: `email-${email.id}`,
           chat_jid: jid,
           sender: `email:${senderEmail}`,
@@ -234,7 +246,22 @@ export class EmailChannel implements Channel {
           timestamp,
           is_from_me: false,
           is_bot_message: false,
+        };
+
+        this.opts.onAuditEvent?.({
+          type: 'audit.message_inbound',
+          channel: 'email',
+          data: {
+            chatJid: jid,
+            sender: senderEmail,
+            senderName,
+            messageId: email.id,
+            isGroup: false,
+            contentLength: content.length,
+          },
         });
+
+        this.opts.messageBus.emit(new InboundMessage('email', jid, emailMessage, { channel: 'email' })).catch(() => {});
 
         if (timestamp > latestTimestamp) {
           latestTimestamp = timestamp;

@@ -97,18 +97,18 @@ vi.mock('@whiskeysockets/baileys', () => {
 
 import { WhatsAppChannel, WhatsAppChannelOpts } from './whatsapp.js';
 import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db/index.js';
-import { MessageBus } from '../types.js';
+import { MessageBus, InboundMessage, ChatMetadata } from '../types.js';
 
 // --- Test helpers ---
 
 function stubBus(): MessageBus {
-  return new MessageBus();
+  const bus = new MessageBus();
+  vi.spyOn(bus, 'emit').mockResolvedValue(undefined);
+  return bus;
 }
 
 function createTestOpts(overrides?: Partial<WhatsAppChannelOpts>): WhatsAppChannelOpts {
   return {
-    onMessage: vi.fn(),
-    onChatMetadata: vi.fn(),
     registeredGroups: vi.fn(() => ({
       'registered@g.us': {
         name: 'Test Group',
@@ -324,22 +324,20 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        'registered@g.us',
-        expect.any(String),
-        undefined,
-        'whatsapp',
-        true,
-      );
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'registered@g.us',
-        expect.objectContaining({
-          id: 'msg-1',
-          content: 'Hello Andy',
-          sender_name: 'Alice',
-          is_from_me: false,
-        }),
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const metaCall = emitCalls.find(([e]) => e instanceof ChatMetadata);
+      expect(metaCall).toBeDefined();
+      expect((metaCall![0] as ChatMetadata).jid).toBe('registered@g.us');
+      expect((metaCall![0] as ChatMetadata).isGroup).toBe(true);
+
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeDefined();
+      const msg = inboundCall![0] as InboundMessage;
+      expect(msg.jid).toBe('registered@g.us');
+      expect(msg.message.id).toBe('msg-1');
+      expect(msg.message.content).toBe('Hello Andy');
+      expect(msg.message.sender_name).toBe('Alice');
+      expect(msg.message.is_from_me).toBe(false);
     });
 
     it('only emits metadata for unregistered groups', async () => {
@@ -362,14 +360,14 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        'unregistered@g.us',
-        expect.any(String),
-        undefined,
-        'whatsapp',
-        true,
-      );
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const metaCall = emitCalls.find(([e]) => e instanceof ChatMetadata);
+      expect(metaCall).toBeDefined();
+      expect((metaCall![0] as ChatMetadata).jid).toBe('unregistered@g.us');
+      expect((metaCall![0] as ChatMetadata).isGroup).toBe(true);
+
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeUndefined();
     });
 
     it('ignores status@broadcast messages', async () => {
@@ -390,8 +388,11 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onChatMetadata).not.toHaveBeenCalled();
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const metaCall = emitCalls.find(([e]) => e instanceof ChatMetadata);
+      expect(metaCall).toBeUndefined();
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeUndefined();
     });
 
     it('ignores messages with no content', async () => {
@@ -412,7 +413,9 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeUndefined();
     });
 
     it('extracts text from extendedTextMessage', async () => {
@@ -437,10 +440,10 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'registered@g.us',
-        expect.objectContaining({ content: 'A reply message' }),
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeDefined();
+      expect((inboundCall![0] as InboundMessage).message.content).toBe('A reply message');
     });
 
     it('extracts caption from imageMessage', async () => {
@@ -465,10 +468,10 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'registered@g.us',
-        expect.objectContaining({ content: 'Check this photo' }),
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeDefined();
+      expect((inboundCall![0] as InboundMessage).message.content).toBe('Check this photo');
     });
 
     it('extracts caption from videoMessage', async () => {
@@ -493,10 +496,10 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'registered@g.us',
-        expect.objectContaining({ content: 'Watch this' }),
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeDefined();
+      expect((inboundCall![0] as InboundMessage).message.content).toBe('Watch this');
     });
 
     it('handles message with no extractable text (e.g. voice note without caption)', async () => {
@@ -522,7 +525,9 @@ describe('WhatsAppChannel', () => {
       ]);
 
       // Skipped — no text content to process
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeUndefined();
     });
 
     it('uses sender JID when pushName is absent', async () => {
@@ -545,10 +550,10 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'registered@g.us',
-        expect.objectContaining({ sender_name: '5551234' }),
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const inboundCall = emitCalls.find(([e]) => e instanceof InboundMessage);
+      expect(inboundCall).toBeDefined();
+      expect((inboundCall![0] as InboundMessage).message.sender_name).toBe('5551234');
     });
   });
 
@@ -586,13 +591,11 @@ describe('WhatsAppChannel', () => {
       ]);
 
       // Should be translated to phone JID
-      expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        '1234567890@s.whatsapp.net',
-        expect.any(String),
-        undefined,
-        'whatsapp',
-        false,
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const metaCall = emitCalls.find(([e]) => e instanceof ChatMetadata);
+      expect(metaCall).toBeDefined();
+      expect((metaCall![0] as ChatMetadata).jid).toBe('1234567890@s.whatsapp.net');
+      expect((metaCall![0] as ChatMetadata).isGroup).toBe(false);
     });
 
     it('passes through non-LID JIDs unchanged', async () => {
@@ -615,13 +618,11 @@ describe('WhatsAppChannel', () => {
         },
       ]);
 
-      expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        'registered@g.us',
-        expect.any(String),
-        undefined,
-        'whatsapp',
-        true,
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const metaCall = emitCalls.find(([e]) => e instanceof ChatMetadata);
+      expect(metaCall).toBeDefined();
+      expect((metaCall![0] as ChatMetadata).jid).toBe('registered@g.us');
+      expect((metaCall![0] as ChatMetadata).isGroup).toBe(true);
     });
 
     it('passes through unknown LID JIDs unchanged', async () => {
@@ -644,13 +645,11 @@ describe('WhatsAppChannel', () => {
       ]);
 
       // Unknown LID passes through unchanged
-      expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        '0000000000@lid',
-        expect.any(String),
-        undefined,
-        'whatsapp',
-        false,
-      );
+      const emitCalls = vi.mocked(opts.messageBus.emit).mock.calls;
+      const metaCall = emitCalls.find(([e]) => e instanceof ChatMetadata);
+      expect(metaCall).toBeDefined();
+      expect((metaCall![0] as ChatMetadata).jid).toBe('0000000000@lid');
+      expect((metaCall![0] as ChatMetadata).isGroup).toBe(false);
     });
   });
 

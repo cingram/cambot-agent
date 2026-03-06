@@ -3,6 +3,7 @@ import readline from 'readline';
 import { ASSISTANT_NAME, MAIN_GROUP_FOLDER } from '../config/config.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
+import { InboundMessage, ChatMetadata } from '../bus/index.js';
 
 const CLI_JID = 'cli:console';
 
@@ -38,9 +39,24 @@ export class CliChannel implements Channel {
       if (!text) return;
 
       const timestamp = new Date().toISOString();
-      this.opts.onChatMetadata(CLI_JID, timestamp, 'CLI', 'cli', false);
-      this.opts.onMessage(CLI_JID, {
-        id: `cli-${Date.now()}`,
+      const msgId = `cli-${Date.now()}`;
+
+      this.opts.onAuditEvent?.({
+        type: 'audit.message_inbound',
+        channel: 'cli',
+        data: {
+          chatJid: CLI_JID,
+          sender: 'cli:user',
+          senderName: 'User',
+          messageId: msgId,
+          isGroup: false,
+          contentLength: text.length,
+        },
+      });
+
+      this.opts.messageBus.emit(new ChatMetadata('cli', CLI_JID, { name: 'CLI', channel: 'cli', isGroup: false })).catch(() => {});
+      this.opts.messageBus.emit(new InboundMessage('cli', CLI_JID, {
+        id: msgId,
         chat_jid: CLI_JID,
         sender: 'cli:user',
         sender_name: 'User',
@@ -48,7 +64,7 @@ export class CliChannel implements Channel {
         timestamp,
         is_from_me: false,
         is_bot_message: false,
-      });
+      }, { channel: 'cli' })).catch(() => {});
     });
 
     this.rl.on('close', () => {

@@ -4,10 +4,17 @@ import path from 'path';
 import {
   ADMIN_JID,
   ADMIN_TRIGGER,
+  ASSISTANT_NAME,
+  CONTENT_PIPE_BLOCK_CRITICAL,
+  CONTENT_PIPE_ENABLED,
+  CONTENT_PIPE_MODEL,
+  CONTENT_PIPE_RAW_TTL_DAYS,
+  CONTENT_PIPE_UNTRUSTED_CHANNELS,
   CONTEXT_TOKEN_BUDGET,
   DATA_DIR,
   STORE_DIR,
   WORKFLOW_CONTAINER_TIMEOUT,
+  WORKSPACE_MCP_PORT,
 } from '../config/config.js';
 import { getLeadAgentId, loadAgentsConfig, resolveAgentImage } from '../agents/agents.js';
 import { buildIntegrationDefinitions, createIntegrationManager } from '../integrations/index.js';
@@ -22,8 +29,6 @@ import {
   getAgentDefinition,
   getDatabase,
   initDatabase,
-  storeChatMetadata,
-  storeMessage,
 } from '../db/index.js';
 import { GroupQueue } from '../groups/group-queue.js';
 import { startIpcWatcher } from '../ipc/watcher.js';
@@ -32,10 +37,9 @@ import { startWorkflowSchedulerLoop } from '../workflows/workflow-scheduler.js';
 import {
   Channel,
   ExecutionContext,
-  NewMessage,
-  createMessageBus,
 } from '../types.js';
 import type { MessageBus } from '../types.js';
+import { createAppBus, type AppBus } from '../bus/index.js';
 import { logger } from '../logger.js';
 import { createCustomAgentService, type CustomAgentService } from '../agents/custom-agent-service.js';
 import { createShadowAgent } from '../agents/shadow-agent.js';
@@ -49,20 +53,39 @@ import { RouterState } from './router-state.js';
 import { BusHandlerRegistry } from './bus-handlers.js';
 import { AgentRunner } from './agent-runner.js';
 import { GroupMessageProcessor } from './group-message-processor.js';
-import { MessageLoop } from './message-loop.js';
+import { registerMessageRouter } from './message-router.js';
+import { recoverPendingMessages } from './message-recovery.js';
+import { createAuditEmitter, type AuditEmitter } from '../audit/index.js';
+import { createInputSanitizer, createInjectionDetector } from 'cambot-core';
+import { createSummarizer } from '../pipes/summarizer.js';
+import { createEmailPipe } from '../pipes/email-pipe.js';
+import { registerContentPipeHandler } from '../pipes/content-pipe-handler.js';
+import { createRawContentRepository, type RawContentRepository } from '../db/raw-content-repository.js';
+import type { ContentPipe } from '../pipes/content-pipe.js';
+import { createAgentRepository, type AgentRepository } from '../db/agent-repository.js';
+import { createPersistentAgentBootstrap } from '../agents/persistent-agent-bootstrap.js';
+import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
+import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
+import { GROUPS_DIR } from '../config/config.js';
+import { getSession, setSession } from '../db/index.js';
 
 export class CamBotApp {
   private state = new RouterState();
   private queue = new GroupQueue();
   private channels: Channel[] = [];
   private bus!: MessageBus;
+  private appBus: AppBus | null = null;
   private workflowService: WorkflowService | null = null;
   private workflowBuilderService: WorkflowBuilderService | null = null;
   private customAgentService: CustomAgentService | null = null;
   private interceptor: LifecycleInterceptor | null = null;
   private integrationMgr: IntegrationManager | null = null;
-  private shadowInterceptor: (chatJid: string, msg: NewMessage) => boolean = () => false;
   private busHandlers!: BusHandlerRegistry;
+  private auditEmitter: AuditEmitter | null = null;
+  private rawContentStore: RawContentRepository | null = null;
+  private contentPipeUnsub: (() => void) | null = null;
+  private contentPipe: ContentPipe | null = null;
+  private persistentAgentHandler: PersistentAgentHandler | null = null;
 
   async start(): Promise<void> {
     this.installProcessHandlers();
@@ -72,7 +95,8 @@ export class CamBotApp {
     loadAgentsConfig();
     this.initLifecycleInterceptor();
 
-    this.bus = createMessageBus();
+    this.appBus = createAppBus({ db: getDatabase() });
+    this.bus = this.appBus.bus;
     this.initWorkflowService();
     await this.initWorkflowBuilderService();
     this.initCustomAgentService();
@@ -81,12 +105,16 @@ export class CamBotApp {
       bus: this.bus,
       getChannels: () => this.channels,
       getIntegrationManager: () => this.integrationMgr,
+      getInterceptor: () => this.interceptor,
+      auditEmitter: this.auditEmitter ?? undefined,
     });
     this.busHandlers.register();
+    this.initContentPipe();
 
     this.installShutdownHandlers();
     await this.initIntegrations();
     this.initShadowAgent();
+    this.initPersistentAgents();
     this.startSubsystems();
 
     // Build message pipeline
@@ -110,21 +138,19 @@ export class CamBotApp {
 
     this.queue.setProcessMessagesFn(processor.process.bind(processor));
 
-    const messageLoop = new MessageLoop({
+    recoverPendingMessages(this.state, this.queue);
+
+    registerMessageRouter({
+      bus: this.bus,
       state: this.state,
       queue: this.queue,
-      bus: this.bus,
       getChannels: () => this.channels,
       getInterceptor: () => this.interceptor,
     });
 
-    messageLoop.recoverPendingMessages();
     this.startStaleCleanup();
 
-    messageLoop.start().catch((err) => {
-      logger.fatal({ err }, 'Message loop crashed unexpectedly');
-      process.exit(1);
-    });
+    logger.info(`CamBot-Agent running (trigger: @${ASSISTANT_NAME})`);
   }
 
   private installProcessHandlers(): void {
@@ -165,8 +191,15 @@ export class CamBotApp {
         contextTokenBudget: CONTEXT_TOKEN_BUDGET,
       });
       const core = createCamBotCore(coreConfig);
-      this.interceptor = createLifecycleInterceptor(core, logger);
+      this.auditEmitter = createAuditEmitter({
+        securityEventStore: core.securityEventStore,
+        db: core.db,
+        logger,
+      });
+
+      this.interceptor = createLifecycleInterceptor(core, logger, this.auditEmitter);
       this.interceptor.startPeriodicTasks();
+
       logger.info('Lifecycle interceptor initialized');
     } catch (err) {
       logger.warn({ err }, 'Failed to initialize lifecycle interceptor, running without memory');
@@ -345,10 +378,58 @@ export class CamBotApp {
     });
   }
 
+  private initContentPipe(): void {
+    if (!CONTENT_PIPE_ENABLED) {
+      logger.info('Content pipe disabled (CONTENT_PIPE_ENABLED=false)');
+      return;
+    }
+
+    const apiKey = readEnvFile(['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY
+      || process.env.ANTHROPIC_API_KEY || '';
+
+    if (!apiKey) {
+      logger.warn('Content pipe disabled: no ANTHROPIC_API_KEY available for summarizer');
+      return;
+    }
+
+    const summarizer = createSummarizer({ apiKey, model: CONTENT_PIPE_MODEL });
+    this.contentPipe = createEmailPipe({
+      summarizer,
+      injectionDetector: createInjectionDetector(),
+      inputSanitizer: createInputSanitizer(),
+    });
+
+    this.rawContentStore = createRawContentRepository(
+      getDatabase(),
+      CONTENT_PIPE_RAW_TTL_DAYS,
+    );
+
+    this.contentPipeUnsub = registerContentPipeHandler({
+      bus: this.bus,
+      pipe: this.contentPipe,
+      rawContentStore: this.rawContentStore,
+      untrustedChannels: CONTENT_PIPE_UNTRUSTED_CHANNELS,
+      blockOnCritical: CONTENT_PIPE_BLOCK_CRITICAL,
+    });
+
+    // Cleanup expired raw content on startup
+    const cleaned = this.rawContentStore.cleanupExpired();
+    if (cleaned > 0) {
+      logger.info({ cleaned }, 'Cleaned up expired raw content');
+    }
+
+    logger.info(
+      { channels: [...CONTENT_PIPE_UNTRUSTED_CHANNELS], model: CONTENT_PIPE_MODEL },
+      'Content pipe initialized',
+    );
+  }
+
   private installShutdownHandlers(): void {
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received');
       if (this.interceptor) await this.interceptor.close();
+      if (this.persistentAgentHandler) this.persistentAgentHandler.destroy();
+      if (this.appBus) await this.appBus.shutdown();
       await this.queue.shutdown(10000);
       if (this.integrationMgr) await this.integrationMgr.shutdown();
       process.exit(0);
@@ -358,19 +439,18 @@ export class CamBotApp {
   }
 
   private async initIntegrations(): Promise<void> {
+    const auditEmitter = this.auditEmitter;
     const channelOpts = {
-      onMessage: (chatJid: string, msg: NewMessage) => {
-        if (this.shadowInterceptor(chatJid, msg)) return;
-        storeMessage(msg);
-        this.interceptor?.ingestMessage(msg);
-      },
-      onChatMetadata: (chatJid: string, timestamp: string, name?: string, channel?: string, isGroup?: boolean) =>
-        storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
       registeredGroups: () => this.state.getRegisteredGroups(),
       registerGroup: (jid: string, group: any) => this.state.registerGroup(jid, group),
       messageBus: this.bus,
       workflowService: this.workflowService ?? undefined,
       channelNames: () => this.channels.map(ch => ch.name),
+      onAuditEvent: auditEmitter
+        ? (event: { type: string; channel: string; data: Record<string, unknown> }) => {
+            this.routeAuditEvent(event);
+          }
+        : undefined,
     };
 
     this.integrationMgr = createIntegrationManager(buildIntegrationDefinitions());
@@ -379,13 +459,61 @@ export class CamBotApp {
   }
 
   private initShadowAgent(): void {
-    this.shadowInterceptor = createShadowAgent({
+    createShadowAgent({
       adminJid: ADMIN_JID,
       adminTrigger: ADMIN_TRIGGER,
       channels: this.integrationMgr?.getActiveChannels() ?? this.channels,
       messageBus: this.bus,
       getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
     });
+  }
+
+  private initPersistentAgents(): void {
+    try {
+      const db = getDatabase();
+      const agentRepo = createAgentRepository(db);
+      agentRepo.ensureTable();
+
+      const agents = agentRepo.getAll();
+      if (agents.length === 0) {
+        logger.info('No persistent agents registered, skipping persistent agent init');
+        return;
+      }
+
+      // Bootstrap workspace folders
+      const bootstrap = createPersistentAgentBootstrap(GROUPS_DIR);
+      bootstrap.bootstrapAll(agents);
+
+      // Create spawner with scoped MCP servers
+      const spawner = createPersistentAgentSpawner({
+        agentRepo,
+        getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
+        getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
+        getSession: (folder) => getSession(folder),
+        setSession: (folder, sessionId) => setSession(folder, sessionId),
+        messageBus: this.bus,
+        onTelemetry: (telemetry, channel) => {
+          this.interceptor?.recordTelemetry(telemetry, channel);
+        },
+        onContainerError: (error, durationMs, channel) => {
+          this.interceptor?.recordContainerError(error, durationMs, channel);
+        },
+      });
+
+      // Create unified handler (routes messages + resilience in one place)
+      this.persistentAgentHandler = createPersistentAgentHandler({
+        messageBus: this.bus,
+        agentRepo,
+        spawner,
+      });
+
+      logger.info(
+        { agentCount: agents.length, agents: agents.map(a => a.id) },
+        'Persistent agents initialized',
+      );
+    } catch (err) {
+      logger.error({ err }, 'Failed to initialize persistent agents');
+    }
   }
 
   private startSubsystems(): void {
@@ -414,7 +542,91 @@ export class CamBotApp {
       resolveAgentImage,
       getAgentDefinition,
       integrationManager: this.integrationMgr ?? undefined,
+      contentPipe: this.contentPipe ?? undefined,
+      rawContentStore: this.rawContentStore ?? undefined,
+      workspaceMcpUrl: `http://localhost:${WORKSPACE_MCP_PORT}/mcp`,
     });
+  }
+
+  private routeAuditEvent(event: { type: string; channel: string; data: Record<string, unknown> }): void {
+    if (!this.auditEmitter) return;
+    const d = event.data;
+    const corrId = (d.correlationId as string) ?? '';
+    try {
+      switch (event.type) {
+        case 'audit.webhook_received':
+          this.auditEmitter.webhookReceived({
+            channel: event.channel,
+            correlationId: corrId || `${event.channel}:webhook:${(d.webhookId as string) ?? 'unknown'}`,
+            sourceIp: d.sourceIp as string,
+            method: d.method as string,
+            path: d.path as string,
+            userAgent: d.userAgent as string,
+            authProvided: d.authProvided as boolean,
+            authValid: d.authValid as boolean,
+            responseCode: d.responseCode as number,
+            durationMs: d.durationMs as number,
+            webhookId: d.webhookId as string | undefined,
+            contentLength: d.contentLength as number,
+          });
+          break;
+        case 'audit.webhook_auth_failed':
+          this.auditEmitter.webhookAuthFailed({
+            channel: event.channel,
+            correlationId: corrId || `${event.channel}:webhook:unknown`,
+            sourceIp: d.sourceIp as string,
+            headerName: d.headerName as string,
+            path: d.path as string,
+          });
+          break;
+        case 'audit.authorization_decision':
+          this.auditEmitter.authorizationDecision({
+            channel: event.channel,
+            correlationId: corrId || `${event.channel}:${d.chatJid as string}:${d.messageId as string}`,
+            chatJid: d.chatJid as string,
+            sender: d.sender as string,
+            messageId: d.messageId as string,
+            decision: d.decision as 'allowed' | 'dropped_unregistered',
+            groupFolder: d.groupFolder as string | undefined,
+          });
+          break;
+        case 'audit.delivery_result':
+          this.auditEmitter.deliveryResult({
+            channel: event.channel,
+            correlationId: corrId || `${event.channel}:${d.chatJid as string}`,
+            chatJid: d.chatJid as string,
+            accepted: d.accepted as boolean,
+            providerMessageId: d.providerMessageId as string | undefined,
+            error: d.error as string | undefined,
+            durationMs: d.durationMs as number,
+          });
+          break;
+        case 'audit.webhook_dedup':
+          this.auditEmitter.webhookDedup({
+            channel: event.channel,
+            correlationId: corrId || `${event.channel}:webhook:${d.webhookId as string}`,
+            webhookId: d.webhookId as string,
+          });
+          break;
+        case 'audit.message_inbound':
+          this.auditEmitter.messageInbound({
+            channel: event.channel,
+            correlationId: corrId || `${event.channel}:${d.chatJid as string}:${d.messageId as string}`,
+            chatJid: d.chatJid as string,
+            sender: d.sender as string,
+            senderName: d.senderName as string,
+            messageId: d.messageId as string,
+            isGroup: d.isGroup as boolean,
+            contentLength: d.contentLength as number,
+            webhookId: d.webhookId as string | undefined,
+          });
+          break;
+        default:
+          break;
+      }
+    } catch (err) {
+      logger.warn({ err, auditType: event.type }, 'Failed to route audit event');
+    }
   }
 
   private startStaleCleanup(): void {

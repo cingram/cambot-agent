@@ -13,6 +13,8 @@ const envConfig = readEnvFile([
   'ADMIN_TRIGGER',
   'ADMIN_KEY',
   'WEB_CHANNEL_PORT',
+  'WEB_AUTH_TOKEN',
+  'WEB_ALLOWED_ORIGINS',
   'WORKSPACE_MCP_PORT',
   'MEMORY_MODE',
   'CONTEXT_TOKEN_BUDGET',
@@ -26,7 +28,16 @@ export const WEB_CHANNEL_PORT = parseInt(
   process.env.WEB_CHANNEL_PORT || envConfig.WEB_CHANNEL_PORT || '3100',
   10,
 );
-export const POLL_INTERVAL = 2000;
+// Web channel auth token (auto-generated if not set — see src/channels/web-auth.ts)
+export const WEB_AUTH_TOKEN =
+  process.env.WEB_AUTH_TOKEN || envConfig.WEB_AUTH_TOKEN || '';
+
+// Allowed origins for web channel CORS and WebSocket upgrade (comma-separated).
+// Defaults to the cambot-core-ui dev server origin.
+export const WEB_ALLOWED_ORIGINS: string[] = (
+  process.env.WEB_ALLOWED_ORIGINS || envConfig.WEB_ALLOWED_ORIGINS || 'http://localhost:3000'
+).split(',').map((s) => s.trim()).filter(Boolean);
+
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
@@ -103,6 +114,24 @@ export const MEMORY_MODE: MemoryMode =
 export const CONTEXT_TOKEN_BUDGET = parseInt(
   process.env.CONTEXT_TOKEN_BUDGET || envConfig.CONTEXT_TOKEN_BUDGET || '4000',
   10,
+);
+
+// Content Pipe — untrusted input sanitization
+export const CONTENT_PIPE_ENABLED =
+  (process.env.CONTENT_PIPE_ENABLED ?? 'true') !== 'false';
+export const CONTENT_PIPE_MODEL =
+  process.env.CONTENT_PIPE_MODEL || 'claude-haiku-4-5-20251001';
+export const CONTENT_PIPE_RAW_TTL_DAYS = parseInt(
+  process.env.CONTENT_PIPE_RAW_TTL_DAYS || '7',
+  10,
+);
+export const CONTENT_PIPE_BLOCK_CRITICAL =
+  process.env.CONTENT_PIPE_BLOCK_CRITICAL === 'true';
+export const CONTENT_PIPE_UNTRUSTED_CHANNELS = new Set(
+  (process.env.CONTENT_PIPE_UNTRUSTED_CHANNELS || 'email')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 );
 
 // Heartbeat monitoring interval (host polls container heartbeat file at this rate)

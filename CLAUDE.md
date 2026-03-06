@@ -4,7 +4,7 @@ Personal Claude assistant. See [README.md](README.md) for philosophy and setup. 
 
 ## Quick Context
 
-Single Node.js process that connects to WhatsApp, routes messages to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+Single Node.js process that connects to channels (WhatsApp, email, web, CLI), routes messages via a reactive event bus to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory. See [docs/BUS-ARCHITECTURE.md](docs/BUS-ARCHITECTURE.md) for the definitive bus reference.
 
 ## Key Files
 
@@ -12,10 +12,12 @@ Single Node.js process that connects to WhatsApp, routes messages to Claude Agen
 |------|---------|
 | `src/main.ts` | Entry point (~15 lines, boots CamBotApp) |
 | `src/orchestrator/app.ts` | CamBotApp facade: init sequence, shutdown, wiring |
+| `src/bus/create-app-bus.ts` | Bus composition root: middleware wiring |
+| `src/orchestrator/message-router.ts` | Reactive bus handler: routes messages to containers |
+| `src/orchestrator/bus-handlers.ts` | Core handlers: storage, delivery, audit |
 | `src/channels/whatsapp.ts` | WhatsApp connection, auth, send/receive |
 | `src/ipc/watcher.ts` | IPC watcher polling loop |
 | `src/ipc/task-handler.ts` | IPC task processing (schedule, workflows, agents) |
-| `src/utils/router.ts` | Message formatting and outbound routing |
 | `src/config/config.ts` | Trigger pattern, paths, intervals |
 | `src/container/runner.ts` | Spawns agent containers with mounts |
 | `src/scheduling/task-scheduler.ts` | Runs scheduled tasks |
