@@ -486,7 +486,6 @@ export class CamBotApp {
 
       // Create spawner with scoped MCP servers
       const spawner = createPersistentAgentSpawner({
-        agentRepo,
         getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
         getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
         getSession: (folder) => getSession(folder),

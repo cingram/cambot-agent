@@ -1,13 +1,20 @@
 /**
  * Persistent Agent Spawner — Implements ContainerSpawner for persistent agents.
  *
- * Reads agent config from the repository, builds a scoped ExecutionContext,
- * filters MCP servers to only those the agent is allowed, and delegates
- * to runContainerAgent.
+ * Builds a scoped ExecutionContext, filters MCP servers to only those the
+ * agent is allowed, and delegates to runContainerAgent.
  */
 import { execFile } from 'child_process';
 
-import type { AgentRepository } from '../db/agent-repository.js';
+import type { AgentOptions } from './agents.js';
+import type { ContainerTelemetry } from '../container/runner.js';
+import type { ExecutionContext, MessageBus, RegisteredAgent } from '../types.js';
+import { runContainerAgent } from '../container/runner.js';
+import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
+import { OutboundMessage } from '../bus/index.js';
+import { logger } from '../logger.js';
+
+// ── Public types ───────────────────────────────────────────────
 
 /** Result from spawning and running an agent container. */
 export interface AgentExecutionResult {
@@ -18,15 +25,15 @@ export interface AgentExecutionResult {
 
 /** Abstraction over container spawning. */
 export interface ContainerSpawner {
-  spawn(agentId: string, prompt: string, callerGroup: string, timeoutMs: number): Promise<AgentExecutionResult>;
+  spawn(
+    agent: RegisteredAgent,
+    prompt: string,
+    callerGroup: string,
+    timeoutMs: number,
+  ): Promise<AgentExecutionResult>;
 }
-import type { AgentOptions } from './agents.js';
-import type { ContainerTelemetry } from '../container/runner.js';
-import type { ExecutionContext, MessageBus } from '../types.js';
-import { runContainerAgent } from '../container/runner.js';
-import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
-import { OutboundMessage } from '../bus/index.js';
-import { logger } from '../logger.js';
+
+// ── Dependencies ───────────────────────────────────────────────
 
 interface McpServerEntry {
   name: string;
@@ -35,7 +42,6 @@ interface McpServerEntry {
 }
 
 export interface PersistentAgentSpawnerDeps {
-  agentRepo: AgentRepository;
   getActiveMcpServers: () => McpServerEntry[] | undefined;
   getAgentOptions: () => AgentOptions;
   getSession: (folder: string) => string | undefined;
@@ -45,23 +51,21 @@ export interface PersistentAgentSpawnerDeps {
   onContainerError?: (error: string, durationMs: number, channel: string) => void;
 }
 
+// ── Factory ────────────────────────────────────────────────────
+
 export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): ContainerSpawner {
   return {
     async spawn(
-      agentId: string,
+      agent: RegisteredAgent,
       prompt: string,
       callerGroup: string,
       timeoutMs: number,
     ): Promise<AgentExecutionResult> {
       const startTime = Date.now();
-      const agent = deps.agentRepo.getById(agentId);
-      if (!agent) {
-        return {
-          status: 'error',
-          content: `Persistent agent "${agentId}" not found in registry`,
-          durationMs: Date.now() - startTime,
-        };
-      }
+      logger.debug(
+        { agentId: agent.id, folder: agent.folder, callerGroup, timeoutMs },
+        'Starting persistent agent container spawn',
+      );
 
       const execution: ExecutionContext = {
         name: agent.name,
@@ -97,7 +101,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
           (_proc, containerName) => {
             spawnedContainerName = containerName;
             logger.debug(
-              { agentId, containerName, callerGroup },
+              { agentId: agent.id, containerName, callerGroup },
               'Persistent agent container spawned',
             );
           },
@@ -113,7 +117,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
               await deps.messageBus.emit(
                 new OutboundMessage('persistent-agent', callerGroup, result.result, {
                   groupFolder: agent.folder,
-                  agentId,
+                  agentId: agent.id,
                 }),
               );
             }
@@ -141,31 +145,41 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
         }
 
         if (output.status === 'error') {
+          const durationMs = Date.now() - startTime;
+          logger.warn(
+            { agentId: agent.id, durationMs, error: output.error },
+            'Persistent agent container returned error',
+          );
           if (deps.onContainerError) {
             deps.onContainerError(
-              `Persistent agent ${agentId} failed: ${output.error || 'unknown'}`,
-              Date.now() - startTime,
+              `Persistent agent ${agent.id} failed: ${output.error || 'unknown'}`,
+              durationMs,
               callerGroup,
             );
           }
           return {
             status: 'error',
             content: output.error || 'Container execution failed',
-            durationMs: Date.now() - startTime,
+            durationMs,
           };
         }
 
+        const durationMs = Date.now() - startTime;
+        logger.debug(
+          { agentId: agent.id, durationMs, callerGroup },
+          'Persistent agent container completed successfully',
+        );
         return {
           status: 'success',
           content: finalResult,
-          durationMs: Date.now() - startTime,
+          durationMs,
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        logger.error({ agentId, err }, 'Persistent agent spawn failed');
+        logger.error({ agentId: agent.id, err }, 'Persistent agent spawn failed');
         if (deps.onContainerError) {
           deps.onContainerError(
-            `Persistent agent ${agentId} crashed: ${errorMsg}`,
+            `Persistent agent ${agent.id} crashed: ${errorMsg}`,
             Date.now() - startTime,
             callerGroup,
           );

@@ -102,7 +102,7 @@ describe('createPersistentAgentHandler', () => {
     await messageBus.emit(event);
 
     expect(spawner.spawn).toHaveBeenCalledWith(
-      'wa-agent',
+      expect.objectContaining({ id: 'wa-agent' }),
       'test message',
       'whatsapp:jid',
       60_000,
@@ -342,7 +342,12 @@ describe('createPersistentAgentHandler', () => {
     const tgEvent = makeInboundEvent('telegram');
     await messageBus.emit(tgEvent);
     expect(tgEvent.cancelled).toBe(true);
-    expect(spawner.spawn).toHaveBeenCalledWith('tg-agent', 'Hello', 'telegram:jid', 60_000);
+    expect(spawner.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'tg-agent' }),
+      'Hello',
+      'telegram:jid',
+      60_000,
+    );
   });
 
   it('destroy() unsubscribes from bus and stops routing', async () => {

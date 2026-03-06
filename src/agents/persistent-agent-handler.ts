@@ -11,7 +11,7 @@
  */
 import type { AgentRepository } from '../db/agent-repository.js';
 import type { ContainerSpawner } from './persistent-agent-spawner.js';
-import type { MessageBus } from '../types.js';
+import type { MessageBus, RegisteredAgent } from '../types.js';
 import { InboundMessage, OutboundMessage } from '../bus/index.js';
 import { logger } from '../logger.js';
 
@@ -19,7 +19,7 @@ import { logger } from '../logger.js';
 
 type CircuitState = 'closed' | 'open' | 'half-open';
 
-interface AgentState {
+interface AgentResilienceState {
   circuitState: CircuitState;
   failureCount: number;
   cooldownTimer: ReturnType<typeof setTimeout> | null;
@@ -57,7 +57,7 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
     cooldownMs = 30_000,
   } = deps;
 
-  const agentStates = new Map<string, AgentState>();
+  const resilienceStates = new Map<string, AgentResilienceState>();
   let routingTable = agentRepo.buildRoutingTable();
 
   logger.info(
@@ -65,10 +65,10 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
     'Persistent agent routing table built',
   );
 
-  // ── Circuit breaker helpers ────────────────────────────────
+  // ── Helpers ────────────────────────────────────────────────
 
-  function getOrCreateState(agentId: string, concurrencyLimit: number): AgentState {
-    let state = agentStates.get(agentId);
+  function getOrCreateResilienceState(agentId: string, concurrencyLimit: number): AgentResilienceState {
+    let state = resilienceStates.get(agentId);
     if (!state) {
       state = {
         circuitState: 'closed',
@@ -77,19 +77,20 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
         activeCount: 0,
         concurrencyLimit,
       };
-      agentStates.set(agentId, state);
+      resilienceStates.set(agentId, state);
     }
     return state;
   }
 
-  function recordSuccess(state: AgentState): void {
+  function recordSuccess(agentId: string, state: AgentResilienceState): void {
     state.failureCount = 0;
     if (state.circuitState === 'half-open') {
       state.circuitState = 'closed';
+      logger.info({ agentId }, 'Circuit breaker closed after successful half-open test');
     }
   }
 
-  function recordFailure(agentId: string, state: AgentState): void {
+  function recordFailure(agentId: string, state: AgentResilienceState): void {
     state.failureCount++;
     if (state.failureCount >= failureThreshold && state.circuitState === 'closed') {
       state.circuitState = 'open';
@@ -99,6 +100,29 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
         state.cooldownTimer = null;
         logger.info({ agentId }, 'Circuit breaker half-open');
       }, cooldownMs);
+    }
+  }
+
+  function emitErrorReply(jid: string, agentId: string): Promise<void> {
+    return messageBus.emit(
+      new OutboundMessage('persistent-agent', jid,
+        'Sorry, I encountered an error processing your message. Please try again.',
+        { agentId }),
+    );
+  }
+
+  function pruneStaleResilienceStates(): void {
+    const activeAgentIds = new Set(routingTable.values());
+    const pruned: string[] = [];
+    for (const [agentId, state] of resilienceStates) {
+      if (!activeAgentIds.has(agentId)) {
+        if (state.cooldownTimer) clearTimeout(state.cooldownTimer);
+        resilienceStates.delete(agentId);
+        pruned.push(agentId);
+      }
+    }
+    if (pruned.length > 0) {
+      logger.debug({ prunedAgents: pruned }, 'Pruned stale resilience states');
     }
   }
 
@@ -118,60 +142,79 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
       const agent = agentRepo.getById(agentId);
       if (!agent) {
         logger.error({ agentId, channel }, 'Persistent agent not found in repository');
-        await messageBus.emit(
-          new OutboundMessage('persistent-agent', event.jid,
-            'Sorry, I encountered an error processing your message. Please try again.',
-            { agentId }),
-        );
+        await emitErrorReply(event.jid, agentId);
         return;
       }
 
-      const state = getOrCreateState(agentId, agent.concurrency);
+      logger.info(
+        { agentId, channel, jid: event.jid },
+        'Routing inbound message to persistent agent',
+      );
 
+      const state = getOrCreateResilienceState(agentId, agent.concurrency);
       let lastError: Error | undefined;
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
-          await new Promise<void>(resolve =>
-            setTimeout(resolve, retryDelayMs * 2 ** (attempt - 1)),
+          const delayMs = retryDelayMs * 2 ** (attempt - 1);
+          logger.debug(
+            { agentId, attempt, delayMs, maxRetries },
+            'Retrying persistent agent spawn',
           );
+          await new Promise<void>(resolve => setTimeout(resolve, delayMs));
         }
 
         // Circuit breaker
         if (state.circuitState === 'open') {
+          logger.warn({ agentId, circuitState: state.circuitState }, 'Rejected by circuit breaker');
           lastError = new Error(`Circuit open for agent "${agentId}"`);
           break;
         }
 
         // Bulkhead
         if (state.activeCount >= state.concurrencyLimit) {
+          logger.warn(
+            { agentId, activeCount: state.activeCount, concurrencyLimit: state.concurrencyLimit },
+            'Rejected by bulkhead',
+          );
           lastError = new Error(`Bulkhead full for agent "${agentId}"`);
           break;
         }
 
         state.activeCount++;
         try {
-          const result = await spawner.spawn(agentId, event.message.content, event.jid, agent.timeoutMs);
+          const result = await spawner.spawn(agent, event.message.content, event.jid, agent.timeoutMs);
           if (result.status === 'success') {
-            recordSuccess(state);
+            logger.info(
+              { agentId, durationMs: result.durationMs },
+              'Persistent agent query completed',
+            );
+            recordSuccess(agentId, state);
             return;
           }
           lastError = new Error(result.content);
+          logger.warn(
+            { agentId, attempt, err: lastError.message },
+            'Persistent agent spawn returned error',
+          );
           recordFailure(agentId, state);
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
+          logger.warn(
+            { agentId, attempt, err: lastError.message },
+            'Persistent agent spawn threw exception',
+          );
           recordFailure(agentId, state);
         } finally {
           state.activeCount--;
         }
       }
 
-      logger.error({ agentId, err: lastError }, 'Persistent agent query failed');
-      await messageBus.emit(
-        new OutboundMessage('persistent-agent', event.jid,
-          'Sorry, I encountered an error processing your message. Please try again.',
-          { agentId }),
+      logger.error(
+        { agentId, err: lastError, attempts: maxRetries + 1 },
+        'Persistent agent query failed after all retries',
       );
+      await emitErrorReply(event.jid, agentId);
     },
     {
       id: 'persistent-agent-handler',
@@ -184,6 +227,7 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
   return {
     reload(): void {
       routingTable = agentRepo.buildRoutingTable();
+      pruneStaleResilienceStates();
       logger.info(
         { routeCount: routingTable.size, routes: Object.fromEntries(routingTable) },
         'Persistent agent routing table reloaded',
@@ -192,10 +236,11 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
 
     destroy(): void {
       unsubscribe();
-      for (const state of agentStates.values()) {
+      for (const state of resilienceStates.values()) {
         if (state.cooldownTimer) clearTimeout(state.cooldownTimer);
       }
-      agentStates.clear();
+      resilienceStates.clear();
+      logger.debug('Persistent agent handler destroyed');
     },
   };
 }
