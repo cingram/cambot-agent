@@ -3,18 +3,27 @@ import path from 'path';
 
 import { resolveGroupIpcPath } from '../groups/group-folder.js';
 
+function writeIpcResult(
+  sourceGroup: string,
+  subdirectory: string,
+  requestId: string,
+  result: unknown,
+): void {
+  const resultDir = path.join(resolveGroupIpcPath(sourceGroup), subdirectory);
+  fs.mkdirSync(resultDir, { recursive: true });
+
+  const resultFile = path.join(resultDir, `${requestId}.json`);
+  const tempFile = `${resultFile}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(result, null, 2));
+  fs.renameSync(tempFile, resultFile);
+}
+
 export function writeDelegationResult(
   sourceGroup: string,
   delegationId: string,
   result: { status: string; result?: string | null; error?: string },
 ): void {
-  const resultDir = path.join(resolveGroupIpcPath(sourceGroup), 'worker-results');
-  fs.mkdirSync(resultDir, { recursive: true });
-
-  const resultFile = path.join(resultDir, `${delegationId}.json`);
-  const tempFile = `${resultFile}.tmp`;
-  fs.writeFileSync(tempFile, JSON.stringify(result, null, 2));
-  fs.renameSync(tempFile, resultFile);
+  writeIpcResult(sourceGroup, 'worker-results', delegationId, result);
 }
 
 export function writeWorkflowBuildResult(
@@ -22,13 +31,15 @@ export function writeWorkflowBuildResult(
   requestId: string,
   result: unknown,
 ): void {
-  const resultDir = path.join(resolveGroupIpcPath(sourceGroup), 'workflow-results');
-  fs.mkdirSync(resultDir, { recursive: true });
+  writeIpcResult(sourceGroup, 'workflow-results', requestId, result);
+}
 
-  const resultFile = path.join(resultDir, `${requestId}.json`);
-  const tempFile = `${resultFile}.tmp`;
-  fs.writeFileSync(tempFile, JSON.stringify(result, null, 2));
-  fs.renameSync(tempFile, resultFile);
+export function writeAgentResult(
+  sourceGroup: string,
+  requestId: string,
+  result: { status: string; result?: string; error?: string },
+): void {
+  writeIpcResult(sourceGroup, 'agent-results', requestId, result);
 }
 
 export function writeEmailResult(
@@ -36,11 +47,5 @@ export function writeEmailResult(
   requestId: string,
   result: { status: string; result?: string; error?: string },
 ): void {
-  const resultDir = path.join(resolveGroupIpcPath(sourceGroup), 'email-results');
-  fs.mkdirSync(resultDir, { recursive: true });
-
-  const resultFile = path.join(resultDir, `${requestId}.json`);
-  const tempFile = `${resultFile}.tmp`;
-  fs.writeFileSync(tempFile, JSON.stringify(result, null, 2));
-  fs.renameSync(tempFile, resultFile);
+  writeIpcResult(sourceGroup, 'email-results', requestId, result);
 }

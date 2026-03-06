@@ -42,6 +42,8 @@ interface BaseContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  /** When true, agent was spawned via send_to_agent — restricted MCP tools */
+  isInterAgentTarget?: boolean;
   secrets?: Record<string, string>;
   ipcToken?: string;
 }

@@ -86,6 +86,8 @@ export class CamBotApp {
   private contentPipeUnsub: (() => void) | null = null;
   private contentPipe: ContentPipe | null = null;
   private persistentAgentHandler: PersistentAgentHandler | null = null;
+  private agentSpawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner | null = null;
+  private agentRepo: AgentRepository | null = null;
 
   async start(): Promise<void> {
     this.installProcessHandlers();
@@ -484,6 +486,9 @@ export class CamBotApp {
       const bootstrap = createPersistentAgentBootstrap(GROUPS_DIR);
       bootstrap.bootstrapAll(agents);
 
+      // Store repo for IPC inter-agent messaging
+      this.agentRepo = agentRepo;
+
       // Create spawner with scoped MCP servers
       const spawner = createPersistentAgentSpawner({
         getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
@@ -498,6 +503,9 @@ export class CamBotApp {
           this.interceptor?.recordContainerError(error, durationMs, channel);
         },
       });
+
+      // Store spawner for IPC inter-agent messaging
+      this.agentSpawner = spawner;
 
       // Create unified handler (routes messages + resilience in one place)
       this.persistentAgentHandler = createPersistentAgentHandler({
@@ -544,6 +552,8 @@ export class CamBotApp {
       contentPipe: this.contentPipe ?? undefined,
       rawContentStore: this.rawContentStore ?? undefined,
       workspaceMcpUrl: `http://localhost:${WORKSPACE_MCP_PORT}/mcp`,
+      agentSpawner: this.agentSpawner ?? undefined,
+      agentRepo: this.agentRepo ?? undefined,
     });
   }
 

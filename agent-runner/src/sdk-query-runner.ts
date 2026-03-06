@@ -161,6 +161,7 @@ export class SdkQueryRunner {
         chatJid: input.chatJid,
         groupFolder: input.groupFolder,
         isMain: input.isMain,
+        isInterAgentTarget: input.isInterAgentTarget,
       },
       input.mcpServers,
     );

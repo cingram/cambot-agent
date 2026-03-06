@@ -117,7 +117,7 @@ CamBot integrates with Google Workspace (Gmail, Calendar, Tasks, Drive, Docs, Sh
 - **Host-side**: `workspace-mcp` runs as a persistent HTTP service on the host, spawned by `src/utils/workspace-mcp-service.ts`
 - **Container access**: Docker containers connect via `http://host.docker.internal:{port}/mcp` using the Claude Agent SDK's native `type: "http"` MCP support
 - **No Docker changes**: Python/uv are only on the host — no changes to the container image
-- **Email channel**: `src/channels/email.ts` polls Gmail via workspace-mcp and routes inbound emails to the `email-inbox` group
+- **Email channel**: `src/channels/email.ts` polls Gmail via workspace-mcp and emits events to the bus; the persistent `email-agent` handles them
 
 ### Key files
 
@@ -125,7 +125,7 @@ CamBot integrates with Google Workspace (Gmail, Calendar, Tasks, Drive, Docs, Sh
 |------|---------|
 | `src/utils/workspace-mcp-service.ts` | Host-side process manager for workspace-mcp |
 | `src/channels/email.ts` | Email channel (Gmail polling + reply) |
-| `groups/email-inbox/CLAUDE.md` | Email group agent instructions |
+| `groups/email-agent/CLAUDE.md` | Persistent email agent instructions |
 
 ### Configuration
 

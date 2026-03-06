@@ -54,6 +54,8 @@ export interface ContainerInput {
     maxIterations?: number;
     timeoutMs?: number;
   };
+  /** When true, agent was spawned via send_to_agent — restricted MCP tools */
+  isInterAgentTarget?: boolean;
   /** Unique token identifying this container. Used by the agent-runner to
    *  detect when it has been superseded by a newer container (orphan self-exit). */
   ipcToken?: string;
@@ -207,6 +209,7 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'worker-results'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'workflow-results'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'agent-results'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'context'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,

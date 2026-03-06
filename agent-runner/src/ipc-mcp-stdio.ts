@@ -34,6 +34,31 @@ function writeIpcFile(dir: string, data: object): string {
   return filename;
 }
 
+interface IpcPollResult {
+  status: string;
+  result?: string;
+  error?: string;
+}
+
+async function pollForIpcResult(
+  resultFile: string,
+  timeoutMs: number,
+  pollMs = 500,
+): Promise<IpcPollResult | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const raw = fs.readFileSync(resultFile, 'utf-8');
+      try { fs.unlinkSync(resultFile); } catch { /* best-effort cleanup */ }
+      return JSON.parse(raw) as IpcPollResult;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return null;
+}
+
 const server = new McpServer({
   name: 'cambot-agent',
   version: '1.0.0',
@@ -715,32 +740,55 @@ server.tool(
     });
 
     // Poll for result (synchronous — blocks until worker completes)
-    const resultDir = path.join(IPC_DIR, 'worker-results');
-    const resultFile = path.join(resultDir, `${delegationId}.json`);
-    const TIMEOUT_MS = 300_000; // 5 minutes
-    const POLL_MS = 500;
-    const start = Date.now();
-
-    while (Date.now() - start < TIMEOUT_MS) {
-      if (fs.existsSync(resultFile)) {
-        const result = JSON.parse(fs.readFileSync(resultFile, 'utf-8'));
-        try { fs.unlinkSync(resultFile); } catch { /* best-effort cleanup */ }
-        if (result.status === 'error') {
-          return { content: [{ type: 'text' as const, text: `Worker error: ${result.error}` }], isError: true };
-        }
-        return { content: [{ type: 'text' as const, text: result.result }] };
-      }
-      await new Promise((r) => setTimeout(r, POLL_MS));
+    const resultFile = path.join(IPC_DIR, 'worker-results', `${delegationId}.json`);
+    const result = await pollForIpcResult(resultFile, 300_000);
+    if (!result) {
+      return { content: [{ type: 'text' as const, text: 'Worker delegation timed out after 5 minutes' }], isError: true };
     }
+    if (result.status === 'error') {
+      return { content: [{ type: 'text' as const, text: `Worker error: ${result.error}` }], isError: true };
+    }
+    return { content: [{ type: 'text' as const, text: result.result ?? 'No response' }] };
+  },
+);
 
-    return { content: [{ type: 'text' as const, text: 'Worker delegation timed out after 5 minutes' }], isError: true };
+// ── Inter-agent messaging ────────────────────────────────────────
+
+server.tool(
+  'send_to_agent',
+  'Send a message to another persistent agent and wait for its response. '
+  + 'The target agent runs in its own container and returns a result. '
+  + 'Use this for inter-agent communication (e.g., asking the email agent to draft a reply).',
+  {
+    target_agent: z.string().describe('The persistent agent ID (e.g., "email-agent", "test-agent")'),
+    prompt: z.string().describe('The message/task to send to the target agent'),
+  },
+  async (args) => {
+    const requestId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'send_to_agent',
+      requestId,
+      targetAgent: args.target_agent,
+      prompt: args.prompt,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    const resultFile = path.join(IPC_DIR, 'agent-results', `${requestId}.json`);
+    const result = await pollForIpcResult(resultFile, 300_000);
+    if (!result) {
+      return { content: [{ type: 'text' as const, text: `send_to_agent timed out after 5 minutes (target: ${args.target_agent})` }], isError: true };
+    }
+    if (result.status === 'error') {
+      return { content: [{ type: 'text' as const, text: `Agent error: ${result.error}` }], isError: true };
+    }
+    return { content: [{ type: 'text' as const, text: result.result ?? 'No response' }] };
   },
 );
 
 // ── check_email ──────────────────────────────────────────────────
 // Wrapped Gmail search — routes results through the content pipe.
-
-const EMAIL_RESULTS_DIR = path.join(IPC_DIR, 'email-results');
 
 server.tool(
   'check_email',
@@ -763,25 +811,15 @@ server.tool(
       timestamp: new Date().toISOString(),
     });
 
-    // Poll for piped result (host calls workspace-mcp, pipes results, writes response)
-    const resultFile = path.join(EMAIL_RESULTS_DIR, `${requestId}.json`);
-    const TIMEOUT_MS = 60_000; // 1 minute
-    const POLL_MS = 500;
-    const start = Date.now();
-
-    while (Date.now() - start < TIMEOUT_MS) {
-      if (fs.existsSync(resultFile)) {
-        const result = JSON.parse(fs.readFileSync(resultFile, 'utf-8')) as { status: string; result?: string; error?: string };
-        try { fs.unlinkSync(resultFile); } catch { /* best-effort cleanup */ }
-        if (result.status === 'error') {
-          return { content: [{ type: 'text' as const, text: `Email check error: ${result.error}` }], isError: true };
-        }
-        return { content: [{ type: 'text' as const, text: result.result ?? 'No results' }] };
-      }
-      await new Promise((r) => setTimeout(r, POLL_MS));
+    const resultFile = path.join(IPC_DIR, 'email-results', `${requestId}.json`);
+    const result = await pollForIpcResult(resultFile, 60_000);
+    if (!result) {
+      return { content: [{ type: 'text' as const, text: 'Email check timed out after 60 seconds' }], isError: true };
     }
-
-    return { content: [{ type: 'text' as const, text: 'Email check timed out after 60 seconds' }], isError: true };
+    if (result.status === 'error') {
+      return { content: [{ type: 'text' as const, text: `Email check error: ${result.error}` }], isError: true };
+    }
+    return { content: [{ type: 'text' as const, text: result.result ?? 'No results' }] };
   },
 );
 
@@ -809,25 +847,15 @@ server.tool(
       timestamp: new Date().toISOString(),
     });
 
-    // Poll for piped result
-    const resultFile = path.join(EMAIL_RESULTS_DIR, `${requestId}.json`);
-    const TIMEOUT_MS = 60_000;
-    const POLL_MS = 500;
-    const start = Date.now();
-
-    while (Date.now() - start < TIMEOUT_MS) {
-      if (fs.existsSync(resultFile)) {
-        const result = JSON.parse(fs.readFileSync(resultFile, 'utf-8')) as { status: string; result?: string; error?: string };
-        try { fs.unlinkSync(resultFile); } catch { /* best-effort cleanup */ }
-        if (result.status === 'error') {
-          return { content: [{ type: 'text' as const, text: `Email read error: ${result.error}` }], isError: true };
-        }
-        return { content: [{ type: 'text' as const, text: result.result ?? 'No content' }] };
-      }
-      await new Promise((r) => setTimeout(r, POLL_MS));
+    const resultFile = path.join(IPC_DIR, 'email-results', `${requestId}.json`);
+    const result = await pollForIpcResult(resultFile, 60_000);
+    if (!result) {
+      return { content: [{ type: 'text' as const, text: 'Email read timed out after 60 seconds' }], isError: true };
     }
-
-    return { content: [{ type: 'text' as const, text: 'Email read timed out after 60 seconds' }], isError: true };
+    if (result.status === 'error') {
+      return { content: [{ type: 'text' as const, text: `Email read error: ${result.error}` }], isError: true };
+    }
+    return { content: [{ type: 'text' as const, text: result.result ?? 'No content' }] };
   },
 );
 

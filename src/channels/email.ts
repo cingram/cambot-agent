@@ -2,12 +2,11 @@
  * Email Channel — receives emails via Gmail polling and sends replies via workspace-mcp.
  *
  * JID scheme: email:{sender-address} (e.g. email:john@example.com)
- * All emails route to the "email-inbox" group folder.
+ * Emails are routed to the persistent email-agent via the bus.
  *
  * Polls workspace-mcp's Gmail search tool via HTTP (MCP JSON-RPC protocol)
  * to discover unread messages. Tracks last-seen timestamp in SQLite.
  */
-import { ASSISTANT_NAME } from '../config/config.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
 import { InboundMessage, ChatMetadata } from '../bus/index.js';
@@ -17,15 +16,12 @@ export interface EmailChannelConfig {
   workspaceMcpUrl: string;
   /** Poll interval in ms (default: 30000) */
   pollIntervalMs?: number;
-  /** Group folder for email conversations */
-  groupFolder?: string;
   /** Get last poll timestamp from DB */
   getLastPollTimestamp: () => string | null;
   /** Save last poll timestamp to DB */
   setLastPollTimestamp: (ts: string) => void;
 }
 
-const EMAIL_GROUP_FOLDER = 'email-inbox';
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 
 /** JSON-RPC request ID counter */
@@ -108,17 +104,6 @@ export class EmailChannel implements Channel {
   }
 
   async connect(): Promise<void> {
-    const groupFolder = this.config.groupFolder || EMAIL_GROUP_FOLDER;
-
-    // Register the email-inbox group
-    this.opts.registerGroup(`email:inbox`, {
-      name: 'Email Inbox',
-      folder: groupFolder,
-      trigger: `@${ASSISTANT_NAME}`,
-      added_at: new Date().toISOString(),
-      requiresTrigger: false,
-    });
-
     this.connected = true;
 
     // Start polling loop
@@ -144,7 +129,7 @@ export class EmailChannel implements Channel {
       const threadInfo = this.threadMap.get(jid);
       const subject = threadInfo?.subject
         ? `Re: ${threadInfo.subject.replace(/^Re:\s*/i, '')}`
-        : `Message from ${ASSISTANT_NAME}`;
+        : 'Email reply';
 
       const startMs = Date.now();
       await callMcpTool(this.config.workspaceMcpUrl, 'send_gmail_message', {

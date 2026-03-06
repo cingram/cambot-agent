@@ -62,8 +62,9 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
       timeoutMs: number,
     ): Promise<AgentExecutionResult> {
       const startTime = Date.now();
+      const isInterAgent = callerGroup.startsWith('agent:');
       logger.debug(
-        { agentId: agent.id, folder: agent.folder, callerGroup, timeoutMs },
+        { agentId: agent.id, folder: agent.folder, callerGroup, isInterAgent, timeoutMs },
         'Starting persistent agent container spawn',
       );
 
@@ -96,6 +97,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             groupFolder: agent.folder,
             chatJid: callerGroup,
             isMain: agent.isMain,
+            isInterAgentTarget: isInterAgent,
             mcpServers: scopedServers,
           },
           (_proc, containerName) => {
@@ -114,12 +116,16 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             }
             if (result.result) {
               finalResult = result.result;
-              await deps.messageBus.emit(
-                new OutboundMessage('persistent-agent', callerGroup, result.result, {
-                  groupFolder: agent.folder,
-                  agentId: agent.id,
-                }),
-              );
+              // Suppress OutboundMessage for inter-agent calls — the result
+              // goes back via the IPC result file, not through a channel.
+              if (!isInterAgent) {
+                await deps.messageBus.emit(
+                  new OutboundMessage('persistent-agent', callerGroup, result.result, {
+                    groupFolder: agent.folder,
+                    agentId: agent.id,
+                  }),
+                );
+              }
             }
             // Stop the container after delivering the first result
             if (!gotFirstResult) {

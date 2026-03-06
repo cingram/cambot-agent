@@ -18,6 +18,8 @@ import { processMessageFiles } from './message-handler.js';
 import { processTaskIpc } from './task-handler.js';
 import type { ContentPipe } from '../pipes/content-pipe.js';
 import type { RawContentRepository } from '../db/raw-content-repository.js';
+import type { ContainerSpawner } from '../agents/persistent-agent-spawner.js';
+import type { AgentRepository } from '../db/agent-repository.js';
 
 export interface IpcDeps {
   messageBus: MessageBus;
@@ -47,6 +49,10 @@ export interface IpcDeps {
   rawContentStore?: RawContentRepository;
   /** Workspace MCP URL for email IPC handlers. */
   workspaceMcpUrl?: string;
+  /** Persistent agent spawner for inter-agent messaging. */
+  agentSpawner?: ContainerSpawner;
+  /** Agent repository for looking up persistent agents. */
+  agentRepo?: AgentRepository;
 }
 
 let ipcWatcherRunning = false;

@@ -8,7 +8,7 @@ import { isValidGroupFolder } from '../groups/group-folder.js';
 import { logger } from '../logger.js';
 import { RegisteredGroup } from '../types.js';
 import { OutboundMessage } from '../bus/index.js';
-import { writeDelegationResult, writeWorkflowBuildResult, writeEmailResult } from './result-writers.js';
+import { writeDelegationResult, writeWorkflowBuildResult, writeEmailResult, writeAgentResult } from './result-writers.js';
 import { formatEnvelope } from '../pipes/envelope-formatter.js';
 import type { ContentPipe } from '../pipes/content-pipe.js';
 import type { RawContentRepository } from '../db/raw-content-repository.js';
@@ -50,6 +50,8 @@ export async function processTaskIpc(
     sourceId?: string;
     newId?: string;
     newName?: string;
+    // For send_to_agent
+    targetAgent?: string;
     // For email IPC (check_email / read_email)
     query?: string;
     maxResults?: number;
@@ -700,6 +702,65 @@ export async function processTaskIpc(
           data: schema,
         });
       }
+      break;
+    }
+
+    case 'send_to_agent': {
+      if (!deps.agentSpawner || !deps.agentRepo) {
+        logger.warn('send_to_agent IPC received but persistent agent system not initialized');
+        if (data.requestId) {
+          writeAgentResult(sourceGroup, data.requestId, {
+            status: 'error',
+            error: 'Persistent agent system not initialized',
+          });
+        }
+        break;
+      }
+      if (!data.targetAgent || !data.prompt || !data.requestId) {
+        logger.warn({ data }, 'Invalid send_to_agent request — missing targetAgent, prompt, or requestId');
+        break;
+      }
+
+      const targetAgent = deps.agentRepo.getById(data.targetAgent);
+      if (!targetAgent) {
+        logger.warn({ targetAgent: data.targetAgent }, 'send_to_agent: target agent not found');
+        writeAgentResult(sourceGroup, data.requestId, {
+          status: 'error',
+          error: `Agent "${data.targetAgent}" not found`,
+        });
+        break;
+      }
+
+      logger.info(
+        { sourceGroup, targetAgent: data.targetAgent, requestId: data.requestId },
+        'Dispatching inter-agent message',
+      );
+
+      deps.agentSpawner.spawn(
+        targetAgent,
+        data.prompt,
+        `agent:${sourceGroup}`,
+        targetAgent.timeoutMs,
+      ).then((result) => {
+        writeAgentResult(sourceGroup, data.requestId!, {
+          status: result.status,
+          result: result.content,
+        });
+        logger.info(
+          { sourceGroup, targetAgent: data.targetAgent, status: result.status },
+          'Inter-agent message completed',
+        );
+      }).catch((err) => {
+        const error = err instanceof Error ? err.message : String(err);
+        writeAgentResult(sourceGroup, data.requestId!, {
+          status: 'error',
+          error,
+        });
+        logger.error(
+          { sourceGroup, targetAgent: data.targetAgent, error },
+          'Inter-agent message failed',
+        );
+      });
       break;
     }
 

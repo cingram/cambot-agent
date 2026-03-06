@@ -57,6 +57,7 @@ export interface McpConfigVars {
   chatJid: string;
   groupFolder: string;
   isMain: boolean;
+  isInterAgentTarget?: boolean;
 }
 
 export interface ResolvedMcpConfig {
@@ -95,11 +96,17 @@ export function loadMcpConfig(
   // Build allowedTools from server names.
   // google-workspace uses an explicit allowlist instead of wildcard
   // to block raw Gmail read tools that would bypass the content pipe.
+  // cambot-agent uses an explicit allowlist for inter-agent targets
+  // to block send_to_agent (prevents infinite loops).
   const allowedTools: string[] = [];
   for (const name of Object.keys(servers)) {
     if (name === 'google-workspace') {
       allowedTools.push(
         ...GOOGLE_WORKSPACE_ALLOWED_TOOLS.map((t) => `mcp__google-workspace__${t}`),
+      );
+    } else if (name === 'cambot-agent' && vars.isInterAgentTarget) {
+      allowedTools.push(
+        ...CAMBOT_AGENT_INTERAGENT_TOOLS.map((t) => `mcp__cambot-agent__${t}`),
       );
     } else {
       allowedTools.push(`mcp__${name}__*`);
@@ -108,6 +115,17 @@ export function loadMcpConfig(
 
   return { servers, allowedTools };
 }
+
+// Explicit allowlist of cambot-agent MCP tools for inter-agent targets.
+// send_to_agent is excluded to prevent infinite agent→agent loops.
+// Administrative tools (schedule_task, register_group, agent CRUD) are
+// excluded since target agents shouldn't modify system configuration.
+const CAMBOT_AGENT_INTERAGENT_TOOLS = [
+  'send_message',
+  'list_tasks',
+  'check_email',
+  'read_email',
+];
 
 // Explicit allowlist of google-workspace MCP tools.
 // Gmail read tools (search_gmail_messages, get_gmail_message) are intentionally
