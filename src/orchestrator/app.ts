@@ -126,6 +126,13 @@ export class CamBotApp {
       getWorkflowService: () => this.workflowService,
       getWorkflowBuilderService: () => this.workflowBuilderService,
       getIntegrationManager: () => this.integrationMgr,
+      getRegisteredAgents: () => this.agentRepo?.getAll().map(a => ({
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        channels: a.channels,
+        capabilities: a.capabilities,
+      })) ?? [],
     });
 
     const processor = new GroupMessageProcessor({

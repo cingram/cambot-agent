@@ -250,6 +250,27 @@ export function writeWorkersSnapshot(
 }
 
 /**
+ * Write persistent agents snapshot for the container to read.
+ * Agents can use this to discover other persistent agents for send_to_agent.
+ */
+export function writePersistentAgentsSnapshot(
+  groupFolder: string,
+  agents: Array<{
+    id: string;
+    name: string;
+    description: string;
+    channels: string[];
+    capabilities: string[];
+  }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const agentsFile = path.join(groupIpcDir, 'persistent_agents.json');
+  fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2));
+}
+
+/**
  * Write raw content snapshots for the container's read_raw_content tool.
  * Each entry becomes {ipcDir}/raw_content/{id}.json.
  */

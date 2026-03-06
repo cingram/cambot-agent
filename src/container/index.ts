@@ -13,6 +13,7 @@ export {
   writeCustomAgentsSnapshot,
   writeGroupsSnapshot,
   writeWorkersSnapshot,
+  writePersistentAgentsSnapshot,
   type AvailableGroup,
   type WorkflowSnapshotSummary,
   type WorkflowSnapshotFull,

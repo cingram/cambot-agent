@@ -52,6 +52,7 @@ vi.mock('../container/snapshot-writers.js', () => ({
   writeWorkflowsSnapshot: vi.fn(),
   writeWorkflowSchemaSnapshot: vi.fn(),
   writeWorkersSnapshot: vi.fn(),
+  writePersistentAgentsSnapshot: vi.fn(),
 }));
 
 vi.mock('../db/index.js', () => ({

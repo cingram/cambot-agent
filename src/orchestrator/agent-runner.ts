@@ -20,6 +20,7 @@ import {
   writeWorkflowsSnapshot,
   writeWorkflowSchemaSnapshot,
   writeWorkersSnapshot,
+  writePersistentAgentsSnapshot,
 } from '../container/snapshot-writers.js';
 import {
   getAllAgentDefinitions,
@@ -44,6 +45,13 @@ export interface AgentRunnerDeps {
   getWorkflowService: () => WorkflowService | null;
   getWorkflowBuilderService: () => WorkflowBuilderService | null;
   getIntegrationManager: () => IntegrationManager | null;
+  getRegisteredAgents?: () => Array<{
+    id: string;
+    name: string;
+    description: string;
+    channels: string[];
+    capabilities: string[];
+  }>;
 }
 
 export class AgentRunner {
@@ -238,6 +246,10 @@ export class AgentRunner {
     // Workers snapshot
     const allWorkers = getAllAgentDefinitions();
     writeWorkersSnapshot(group.folder, allWorkers);
+
+    // Persistent agents snapshot (for send_to_agent discovery)
+    const registeredAgents = this.deps.getRegisteredAgents?.() ?? [];
+    writePersistentAgentsSnapshot(group.folder, registeredAgents);
 
     // Dynamic context files
     const groupIpcDir = resolveGroupIpcPath(group.folder);

@@ -28,7 +28,62 @@ You are running inside a sandboxed container. Follow these rules.
 
 - Your text output is sent to the user via chat
 - Use `<internal>` tags for reasoning that should not be sent to the user
-- Use `mcp__cambot-agent__send_message` for immediate messages while still working
+- Use `send_message` for immediate messages while still working
+
+## Message Bus (MCP Tools)
+
+You interact with the host system through the `cambot-agent` MCP server. These tools are your interface to the message bus — they handle routing, delivery, and inter-agent communication.
+
+### Messaging
+
+- `send_message` — Send a message to the user/group immediately (progress updates, multi-message replies). Can target other channels with `target_jid`.
+
+### Scheduling
+
+- `schedule_task` — Schedule a recurring or one-time task (cron, interval, or once)
+- `list_tasks` — List scheduled tasks
+- `pause_task` / `resume_task` / `cancel_task` — Manage tasks
+
+### Inter-Agent Communication
+
+- `send_to_agent` — Send a message to another persistent agent and wait for its response. The target agent runs in its own container and returns a result.
+
+To discover available agents, read `/workspace/ipc/persistent_agents.json`. It contains an array of registered agents with their `id`, `name`, `description`, `channels`, and `capabilities`.
+
+Example:
+```
+# Check who's available
+cat /workspace/ipc/persistent_agents.json
+
+# Ask the email agent to draft a reply
+send_to_agent(target_agent: "email-agent", prompt: "Draft a reply to John's last email thanking him")
+```
+
+NOTE: If you were spawned by another agent (via `send_to_agent`), you will NOT have access to `send_to_agent` yourself. This prevents infinite loops. You can still use `send_message` and other tools.
+
+### Workers & Workflows
+
+- `delegate_to_worker` — Delegate a sub-task to a specialized worker agent
+- `run_workflow` / `pause_workflow` / `cancel_workflow` — Manage workflows
+- `list_workflows` / `workflow_status` — Query workflow state
+
+### Groups & Agents (Main Only)
+
+- `register_group` — Register a new chat group
+- `create_custom_agent` / `update_custom_agent` / `delete_custom_agent` — Manage custom agents
+- `invoke_custom_agent` — Run a custom agent
+
+### Discovery Files
+
+These JSON files in `/workspace/ipc/` are updated before each container spawn:
+
+| File | Contents |
+|------|----------|
+| `persistent_agents.json` | Registered persistent agents (for `send_to_agent`) |
+| `custom_agents.json` | Custom LLM agents |
+| `available_workers.json` | Worker agents (for `delegate_to_worker`) |
+| `available_groups.json` | Chat groups (main only) |
+| `current_tasks.json` | Scheduled tasks |
 
 ## Untrusted Content
 
