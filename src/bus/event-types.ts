@@ -49,6 +49,14 @@ export const EVENT_TYPES: readonly EventTypeEntry[] = [
   { type: 'system.shutdown', description: 'System shutting down' },
   { type: 'bus.backpressure', description: 'Bus backpressure threshold exceeded' },
   { type: 'bus.dead_letter', description: 'Event moved to dead letter queue' },
+
+  // Workflow
+  { type: 'workflow.trigger', description: 'Request to trigger a workflow run' },
+  { type: 'workflow.agent.request', description: 'Workflow step requesting agent execution' },
+  { type: 'workflow.agent.response', description: 'Agent execution result for a workflow step' },
+  { type: 'workflow.started', description: 'Workflow run started' },
+  { type: 'workflow.completed', description: 'Workflow run completed' },
+  { type: 'workflow.failed', description: 'Workflow run failed' },
 ] as const;
 
 // ---------------------------------------------------------------------------

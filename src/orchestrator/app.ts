@@ -69,6 +69,8 @@ import { createAgentRepository, type AgentRepository } from '../db/agent-reposit
 import { createPersistentAgentBootstrap } from '../agents/persistent-agent-bootstrap.js';
 import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
 import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
+import { createWorkflowTriggerHandler } from '../workflows/workflow-trigger-handler.js';
+import { createWorkflowAgentHandler } from '../workflows/workflow-agent-handler.js';
 import { GROUPS_DIR } from '../config/config.js';
 import { getSession, setSession } from '../db/index.js';
 
@@ -88,6 +90,8 @@ export class CamBotApp {
   private contentPipeUnsub: (() => void) | null = null;
   private contentPipe: ContentPipe | null = null;
   private persistentAgentHandler: PersistentAgentHandler | null = null;
+  private workflowTriggerHandler: { destroy: () => void } | null = null;
+  private workflowAgentHandler: { destroy: () => void } | null = null;
   private agentSpawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner | null = null;
   private agentRepo: AgentRepository | null = null;
 
@@ -114,6 +118,10 @@ export class CamBotApp {
     });
     this.bus = this.appBus.bus;
     this.initWorkflowService();
+    this.workflowTriggerHandler = createWorkflowTriggerHandler({
+      messageBus: this.bus,
+      getWorkflowService: () => this.workflowService,
+    });
     await this.initWorkflowBuilderService();
     this.busHandlers = new BusHandlerRegistry({
       bus: this.bus,
@@ -241,6 +249,7 @@ export class CamBotApp {
       messageBus: this.bus,
       getChannels: () => this.channels,
       adminJid: ADMIN_JID,
+      agentRepo: { getById: (id: string) => this.agentRepo?.getById(id) } as AgentRepository,
       onStepCost: (cost) => {
         this.interceptor?.recordStepCost(cost);
       },
@@ -430,6 +439,8 @@ export class CamBotApp {
       logger.info({ signal }, 'Shutdown signal received');
       if (this.interceptor) await this.interceptor.close();
       if (this.persistentAgentHandler) this.persistentAgentHandler.destroy();
+      if (this.workflowTriggerHandler) this.workflowTriggerHandler.destroy();
+      if (this.workflowAgentHandler) this.workflowAgentHandler.destroy();
       if (this.appBus) await this.appBus.shutdown();
       await this.queue.shutdown(10000);
       if (this.integrationMgr) await this.integrationMgr.shutdown();
@@ -452,6 +463,7 @@ export class CamBotApp {
             this.routeAuditEvent(event);
           }
         : undefined,
+      onAgentMutation: () => this.handleAgentMutation(),
     };
 
     this.integrationMgr = createIntegrationManager(buildIntegrationDefinitions());
@@ -513,6 +525,13 @@ export class CamBotApp {
         spawner,
       });
 
+      // Create workflow agent handler (bus-based workflow→agent routing)
+      this.workflowAgentHandler = createWorkflowAgentHandler({
+        messageBus: this.bus,
+        agentRepo,
+        spawner,
+      });
+
       logger.info(
         { agentCount: agents.length, agents: agents.map(a => a.id) },
         'Persistent agents initialized',
@@ -520,6 +539,60 @@ export class CamBotApp {
     } catch (err) {
       logger.error({ err }, 'Failed to initialize persistent agents');
     }
+  }
+
+  private handleAgentMutation(): void {
+    const db = getDatabase();
+    const agentRepo = createAgentRepository(db);
+
+    // Bootstrap workspace folders for any new agents
+    const bootstrap = createPersistentAgentBootstrap(GROUPS_DIR);
+    bootstrap.bootstrapAll(agentRepo.getAll());
+
+    // If the handler already exists, just reload routing
+    if (this.persistentAgentHandler) {
+      this.persistentAgentHandler.reload();
+      return;
+    }
+
+    // First agent created at runtime — spin up the full persistent agent infra
+    const agents = agentRepo.getAll();
+    if (agents.length === 0) return;
+
+    this.agentRepo = agentRepo;
+
+    const spawner = createPersistentAgentSpawner({
+      getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
+      getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
+      getSession: (folder) => getSession(folder),
+      setSession: (folder, sessionId) => setSession(folder, sessionId),
+      messageBus: this.bus,
+      onTelemetry: (telemetry, channel) => {
+        this.interceptor?.recordTelemetry(telemetry, channel);
+      },
+      onContainerError: (error, durationMs, channel) => {
+        this.interceptor?.recordContainerError(error, durationMs, channel);
+      },
+    });
+
+    this.agentSpawner = spawner;
+
+    this.persistentAgentHandler = createPersistentAgentHandler({
+      messageBus: this.bus,
+      agentRepo,
+      spawner,
+    });
+
+    this.workflowAgentHandler = createWorkflowAgentHandler({
+      messageBus: this.bus,
+      agentRepo,
+      spawner,
+    });
+
+    logger.info(
+      { agentCount: agents.length, agents: agents.map(a => a.id) },
+      'Persistent agents initialized via API mutation',
+    );
   }
 
   private startSubsystems(): void {

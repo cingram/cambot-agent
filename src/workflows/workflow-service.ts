@@ -58,13 +58,18 @@ import type {
   ChannelProbe,
 } from 'cambot-workflows';
 
+import { randomUUID } from 'crypto';
+
 import { DATA_DIR } from '../config/config.js';
 import type { ContainerInput } from '../container/runner.js';
 import { getDatabase } from '../db/index.js';
 import { createAgentRepository } from '../db/agent-repository.js';
+import type { AgentRepository } from '../db/agent-repository.js';
 import { logger } from '../logger.js';
 import type { MessageBus } from '../types.js';
-import { OutboundMessage } from '../bus/index.js';
+import { OutboundMessage, GenericEvent } from '../bus/index.js';
+import { WorkflowAgentRequest } from '../bus/events/workflow-agent-request.js';
+import { WorkflowAgentResponse } from '../bus/events/workflow-agent-response.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -139,6 +144,8 @@ export interface WorkflowServiceDeps {
   adminJid?: string;
   /** Optional: callback to record step-level costs to the core telemetry system. */
   onStepCost?: (cost: { provider: string; model: string; tokensIn: number; tokensOut: number; costUsd: number; taskLabel: string }) => void;
+  /** Optional: agent repository for bus-based routing of registered agents. */
+  agentRepo?: AgentRepository;
 }
 
 // ── Heartbeat tool registration ──────────────────────────────────────
@@ -421,6 +428,56 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     return base;
   }
 
+  async function runAgentViaBus(
+    agentId: string,
+    prompt: string,
+    runId: string,
+    stepId: string,
+    timeoutMs: number,
+  ): Promise<AgentContainerResult> {
+    const correlationId = randomUUID();
+    const graceMs = 30_000;
+
+    const responsePromise = new Promise<WorkflowAgentResponse>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        unsub();
+        reject(new Error(`Bus agent request timed out after ${timeoutMs + graceMs}ms for agent "${agentId}"`));
+      }, timeoutMs + graceMs);
+
+      const unsub = deps.messageBus.on(
+        WorkflowAgentResponse,
+        (event) => {
+          clearTimeout(timeout);
+          unsub();
+          resolve(event);
+        },
+        { filter: { correlationId } },
+      );
+    });
+
+    await deps.messageBus.emit(new WorkflowAgentRequest('workflow-service', {
+      agentId,
+      prompt,
+      runId,
+      stepId,
+      correlationId,
+    }));
+
+    const response = await responsePromise;
+
+    if (response.status === 'error') {
+      throw new Error(`Bus agent execution failed: ${response.text}`);
+    }
+
+    return {
+      text: response.text,
+      totalCostUsd: response.totalCostUsd,
+      tokensIn: response.tokensIn,
+      tokensOut: response.tokensOut,
+      modelUsage: response.modelUsage,
+    };
+  }
+
   async function runAgentPrompt(
     config: Record<string, unknown>,
     previousOutputs: Record<string, unknown>,
@@ -436,9 +493,53 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
       prompt += '</previous_step_outputs>';
     }
 
+    // Extract runtime context passed through from AgentStep
+    const runId = config._runId as string | undefined;
+    const stepId = config._stepId as string | undefined;
+
+    // Check if this agentId maps to a registered agent and should route via bus
+    const agentId = config.agentId as string | undefined;
+    const usesBusRouting = agentId && deps.agentRepo?.getById(agentId);
+
+    if (usesBusRouting && runId && stepId) {
+      logger.info(
+        { agentId, runId, stepId, promptLength: prompt.length },
+        'Workflow agent step: routing via bus',
+      );
+
+      const startTime = Date.now();
+      const agent = deps.agentRepo!.getById(agentId)!;
+      const containerResult = await runAgentViaBus(agentId, prompt, runId, stepId, agent.timeoutMs);
+      const durationMs = Date.now() - startTime;
+
+      logger.info(
+        { durationMs, resultLength: containerResult.text.length, costUsd: containerResult.totalCostUsd },
+        'Workflow agent step completed (bus)',
+      );
+
+      let parsedData: unknown = containerResult.text;
+      try {
+        parsedData = JSON.parse(stripCodeFences(containerResult.text));
+      } catch {
+        // Keep as raw string
+      }
+
+      return {
+        data: parsedData,
+        tokensIn: containerResult.tokensIn ?? 0,
+        tokensOut: containerResult.tokensOut ?? 0,
+        costUsd: containerResult.totalCostUsd ?? 0,
+        metadata: { durationMs, customAgent: agentId, modelUsage: containerResult.modelUsage },
+      };
+    }
+
+    // Fallback: direct container spawn (inline provider or no registered agent)
+
     // If model is specified but no provider/agentId, default to Anthropic
     // so the container uses the correct (cheaper) model instead of the default.
     const resolveConfig = { ...config };
+    delete resolveConfig._runId;
+    delete resolveConfig._stepId;
     if (resolveConfig.model && !resolveConfig.provider && !resolveConfig.agentId) {
       resolveConfig.provider = 'anthropic';
     }
@@ -568,6 +669,21 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     const workflowId = data.workflowId as string;
 
     deliverMessage(channel, content, output, workflowId);
+  });
+
+  // Bridge internal EventBus lifecycle events to the app MessageBus for observability
+  const FORWARDED_TYPES = new Set([
+    'workflow.started', 'workflow.completed', 'workflow.failed',
+    'workflow.step.started', 'workflow.step.completed', 'workflow.step.failed',
+  ]);
+
+  eventBus.on('*', (event) => {
+    if (!FORWARDED_TYPES.has(event.type)) return;
+    deps.messageBus.emit(
+      new GenericEvent(event.type, 'workflow-service', event.data as Record<string, unknown>),
+    ).catch((err) => {
+      logger.warn({ err, eventType: event.type }, 'Failed to forward workflow event to MessageBus');
+    });
   });
 
   // In-memory workflow definition cache

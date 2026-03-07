@@ -4,3 +4,6 @@ export { ChatMetadata } from './chat-metadata.js';
 export { TypingUpdate } from './typing-update.js';
 export { AgentTelemetry } from './agent-telemetry.js';
 export { AgentError } from './agent-error.js';
+export { WorkflowTrigger } from './workflow-trigger.js';
+export { WorkflowAgentRequest } from './workflow-agent-request.js';
+export { WorkflowAgentResponse } from './workflow-agent-response.js';
