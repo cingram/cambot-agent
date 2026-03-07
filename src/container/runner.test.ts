@@ -15,6 +15,7 @@ vi.mock('../config/config.js', () => ({
   HEARTBEAT_INTERVAL_MS: 5000,
   TIMEZONE: 'America/Los_Angeles',
   MEMORY_MODE: 'both',
+  EMAIL_GUARDRAIL_ENABLED: false,
 }));
 
 // Mock agents module

@@ -17,6 +17,7 @@ import type { TelemetryCollector } from './telemetry-collector.js';
 import type { TranscriptArchiver } from './transcript-archiver.js';
 import type { Logger } from './logger.js';
 import type { HeartbeatWriter } from './heartbeat-writer.js';
+import type { GuardrailReviewer } from './guardrail-reviewer.js';
 
 /** Env vars to strip from Bash subprocess environments. */
 const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY'];
@@ -27,20 +28,52 @@ export class HookFactory {
     private readonly archiver: TranscriptArchiver,
     private readonly logger: Logger,
     private readonly heartbeat?: HeartbeatWriter,
+    private readonly guardrail?: GuardrailReviewer,
   ) {}
 
   /**
    * Build the complete hooks config for the SDK query options.
    */
   buildHooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+    const preToolUseHooks: HookCallbackMatcher[] = [
+      { matcher: 'Bash', hooks: [this.createSanitizeBashHook()] },
+      { hooks: [this.createPreToolUseTimingHook()] },
+    ];
+
+    // Inline Haiku guardrail — reviews high-risk tool calls before execution
+    if (this.guardrail) {
+      preToolUseHooks.unshift({ hooks: [this.createGuardrailHook()] });
+    }
+
     return {
       PreCompact: [{ hooks: [this.createPreCompactHook()] }],
-      PreToolUse: [
-        { matcher: 'Bash', hooks: [this.createSanitizeBashHook()] },
-        { hooks: [this.createPreToolUseTimingHook()] },
-      ],
+      PreToolUse: preToolUseHooks,
       PostToolUse: [{ hooks: [this.createPostToolUseHook()] }],
       PostToolUseFailure: [{ hooks: [this.createPostToolUseFailureHook()] }],
+    };
+  }
+
+  private createGuardrailHook(): HookCallback {
+    const guardrail = this.guardrail!;
+    return async (input: HookInput, _toolUseId, _options): Promise<SyncHookJSONOutput> => {
+      if (!isHookEvent<PreToolUseHookInput>(input, 'PreToolUse')) return {};
+
+      const toolName = input.tool_name;
+      if (!guardrail.shouldReview(toolName)) return {};
+
+      const result = await guardrail.review(toolName, input.tool_input);
+
+      if (!result.allowed) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: `Guardrail: ${result.reason}`,
+          },
+        };
+      }
+
+      return {};
     };
   }
 

@@ -13,6 +13,7 @@ import { registerAllEventTypes } from './event-types.js';
 import { createDedupFilter } from './middleware/dedup-filter.js';
 import { createBackpressureMiddleware } from './middleware/backpressure.js';
 import { createEventJournal, type EventJournal } from './middleware/event-journal.js';
+import { createOutboundGuard, type OutboundGuardOptions } from './middleware/outbound-guard.js';
 import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -25,6 +26,8 @@ export interface AppBusOptions {
   dedupMaxSize?: number;
   /** In-flight event threshold before backpressure kicks in. Default: 500 */
   backpressureHighWaterMark?: number;
+  /** Outbound guard config. Omit to use defaults. */
+  outboundGuard?: Partial<OutboundGuardOptions>;
 }
 
 export interface AppBus {
@@ -49,7 +52,18 @@ export function createAppBus(opts: AppBusOptions): AppBus {
   // 2. Dedup filter — drop duplicate events by ID
   bus.use(createDedupFilter({ maxSize: opts.dedupMaxSize ?? 10_000 }));
 
-  // 3. Backpressure — warn when in-flight events exceed threshold
+  // 3. Outbound guard — rate limits and loop detection for outbound messages
+  bus.use(createOutboundGuard({
+    ...opts.outboundGuard,
+    onLimitHit: (channel, jid, window) => {
+      logger.warn({ channel, jid, window }, 'Outbound guard: rate limit hit');
+    },
+    onLoopDetected: (channel, jid, count) => {
+      logger.warn({ channel, jid, count }, 'Outbound guard: reply loop detected');
+    },
+  }));
+
+  // 4. Backpressure — warn when in-flight events exceed threshold
   bus.use(createBackpressureMiddleware({
     highWaterMark: opts.backpressureHighWaterMark ?? 500,
     strategy: 'warn',
@@ -58,7 +72,7 @@ export function createAppBus(opts: AppBusOptions): AppBus {
     },
   }));
 
-  // 4. Event journal — persist all events to SQLite for audit/replay
+  // 5. Event journal — persist all events to SQLite for audit/replay
   const journal = createEventJournal(opts.db);
   journal.ensureTable();
   bus.use(journal);

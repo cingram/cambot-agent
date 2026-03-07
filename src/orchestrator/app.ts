@@ -12,6 +12,10 @@ import {
   CONTENT_PIPE_UNTRUSTED_CHANNELS,
   CONTEXT_TOKEN_BUDGET,
   DATA_DIR,
+  EMAIL_LOOP_THRESHOLD,
+  EMAIL_RATE_PER_DAY,
+  EMAIL_RATE_PER_HOUR,
+  EMAIL_RATE_PER_MINUTE,
   STORE_DIR,
   WORKFLOW_CONTAINER_TIMEOUT,
   WORKSPACE_MCP_PORT,
@@ -97,7 +101,19 @@ export class CamBotApp {
     loadAgentsConfig();
     this.initLifecycleInterceptor();
 
-    this.appBus = createAppBus({ db: getDatabase() });
+    this.appBus = createAppBus({
+      db: getDatabase(),
+      outboundGuard: {
+        channelLimits: {
+          email: {
+            perMinute: EMAIL_RATE_PER_MINUTE,
+            perHour: EMAIL_RATE_PER_HOUR,
+            perDay: EMAIL_RATE_PER_DAY,
+          },
+        },
+        loopThreshold: EMAIL_LOOP_THRESHOLD,
+      },
+    });
     this.bus = this.appBus.bus;
     this.initWorkflowService();
     await this.initWorkflowBuilderService();

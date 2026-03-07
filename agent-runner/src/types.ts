@@ -52,6 +52,8 @@ export interface ClaudeContainerInput extends BaseContainerInput {
   kind: 'claude';
   mcpServers?: McpServerConfig[];
   memoryMode?: 'markdown' | 'database' | 'both';
+  /** Enable inline Haiku guardrail for tool call review. Default: true */
+  guardrailEnabled?: boolean;
   customAgent?: undefined;
 }
 

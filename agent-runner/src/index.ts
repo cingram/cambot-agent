@@ -27,6 +27,7 @@ import { ContextBuilder } from './context-builder.js';
 import { SdkQueryRunner } from './sdk-query-runner.js';
 import { AgentRunner } from './agent-runner.js';
 import { createHeartbeatWriter } from './heartbeat-writer.js';
+import { GuardrailReviewer } from './guardrail-reviewer.js';
 
 async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -101,9 +102,22 @@ async function main(): Promise<void> {
   // Wire dependency graph
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+  // Inline Haiku guardrail — reviews high-risk tool calls before execution
+  const guardrailEnabled = containerInput.kind === 'claude'
+    && (containerInput.guardrailEnabled ?? true);
+  const apiKey = sdkEnv['ANTHROPIC_API_KEY'];
+  const guardrail = guardrailEnabled && apiKey
+    ? new GuardrailReviewer({ apiKey, logger })
+    : undefined;
+  if (guardrail) {
+    logger.log('Haiku guardrail enabled for inline tool review');
+  } else if (!guardrailEnabled) {
+    logger.log('Haiku guardrail disabled by configuration');
+  }
+
   const telemetry = new TelemetryCollector();
   const archiver = new TranscriptArchiver(paths, logger);
-  const hookFactory = new HookFactory(telemetry, archiver, logger, heartbeat);
+  const hookFactory = new HookFactory(telemetry, archiver, logger, heartbeat, guardrail);
   const contextBuilder = new ContextBuilder(paths, logger);
   const queryRunner = new SdkQueryRunner(paths, logger, outputWriter, ipc, hookFactory, contextBuilder, telemetry, __dirname, heartbeat);
   const agentRunner = new AgentRunner(logger, outputWriter, ipc, queryRunner, {}, heartbeat);

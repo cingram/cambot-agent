@@ -18,6 +18,11 @@ const envConfig = readEnvFile([
   'WORKSPACE_MCP_PORT',
   'MEMORY_MODE',
   'CONTEXT_TOKEN_BUDGET',
+  'EMAIL_GUARDRAIL_ENABLED',
+  'EMAIL_RATE_PER_MINUTE',
+  'EMAIL_RATE_PER_HOUR',
+  'EMAIL_RATE_PER_DAY',
+  'EMAIL_LOOP_THRESHOLD',
 ]);
 
 export const ASSISTANT_NAME =
@@ -133,6 +138,22 @@ export const CONTENT_PIPE_UNTRUSTED_CHANNELS = new Set(
     .map((s) => s.trim())
     .filter(Boolean),
 );
+
+// Outbound guard — deterministic rate limits for email sends
+export const EMAIL_RATE_PER_MINUTE = parseInt(
+  process.env.EMAIL_RATE_PER_MINUTE || envConfig.EMAIL_RATE_PER_MINUTE || '5', 10);
+export const EMAIL_RATE_PER_HOUR = parseInt(
+  process.env.EMAIL_RATE_PER_HOUR || envConfig.EMAIL_RATE_PER_HOUR || '30', 10);
+export const EMAIL_RATE_PER_DAY = parseInt(
+  process.env.EMAIL_RATE_PER_DAY || envConfig.EMAIL_RATE_PER_DAY || '100', 10);
+export const EMAIL_LOOP_THRESHOLD = parseInt(
+  process.env.EMAIL_LOOP_THRESHOLD || envConfig.EMAIL_LOOP_THRESHOLD || '5', 10);
+
+// Inline Haiku guardrail — reviews agent tool calls before execution
+// Disabled by default. The content pipe (regex detector + Haiku summarizer +
+// envelope isolation) handles inbound injection. Enable for extra outbound review.
+export const EMAIL_GUARDRAIL_ENABLED =
+  (process.env.EMAIL_GUARDRAIL_ENABLED ?? envConfig.EMAIL_GUARDRAIL_ENABLED ?? 'false') === 'true';
 
 // Heartbeat monitoring interval (host polls container heartbeat file at this rate)
 export const HEARTBEAT_INTERVAL_MS = 5000;

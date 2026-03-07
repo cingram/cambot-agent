@@ -10,6 +10,7 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   DATA_DIR,
   GROUPS_DIR,
+  EMAIL_GUARDRAIL_ENABLED,
   HEARTBEAT_INTERVAL_MS,
   IDLE_TIMEOUT,
   MEMORY_MODE,
@@ -56,6 +57,8 @@ export interface ContainerInput {
   };
   /** When true, agent was spawned via send_to_agent — restricted MCP tools */
   isInterAgentTarget?: boolean;
+  /** Enable inline Haiku guardrail for tool call review */
+  guardrailEnabled?: boolean;
   /** Unique token identifying this container. Used by the agent-runner to
    *  detect when it has been superseded by a newer container (orphan self-exit). */
   ipcToken?: string;
@@ -381,6 +384,7 @@ export async function runContainerAgent(
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets(agentOptions.secretKeys);
     input.memoryMode = MEMORY_MODE;
+    input.guardrailEnabled = EMAIL_GUARDRAIL_ENABLED;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets and ephemeral fields from input so they don't appear in logs
@@ -848,6 +852,7 @@ export async function runWorkerAgent(
 
     // Pass secrets via stdin
     input.secrets = readSecrets(agentOptions.secretKeys);
+    input.guardrailEnabled = EMAIL_GUARDRAIL_ENABLED;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     delete input.secrets;
