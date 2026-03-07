@@ -33,6 +33,7 @@ export function syncScheduledWorkflows(deps: WorkflowSchedulerDeps): void {
   }
 
   for (const wf of workflows) {
+    if (wf.enabled === false) continue;
     if (!wf.schedule?.cron) continue;
 
     // Skip if already tracked AND cron hasn't changed
