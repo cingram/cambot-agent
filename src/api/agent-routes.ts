@@ -12,6 +12,9 @@ import { logger } from '../logger.js';
 export interface AgentRoutesDeps {
   agentRepo: AgentRepository;
   templateRepo: AgentTemplateRepository;
+  /** Called after agent create/update/delete to refresh routing tables.
+   *  On delete, passes the deleted agent's folder for disk cleanup. */
+  onAgentMutation?: (deletedFolder?: string) => void;
 }
 
 export function handleAgentRoutes(
@@ -60,6 +63,7 @@ export function handleAgentRoutes(
         }
         const agent = agentRepo.create(input);
         logger.info({ agentId: agent.id }, 'Agent created via API');
+        deps.onAgentMutation?.();
         json(res, 201, agent);
       } catch (err) {
         error(res, 400, err);
@@ -74,6 +78,7 @@ export function handleAgentRoutes(
         const updates = body as UpdateAgentInput;
         const agent = agentRepo.update(agentMatch[1], updates);
         logger.info({ agentId: agent.id }, 'Agent updated via API');
+        deps.onAgentMutation?.();
         json(res, 200, agent);
       } catch (err) {
         error(res, 400, err);
@@ -84,13 +89,15 @@ export function handleAgentRoutes(
 
   if (agentMatch && req.method === 'DELETE') {
     try {
-      const deleted = agentRepo.delete(agentMatch[1]);
-      if (!deleted) {
+      const agent = agentRepo.getById(agentMatch[1]);
+      if (!agent) {
         json(res, 404, { error: 'Agent not found' });
-      } else {
-        logger.info({ agentId: agentMatch[1] }, 'Agent deleted via API');
-        json(res, 200, { success: true });
+        return true;
       }
+      agentRepo.delete(agentMatch[1]);
+      logger.info({ agentId: agentMatch[1] }, 'Agent deleted via API');
+      deps.onAgentMutation?.(agent.folder);
+      json(res, 200, { success: true });
     } catch (err) {
       error(res, 500, err);
     }

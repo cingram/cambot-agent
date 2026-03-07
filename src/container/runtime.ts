@@ -137,6 +137,34 @@ export function killContainersForGroup(groupFolder: string): void {
 }
 
 /**
+ * Gracefully stop all running containers for a group.
+ * Uses `docker stop` (SIGTERM → 10s grace → SIGKILL) instead of immediate kill.
+ * Returns true if any containers were stopped (caller may need to wait before cleanup).
+ */
+export function stopContainersForGroup(groupFolder: string): boolean {
+  const safeName = groupFolder.replace(/[^a-zA-Z0-9-]/g, '-');
+  try {
+    const containers = listContainers(`cambot-agent-${safeName}-`);
+    if (containers.length === 0) return false;
+    for (const name of containers) {
+      try {
+        execSync(stopContainer(name), { stdio: 'pipe', timeout: 15_000 });
+        logger.info({ group: groupFolder, container: name }, 'Gracefully stopped container for deleted agent');
+      } catch {
+        // Stop timed out or container already exited — force kill as fallback
+        try {
+          execSync(killContainer(name), { stdio: 'pipe', timeout: 5_000 });
+        } catch { /* already dead */ }
+      }
+    }
+    return true;
+  } catch (err) {
+    logger.warn({ err, group: groupFolder }, 'Failed to stop group containers');
+    return false;
+  }
+}
+
+/**
  * Kill containers older than maxAgeMs.
  * Container names encode their spawn timestamp: cambot-agent-{name}-{timestamp}
  * This is safe to run periodically — it only kills stale containers.

@@ -86,6 +86,7 @@ export class WebChannel implements Channel {
       this.agentRoutesDeps = {
         agentRepo: createAgentRepository(db),
         templateRepo: createAgentTemplateRepository(db),
+        onAgentMutation: this.opts.onAgentMutation,
       };
     }
     return this.agentRoutesDeps;

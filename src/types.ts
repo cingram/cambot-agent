@@ -161,6 +161,9 @@ export interface ChannelOpts {
   channelNames?: () => string[];
   /** Fire-and-forget audit event callback for request lifecycle logging. */
   onAuditEvent?: (event: ChannelAuditEvent) => void;
+  /** Called after agent create/update/delete to refresh routing tables.
+   *  On delete, passes the deleted agent's folder for async disk cleanup. */
+  onAgentMutation?: (deletedFolder?: string) => void;
 }
 
 export interface RegisteredAgent {

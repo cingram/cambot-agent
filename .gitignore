@@ -15,11 +15,8 @@ logs/
 # Groups - only track base structure and specific CLAUDE.md files
 groups/*
 !groups/main/
-!groups/global/
 groups/main/*
-groups/global/*
 !groups/main/CLAUDE.md
-!groups/global/CLAUDE.md
 
 # Secrets
 *.keys.json
@@ -46,6 +43,8 @@ Thumbs.db
 # Claude Code / Playwright
 .claude/
 .playwright-mcp/
+playwright-report/
+test-results/
 
 # Debug / temp
 context-dump.txt
