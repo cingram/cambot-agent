@@ -241,6 +241,90 @@ describe('WorkflowAgentHandler', () => {
     handler.destroy();
   });
 
+  it('emits error response when spawner returns error status', async () => {
+    const agent = createMockAgent();
+    const spawner = createMockSpawner({ status: 'error', content: 'Agent returned error' });
+    const repo = createMockAgentRepo(agent);
+
+    const handler = createWorkflowAgentHandler({ messageBus: bus, agentRepo: repo, spawner });
+
+    const responses: WorkflowAgentResponse[] = [];
+    bus.on(WorkflowAgentResponse, (e) => { responses.push(e); });
+
+    await bus.emit(new WorkflowAgentRequest('test', {
+      agentId: 'agent-1',
+      prompt: 'Hello',
+      runId: 'run-1',
+      stepId: 'step-1',
+      correlationId,
+    }));
+
+    expect(responses).toHaveLength(1);
+    expect(responses[0].status).toBe('error');
+    expect(responses[0].text).toBe('Agent returned error');
+    expect(responses[0].durationMs).toBeGreaterThanOrEqual(0);
+
+    handler.destroy();
+  });
+
+  it('recovers circuit breaker from half-open to closed on success', async () => {
+    const agent = createMockAgent({ concurrency: 5 });
+    let spawnResult = { status: 'error' as const, content: 'fail', durationMs: 100 };
+    const spawner: ContainerSpawner = {
+      spawn: vi.fn().mockImplementation(() => Promise.resolve({ ...spawnResult })),
+    };
+    const repo = createMockAgentRepo(agent);
+
+    const handler = createWorkflowAgentHandler({
+      messageBus: bus,
+      agentRepo: repo,
+      spawner,
+      failureThreshold: 2,
+      cooldownMs: 50, // Short cooldown for test
+    });
+
+    const responses: WorkflowAgentResponse[] = [];
+    bus.on(WorkflowAgentResponse, (e) => { responses.push(e); });
+
+    // Trigger failures to open circuit
+    for (let i = 0; i < 2; i++) {
+      await bus.emit(new WorkflowAgentRequest('test', {
+        agentId: 'agent-1', prompt: 'fail', runId: `run-${i}`, stepId: 'step-1',
+        correlationId: `corr-fail-${i}`,
+      }));
+    }
+
+    // Verify circuit is open
+    await bus.emit(new WorkflowAgentRequest('test', {
+      agentId: 'agent-1', prompt: 'rejected', runId: 'run-open', stepId: 'step-1',
+      correlationId: 'corr-open',
+    }));
+    expect(responses[responses.length - 1].text).toContain('Circuit open');
+
+    // Wait for cooldown to transition to half-open
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    // Switch spawner to success and send a request (half-open allows it)
+    spawnResult = { status: 'success' as any, content: 'recovered', durationMs: 50 };
+    await bus.emit(new WorkflowAgentRequest('test', {
+      agentId: 'agent-1', prompt: 'recovery', runId: 'run-recover', stepId: 'step-1',
+      correlationId: 'corr-recover',
+    }));
+
+    const recoveryResponse = responses[responses.length - 1];
+    expect(recoveryResponse.status).toBe('success');
+    expect(recoveryResponse.text).toBe('recovered');
+
+    // Circuit should be closed now — another request should work
+    await bus.emit(new WorkflowAgentRequest('test', {
+      agentId: 'agent-1', prompt: 'after-recovery', runId: 'run-after', stepId: 'step-1',
+      correlationId: 'corr-after',
+    }));
+    expect(responses[responses.length - 1].status).toBe('success');
+
+    handler.destroy();
+  });
+
   it('unsubscribes on destroy', async () => {
     const agent = createMockAgent();
     const spawner = createMockSpawner();

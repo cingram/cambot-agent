@@ -69,7 +69,7 @@ import { logger } from '../logger.js';
 import type { MessageBus } from '../types.js';
 import { OutboundMessage, GenericEvent } from '../bus/index.js';
 import { WorkflowAgentRequest } from '../bus/events/workflow-agent-request.js';
-import { WorkflowAgentResponse } from '../bus/events/workflow-agent-response.js';
+import { WorkflowAgentResponse, type ModelUsageEntry as BusModelUsageEntry } from '../bus/events/workflow-agent-response.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -113,11 +113,7 @@ export interface AgentStepInput {
  * Result from a container-based agent run.
  * Includes the text response and optional telemetry for cost tracking.
  */
-export interface ModelUsageEntry {
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-}
+export type ModelUsageEntry = BusModelUsageEntry;
 
 export interface AgentContainerResult {
   text: string;
@@ -439,7 +435,11 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     const graceMs = 30_000;
 
     const responsePromise = new Promise<WorkflowAgentResponse>((resolve, reject) => {
+      let settled = false;
+
       const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
         unsub();
         reject(new Error(`Bus agent request timed out after ${timeoutMs + graceMs}ms for agent "${agentId}"`));
       }, timeoutMs + graceMs);
@@ -447,6 +447,8 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
       const unsub = deps.messageBus.on(
         WorkflowAgentResponse,
         (event) => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timeout);
           unsub();
           resolve(event);
@@ -499,17 +501,16 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
 
     // Check if this agentId maps to a registered agent and should route via bus
     const agentId = config.agentId as string | undefined;
-    const usesBusRouting = agentId && deps.agentRepo?.getById(agentId);
+    const registeredAgent = agentId ? deps.agentRepo?.getById(agentId) : undefined;
 
-    if (usesBusRouting && runId && stepId) {
+    if (registeredAgent && runId && stepId) {
       logger.info(
         { agentId, runId, stepId, promptLength: prompt.length },
         'Workflow agent step: routing via bus',
       );
 
       const startTime = Date.now();
-      const agent = deps.agentRepo!.getById(agentId)!;
-      const containerResult = await runAgentViaBus(agentId, prompt, runId, stepId, agent.timeoutMs);
+      const containerResult = await runAgentViaBus(agentId!, prompt, runId, stepId, registeredAgent.timeoutMs);
       const durationMs = Date.now() - startTime;
 
       logger.info(

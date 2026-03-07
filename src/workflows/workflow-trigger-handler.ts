@@ -16,7 +16,7 @@ export function createWorkflowTriggerHandler(deps: WorkflowTriggerHandlerDeps): 
     async (event) => {
       const service = getWorkflowService();
       if (!service) {
-        logger.warn({ workflowId: event.workflowId }, 'WorkflowTrigger received but workflow service not available');
+        logger.warn({ workflowId: event.workflowId, source: event.source }, 'WorkflowTrigger received but workflow service not available');
         return;
       }
 
@@ -36,13 +36,14 @@ export function createWorkflowTriggerHandler(deps: WorkflowTriggerHandlerDeps): 
         const runId = await service.runWorkflow(event.workflowId);
         logger.info({ workflowId: event.workflowId, runId, source: event.source }, 'Workflow started via bus trigger');
       } catch (err) {
-        logger.error({ err, workflowId: event.workflowId }, 'WorkflowTrigger failed to start workflow');
+        logger.error({ err, workflowId: event.workflowId, source: event.source }, 'WorkflowTrigger failed to start workflow');
       }
     },
     {
       id: 'workflow-trigger-handler',
       priority: 50,
       source: 'workflow-trigger-handler',
+      sequential: true,
     },
   );
 
