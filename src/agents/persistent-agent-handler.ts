@@ -37,6 +37,9 @@ export interface PersistentAgentHandlerDeps {
   retryDelayMs?: number;
   failureThreshold?: number;
   cooldownMs?: number;
+  /** Auto-provision a persistent agent for an unclaimed channel.
+   *  When set, unclaimed channels get an agent created on-demand. */
+  autoProvision?: (channel: string) => RegisteredAgent;
 }
 
 export interface PersistentAgentHandler {
@@ -55,6 +58,7 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
     retryDelayMs = 1000,
     failureThreshold = 3,
     cooldownMs = 30_000,
+    autoProvision,
   } = deps;
 
   const resilienceStates = new Map<string, AgentResilienceState>();
@@ -126,6 +130,75 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
     }
   }
 
+  // ── Process message for a resolved agent ──────────────────
+
+  async function processForAgent(agent: RegisteredAgent, event: InboundMessage): Promise<void> {
+    const state = getOrCreateResilienceState(agent.id, agent.concurrency);
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        const delayMs = retryDelayMs * 2 ** (attempt - 1);
+        logger.debug(
+          { agentId: agent.id, attempt, delayMs, maxRetries },
+          'Retrying persistent agent spawn',
+        );
+        await new Promise<void>(resolve => setTimeout(resolve, delayMs));
+      }
+
+      // Circuit breaker — retries won't help while open, bail out
+      if (state.circuitState === 'open') {
+        logger.warn({ agentId: agent.id, circuitState: state.circuitState }, 'Rejected by circuit breaker');
+        lastError = new Error(`Circuit open for agent "${agent.id}"`);
+        break;
+      }
+
+      // Bulkhead — continue to retry with backoff (running container may finish)
+      if (state.activeCount >= state.concurrencyLimit) {
+        logger.warn(
+          { agentId: agent.id, activeCount: state.activeCount, concurrencyLimit: state.concurrencyLimit, attempt },
+          'Bulkhead full, will retry after backoff',
+        );
+        lastError = new Error(`Bulkhead full for agent "${agent.id}"`);
+        continue;
+      }
+
+      state.activeCount++;
+      try {
+        const result = await spawner.spawn(agent, event.message.content, event.jid, agent.timeoutMs);
+        if (result.status === 'success') {
+          logger.info(
+            { agentId: agent.id, durationMs: result.durationMs },
+            'Persistent agent query completed',
+          );
+          recordSuccess(agent.id, state);
+          return;
+        }
+        lastError = new Error(result.content);
+        logger.warn(
+          { agentId: agent.id, attempt, err: lastError.message },
+          'Persistent agent spawn returned error',
+        );
+        recordFailure(agent.id, state);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        logger.warn(
+          { agentId: agent.id, attempt, err: lastError.message },
+          'Persistent agent spawn threw exception',
+        );
+        recordFailure(agent.id, state);
+      } finally {
+        state.activeCount--;
+      }
+    }
+
+    logger.error(
+      { agentId: agent.id, err: lastError, attempts: maxRetries + 1 },
+      'Persistent agent query failed after all retries',
+    );
+    await emitErrorReply(event.jid, agent.id);
+  }
+
   // ── Bus handler ────────────────────────────────────────────
 
   const unsubscribe = messageBus.on(
@@ -134,7 +207,29 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
       const channel = event.channel;
       if (!channel) return;
 
-      const agentId = routingTable.get(channel);
+      let agentId = routingTable.get(channel);
+
+      // Auto-provision: create agent on-demand for unclaimed channels
+      if (!agentId && autoProvision) {
+        try {
+          const newAgent = autoProvision(channel);
+          routingTable = agentRepo.buildRoutingTable();
+          agentId = newAgent.id;
+          logger.info(
+            { agentId, channel },
+            'Auto-provisioned persistent agent for unclaimed channel',
+          );
+        } catch (err) {
+          logger.debug(
+            { channel, err: err instanceof Error ? err.message : String(err) },
+            'Auto-provision skipped (agent may already exist)',
+          );
+          // Retry routing table lookup — another concurrent message may have created it
+          routingTable = agentRepo.buildRoutingTable();
+          agentId = routingTable.get(channel);
+        }
+      }
+
       if (!agentId) return;
 
       event.cancelled = true;
@@ -151,70 +246,7 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
         'Routing inbound message to persistent agent',
       );
 
-      const state = getOrCreateResilienceState(agentId, agent.concurrency);
-      let lastError: Error | undefined;
-
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        if (attempt > 0) {
-          const delayMs = retryDelayMs * 2 ** (attempt - 1);
-          logger.debug(
-            { agentId, attempt, delayMs, maxRetries },
-            'Retrying persistent agent spawn',
-          );
-          await new Promise<void>(resolve => setTimeout(resolve, delayMs));
-        }
-
-        // Circuit breaker
-        if (state.circuitState === 'open') {
-          logger.warn({ agentId, circuitState: state.circuitState }, 'Rejected by circuit breaker');
-          lastError = new Error(`Circuit open for agent "${agentId}"`);
-          break;
-        }
-
-        // Bulkhead
-        if (state.activeCount >= state.concurrencyLimit) {
-          logger.warn(
-            { agentId, activeCount: state.activeCount, concurrencyLimit: state.concurrencyLimit },
-            'Rejected by bulkhead',
-          );
-          lastError = new Error(`Bulkhead full for agent "${agentId}"`);
-          break;
-        }
-
-        state.activeCount++;
-        try {
-          const result = await spawner.spawn(agent, event.message.content, event.jid, agent.timeoutMs);
-          if (result.status === 'success') {
-            logger.info(
-              { agentId, durationMs: result.durationMs },
-              'Persistent agent query completed',
-            );
-            recordSuccess(agentId, state);
-            return;
-          }
-          lastError = new Error(result.content);
-          logger.warn(
-            { agentId, attempt, err: lastError.message },
-            'Persistent agent spawn returned error',
-          );
-          recordFailure(agentId, state);
-        } catch (err) {
-          lastError = err instanceof Error ? err : new Error(String(err));
-          logger.warn(
-            { agentId, attempt, err: lastError.message },
-            'Persistent agent spawn threw exception',
-          );
-          recordFailure(agentId, state);
-        } finally {
-          state.activeCount--;
-        }
-      }
-
-      logger.error(
-        { agentId, err: lastError, attempts: maxRetries + 1 },
-        'Persistent agent query failed after all retries',
-      );
-      await emitErrorReply(event.jid, agentId);
+      await processForAgent(agent, event);
     },
     {
       id: 'persistent-agent-handler',

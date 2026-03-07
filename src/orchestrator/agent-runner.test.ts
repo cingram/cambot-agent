@@ -14,6 +14,9 @@ vi.mock('../config/config.js', () => ({
   DATA_DIR: '/tmp/cambot-test',
   GROUPS_DIR: '/tmp/cambot-test-groups',
   MAIN_GROUP_FOLDER: 'main',
+  CONVERSATION_ROTATION_ENABLED: false,
+  CONVERSATION_IDLE_TIMEOUT_MS: 14_400_000,
+  CONVERSATION_MAX_SIZE_KB: 500,
 }));
 
 vi.mock('../agents/agents.js', () => ({
@@ -81,7 +84,32 @@ vi.mock('../groups/group-folder.js', () => ({
 }));
 
 vi.mock('../utils/context-files.js', () => ({
-  writeContextFiles: vi.fn(),
+  buildAgentContext: vi.fn(() => ({})),
+}));
+
+// Mock conversation repository
+const mockConversations = new Map<string, { id: string; sessionId: string | null; agentFolder: string }>();
+let convCounter = 0;
+const mockResolveActiveConversation = vi.fn(
+  (folder: string, _channel: string, _chatJid?: string) => {
+    const existing = [...mockConversations.values()].find(c => c.agentFolder === folder);
+    if (existing) return existing;
+    const id = `conv-${++convCounter}`;
+    const conv = { id, sessionId: null, agentFolder: folder, isActive: true };
+    mockConversations.set(id, conv);
+    return conv;
+  },
+);
+const mockSetConversationSession = vi.fn((convId: string, sessionId: string) => {
+  const conv = mockConversations.get(convId);
+  if (conv) conv.sessionId = sessionId;
+});
+const mockUpdatePreview = vi.fn();
+
+vi.mock('../db/conversation-repository.js', () => ({
+  resolveActiveConversation: (...args: unknown[]) => mockResolveActiveConversation(...(args as Parameters<typeof mockResolveActiveConversation>)),
+  setConversationSession: (...args: unknown[]) => mockSetConversationSession(...(args as Parameters<typeof mockSetConversationSession>)),
+  updatePreview: (...args: unknown[]) => mockUpdatePreview(...(args as Parameters<typeof mockUpdatePreview>)),
 }));
 
 // Capture runContainerAgent calls
@@ -91,10 +119,7 @@ vi.mock('../container/runner.js', () => ({
 }));
 
 function createMockState(): RouterState {
-  const sessions: Record<string, string> = {};
   return {
-    getSession: vi.fn((key: string) => sessions[key]),
-    setSession: vi.fn((key: string, id: string) => { sessions[key] = id; }),
     getAvailableGroups: vi.fn(() => []),
     getRegisteredGroups: vi.fn(() => ({})),
   } as unknown as RouterState;
@@ -113,15 +138,15 @@ const webGroup: RegisteredGroup = {
   added_at: '2026-01-01T00:00:00Z',
 };
 
-describe('AgentRunner session keying', () => {
-  let state: RouterState;
+describe('AgentRunner conversation management', () => {
   let runner: AgentRunner;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    state = createMockState();
+    mockConversations.clear();
+    convCounter = 0;
     runner = new AgentRunner({
-      state,
+      state: createMockState(),
       queue: createMockQueue(),
       getWorkflowService: () => null as unknown as WorkflowService,
       getWorkflowBuilderService: () => null as unknown as WorkflowBuilderService,
@@ -134,48 +159,12 @@ describe('AgentRunner session keying', () => {
     });
   });
 
-  it('uses chatJid as session key, not group.folder', async () => {
+  it('resolves active conversation for the group folder', async () => {
     await runner.run(webGroup, 'hello', 'web:ui:conv1');
-
-    expect(state.getSession).toHaveBeenCalledWith('web:ui:conv1');
-    expect(state.getSession).not.toHaveBeenCalledWith('main');
+    expect(mockResolveActiveConversation).toHaveBeenCalledWith('main', 'web', 'web:ui:conv1');
   });
 
-  it('different chatJids get different sessions', async () => {
-    mockRunContainerAgent.mockResolvedValueOnce({
-      status: 'success',
-      result: 'ok',
-      newSessionId: 'session-aaa',
-    });
-    await runner.run(webGroup, 'hello', 'web:ui:conv1');
-
-    mockRunContainerAgent.mockResolvedValueOnce({
-      status: 'success',
-      result: 'ok',
-      newSessionId: 'session-bbb',
-    });
-    await runner.run(webGroup, 'hello', 'web:ui:conv2');
-
-    expect(state.setSession).toHaveBeenCalledWith('web:ui:conv1', 'session-aaa');
-    expect(state.setSession).toHaveBeenCalledWith('web:ui:conv2', 'session-bbb');
-  });
-
-  it('same chatJid resumes the same session', async () => {
-    mockRunContainerAgent.mockResolvedValueOnce({
-      status: 'success',
-      result: 'ok',
-      newSessionId: 'session-aaa',
-    });
-    await runner.run(webGroup, 'hello', 'web:ui:conv1');
-
-    // Second call should look up session for same JID
-    await runner.run(webGroup, 'follow up', 'web:ui:conv1');
-
-    const getCalls = (state.getSession as ReturnType<typeof vi.fn>).mock.calls;
-    expect(getCalls).toEqual([['web:ui:conv1'], ['web:ui:conv1']]);
-  });
-
-  it('persists session under chatJid after container run', async () => {
+  it('persists session via conversation repository', async () => {
     mockRunContainerAgent.mockResolvedValueOnce({
       status: 'success',
       result: 'ok',
@@ -184,8 +173,7 @@ describe('AgentRunner session keying', () => {
 
     await runner.run(webGroup, 'hello', 'web:ui:conv1');
 
-    expect(state.setSession).toHaveBeenCalledWith('web:ui:conv1', 'session-new');
-    expect(state.setSession).not.toHaveBeenCalledWith('main', expect.any(String));
+    expect(mockSetConversationSession).toHaveBeenCalledWith('conv-1', 'session-new');
   });
 
   it('does not set session when container returns no new session', async () => {
@@ -197,10 +185,10 @@ describe('AgentRunner session keying', () => {
 
     await runner.run(webGroup, 'hello', 'web:ui:conv1');
 
-    expect(state.setSession).not.toHaveBeenCalled();
+    expect(mockSetConversationSession).not.toHaveBeenCalled();
   });
 
-  it('non-web channels are unaffected (JID already unique)', async () => {
+  it('non-web channels use group folder for conversation', async () => {
     const whatsappGroup: RegisteredGroup = {
       name: 'Friends',
       folder: 'friends-group',
@@ -216,7 +204,6 @@ describe('AgentRunner session keying', () => {
 
     await runner.run(whatsappGroup, 'hey', '12345@g.us');
 
-    expect(state.getSession).toHaveBeenCalledWith('12345@g.us');
-    expect(state.setSession).toHaveBeenCalledWith('12345@g.us', 'session-wa');
+    expect(mockResolveActiveConversation).toHaveBeenCalledWith('friends-group', 'whatsapp', '12345@g.us');
   });
 });

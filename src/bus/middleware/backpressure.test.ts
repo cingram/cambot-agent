@@ -41,10 +41,10 @@ describe('createBackpressureMiddleware', () => {
 
   describe('strategy: drop', () => {
     let mw: BusMiddleware;
-    let onBackpressure: ReturnType<typeof vi.fn>;
+    let onBackpressure: (inFlight: number) => void;
 
     beforeEach(() => {
-      onBackpressure = vi.fn();
+      onBackpressure = vi.fn<(inFlight: number) => void>();
       mw = createBackpressureMiddleware({
         highWaterMark: 2,
         strategy: 'drop',
@@ -97,10 +97,10 @@ describe('createBackpressureMiddleware', () => {
 
   describe('strategy: warn', () => {
     let mw: BusMiddleware;
-    let onBackpressure: ReturnType<typeof vi.fn>;
+    let onBackpressure: (inFlight: number) => void;
 
     beforeEach(() => {
-      onBackpressure = vi.fn();
+      onBackpressure = vi.fn<(inFlight: number) => void>();
       mw = createBackpressureMiddleware({
         highWaterMark: 2,
         strategy: 'warn',

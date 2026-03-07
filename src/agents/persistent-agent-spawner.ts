@@ -9,11 +9,14 @@ import { execFile } from 'child_process';
 import type { AgentOptions } from './agents.js';
 import type { ContainerTelemetry } from '../container/runner.js';
 import type { ExecutionContext, MessageBus, RegisteredAgent } from '../types.js';
+import type { ContextFileDeps } from '../utils/context-files.js';
 import { runContainerAgent } from '../container/runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
 import { OutboundMessage } from '../bus/index.js';
 import { logger } from '../logger.js';
 import { resolveToolList } from '../tools/tool-policy.js';
+import { channelFromJid } from '../utils/channel-from-jid.js';
+import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 
 // ── Public types ───────────────────────────────────────────────
 
@@ -45,9 +48,14 @@ interface McpServerEntry {
 export interface PersistentAgentSpawnerDeps {
   getActiveMcpServers: () => McpServerEntry[] | undefined;
   getAgentOptions: () => AgentOptions;
-  getSession: (folder: string) => string | undefined;
-  setSession: (folder: string, sessionId: string) => void;
   messageBus: MessageBus;
+  /** Resolve a global template value (e.g. 'identity', 'soul'). Used as fallback
+   *  when a persistent agent doesn't define its own systemPrompt/soul. */
+  getTemplateValue: (key: string) => string | undefined;
+  /** Build full agent context (tasks, workflows, agents list, chats, etc.). */
+  buildAgentContext: (folder: string, isMain: boolean, chatJid: string, identityOverride?: string, soulOverride?: string) => ContextFileDeps;
+  /** Resolve container image + secret keys for a non-Claude provider. */
+  resolveAgentImage?: (provider: string, secretKeys: string[]) => AgentOptions;
   onTelemetry?: (telemetry: ContainerTelemetry, channel: string) => void;
   onContainerError?: (error: string, durationMs: number, channel: string) => void;
 }
@@ -76,14 +84,44 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
         containerConfig: { timeout: timeoutMs },
       };
 
-      // Scope MCP servers: empty allowlist = all servers; otherwise filter
+      // Scope MCP servers: agents must declare which servers they need.
+      // Empty list = no dynamic servers (least privilege).
       const allServers = deps.getActiveMcpServers();
       const scopedServers = agent.mcpServers.length === 0
-        ? allServers
+        ? undefined
         : allServers?.filter(s => agent.mcpServers.includes(s.name));
 
-      const sessionId = deps.getSession(agent.folder);
-      const agentOpts = deps.getAgentOptions();
+      // Resolve active conversation — handles auto-rotation (idle timeout + size)
+      const channel = channelFromJid(callerGroup);
+      const conversation = resolveActiveConversation(agent.folder, channel, callerGroup);
+      const sessionId = conversation.sessionId ?? undefined;
+      const isCustomProvider = agent.provider !== 'claude';
+
+      // Resolve container image: custom providers use resolveAgentImage, Claude uses default
+      const agentOpts = isCustomProvider && deps.resolveAgentImage
+        ? deps.resolveAgentImage(agent.provider, agent.secretKeys)
+        : deps.getAgentOptions();
+
+      // Build agent context: Claude agents get full context pipeline,
+      // custom providers skip it (they use their own prompt path)
+      const agentIdentity = isCustomProvider ? undefined : (agent.systemPrompt ?? deps.getTemplateValue('identity'));
+      const agentSoul = isCustomProvider ? undefined : (agent.soul ?? deps.getTemplateValue('soul'));
+      const agentContext = isCustomProvider
+        ? undefined
+        : deps.buildAgentContext(agent.folder, agent.isMain, callerGroup, agentIdentity, agentSoul);
+
+      // Build customAgent payload for non-Claude providers
+      const customAgent = isCustomProvider ? {
+        agentId: agent.id,
+        provider: agent.provider as 'openai' | 'xai' | 'anthropic' | 'google',
+        model: agent.model,
+        baseUrl: agent.baseUrl ?? undefined,
+        apiKeyEnvVar: agent.secretKeys[0] ?? '',
+        systemPrompt: agent.systemPrompt ?? '',
+        tools: agent.tools,
+        maxTokens: agent.maxTokens ?? undefined,
+        temperature: agent.temperature ?? undefined,
+      } : undefined;
 
       let finalResult = '';
       let spawnedContainerName: string | null = null;
@@ -100,7 +138,9 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             isMain: agent.isMain,
             isInterAgentTarget: isInterAgent,
             mcpServers: scopedServers,
-            allowedSdkTools: resolveToolList(agent.toolPolicy),
+            customAgent,
+            allowedSdkTools: isCustomProvider ? undefined : resolveToolList(agent.toolPolicy),
+            agentContext,
           },
           (_proc, containerName) => {
             spawnedContainerName = containerName;
@@ -111,13 +151,15 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
           },
           async (result) => {
             if (result.newSessionId) {
-              deps.setSession(agent.folder, result.newSessionId);
+              setConversationSession(conversation.id, result.newSessionId);
             }
             if (result.telemetry && deps.onTelemetry) {
               deps.onTelemetry(result.telemetry, callerGroup);
             }
             if (result.result) {
               finalResult = result.result;
+              // Update conversation preview with first 200 chars of response
+              updatePreview(conversation.id, result.result);
               // Suppress OutboundMessage for inter-agent calls — the result
               // goes back via the IPC result file, not through a channel.
               if (!isInterAgent) {
@@ -149,7 +191,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
         );
 
         if (output.newSessionId) {
-          deps.setSession(agent.folder, output.newSessionId);
+          setConversationSession(conversation.id, output.newSessionId);
         }
 
         if (output.status === 'error') {

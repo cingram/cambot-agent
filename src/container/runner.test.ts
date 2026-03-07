@@ -11,6 +11,7 @@ vi.mock('../config/config.js', () => ({
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   DATA_DIR: '/tmp/cambot-agent-test-data',
   GROUPS_DIR: '/tmp/cambot-agent-test-groups',
+  STORE_DIR: '/tmp/cambot-agent-test-store',
   IDLE_TIMEOUT: 1800000, // 30min
   HEARTBEAT_INTERVAL_MS: 5000,
   TIMEZONE: 'America/Los_Angeles',

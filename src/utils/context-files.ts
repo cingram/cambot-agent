@@ -11,6 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { SKILLS_DIR } from '../config/config.js';
 import { logger } from '../logger.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -53,14 +54,13 @@ interface ChatInfo {
 
 export interface ContextFileDeps {
   mcpServers: McpServerInfo[];
-  skillsDir: string;
   agents: AgentSummaryRow[];
   tasks: ScheduledTaskRow[];
   workflows: WorkflowSummary[];
-  agentIdentity?: string;  // system_prompt from DB (or global template)
-  agentSoul?: string;      // soul from DB (or global template)
-  chatJid?: string;                    // current message's JID
-  getChats?: () => ChatInfo[];         // getAllChats from db.ts
+  agentIdentity?: string;
+  agentSoul?: string;
+  chatJid?: string;
+  getChats?: () => ChatInfo[];
 }
 
 // ── Generators ───────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ function generateToolsMd(deps: ContextFileDeps): string {
   }
 
   // Skills
-  const skills = scanSkills(deps.skillsDir);
+  const skills = scanSkills(SKILLS_DIR);
   if (skills.length > 0) {
     lines.push('### Skills');
     lines.push('| Skill | Description |');
@@ -218,16 +218,8 @@ function scanSkills(skillsDir: string): SkillInfo[] {
 
 // ── Channel awareness ────────────────────────────────────────────────
 
-function resolveChannelFromJid(jid?: string): string {
-  if (!jid) return 'unknown';
-  if (jid.startsWith('web:')) return 'web';
-  if (jid.startsWith('im:')) return 'imessage';
-  if (jid.startsWith('tg:')) return 'telegram';
-  if (jid.startsWith('cli:')) return 'cli';
-  if (jid.startsWith('discord:')) return 'discord';
-  if (jid.includes('@g.us') || jid.includes('@s.whatsapp.net')) return 'whatsapp';
-  return 'unknown';
-}
+// Re-export shared utility used by generateChannelsMd
+import { channelFromJid as resolveChannelFromJid } from './channel-from-jid.js';
 
 function generateChannelsMd(deps: ContextFileDeps): string {
   const lines: string[] = ['## Channels\n'];
@@ -252,6 +244,34 @@ function generateChannelsMd(deps: ContextFileDeps): string {
   }
 
   return lines.join('\n');
+}
+
+// ── Context builder ──────────────────────────────────────────────────
+
+export interface AgentContextSources {
+  agentIdentity?: string;
+  agentSoul?: string;
+  mcpServers: McpServerInfo[];
+  agents: AgentSummaryRow[];
+  tasks: ScheduledTaskRow[];
+  workflows: WorkflowSummary[];
+  chatJid: string;
+  getChats: () => ChatInfo[];
+}
+
+/** Build a ContextFileDeps from shared data sources.
+ *  Used by both the default pipeline (AgentRunner) and persistent agent spawner. */
+export function buildAgentContext(sources: AgentContextSources): ContextFileDeps {
+  return {
+    mcpServers: sources.mcpServers,
+    agentIdentity: sources.agentIdentity,
+    agentSoul: sources.agentSoul,
+    agents: sources.agents,
+    tasks: sources.tasks,
+    workflows: sources.workflows,
+    chatJid: sources.chatJid,
+    getChats: sources.getChats,
+  };
 }
 
 // ── Public API ───────────────────────────────────────────────────────

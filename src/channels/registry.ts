@@ -192,8 +192,8 @@ export const channelDefinitions: ChannelDefinition[] = [
       const provider = createIMessageProvider(providerName, config);
       const pairing = (config as Record<string, unknown>).pairing as import('cambot-channels').PairingConfig;
       const channelOpts: import('cambot-channels').ChannelOpts = {
-        onMessage: (chatJid, msg, channel) => {
-          opts.messageBus.emit(new InboundMessage(channel ?? 'imessage', chatJid, msg, { channel: channel ?? 'imessage' })).catch(() => {});
+        onMessage: (chatJid: string, msg: import('cambot-channels').NewMessage) => {
+          opts.messageBus.emit(new InboundMessage('imessage', chatJid, msg, { channel: 'imessage' })).catch(() => {});
         },
         onChatMetadata: (chatJid, _timestamp, name, channel, isGroup) => {
           opts.messageBus.emit(new ChatMetadata(channel ?? 'imessage', chatJid, { name, channel: channel ?? 'imessage', isGroup })).catch(() => {});

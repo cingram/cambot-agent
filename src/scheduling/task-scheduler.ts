@@ -25,10 +25,10 @@ import { formatOutbound } from '../utils/router.js';
 import { MessageBus, RegisteredGroup, ScheduledTask, toExecutionContext } from '../types.js';
 import { OutboundMessage } from '../bus/index.js';
 import { resolveToolList } from '../tools/tool-policy.js';
+import { getActiveConversation } from '../db/conversation-repository.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
   queue: GroupQueue;
   onProcess: (groupJid: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
   messageBus: MessageBus;
@@ -108,10 +108,11 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
-  const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  // For group context mode, use the group's active conversation session
+  const activeConvo = task.context_mode === 'group'
+    ? getActiveConversation(task.group_folder)
+    : undefined;
+  const sessionId = activeConvo?.sessionId ?? undefined;
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the

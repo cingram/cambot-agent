@@ -10,6 +10,7 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   DATA_DIR,
   GROUPS_DIR,
+  STORE_DIR,
   EMAIL_GUARDRAIL_ENABLED,
   HEARTBEAT_INTERVAL_MS,
   IDLE_TIMEOUT,
@@ -25,6 +26,7 @@ import { createHeartbeatMonitor, type HeartbeatMonitor } from './heartbeat-monit
 import { validateAdditionalMounts } from './mount-security.js';
 import { ExecutionContext } from '../types.js';
 import { AgentOptions } from '../agents/agents.js';
+import { writeContextFiles, type ContextFileDeps } from '../utils/context-files.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---CAMBOT_AGENT_OUTPUT_START---';
@@ -64,6 +66,9 @@ export interface ContainerInput {
   ipcToken?: string;
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy) */
   allowedSdkTools?: string[];
+  /** Dynamic context files (identity, soul, tools, etc.) written before spawn.
+   *  When provided, runContainerAgent writes context files automatically. */
+  agentContext?: ContextFileDeps;
 }
 
 export interface ContainerTelemetry {
@@ -129,6 +134,16 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     });
     // Identity is now injected via 00-IDENTITY.md in the context dir,
     // so no global mount is needed for non-main agents.
+
+    // All non-main agents get read-only access to the knowledge database
+    // (main already has it via the project root mount)
+    if (fs.existsSync(STORE_DIR)) {
+      mounts.push({
+        hostPath: STORE_DIR,
+        containerPath: '/workspace/project/store',
+        readonly: true,
+      });
+    }
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
@@ -356,6 +371,12 @@ export async function runContainerAgent(
   // If a new container is spawned for the same group, the old container
   // will see the token change and self-exit on its next poll cycle.
   const groupIpcDir = resolveGroupIpcPath(execution.folder);
+
+  // Write dynamic context files (identity, soul, tools, channels, etc.)
+  if (input.agentContext) {
+    writeContextFiles(groupIpcDir, execution.isMain, input.agentContext);
+  }
+
   fs.writeFileSync(path.join(groupIpcDir, '_owner'), containerName);
   input.ipcToken = containerName;
 
@@ -383,6 +404,7 @@ export async function runContainerAgent(
     // Remove secrets and ephemeral fields from input so they don't appear in logs
     delete input.secrets;
     delete input.ipcToken;
+    delete input.agentContext;
 
     // Heartbeat monitor replaces the old setTimeout-based hard timeout.
     // Escalation: warn(15s) -> close(30s) -> stop(60s) -> kill(90s)

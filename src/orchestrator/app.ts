@@ -32,6 +32,8 @@ import { writeGroupsSnapshot } from '../container/snapshot-writers.js';
 import { cleanupStaleContainers, cleanupStaleHeartbeats, ensureContainerRuntimeRunning, cleanupOrphans, stopContainersForGroup, stopContainer } from '../container/runtime.js';
 import {
   getAgentDefinition,
+  getAllChats,
+  getAllTasks,
   getDatabase,
   initDatabase,
 } from '../db/index.js';
@@ -67,12 +69,14 @@ import { registerContentPipeHandler } from '../pipes/content-pipe-handler.js';
 import { createRawContentRepository, type RawContentRepository } from '../db/raw-content-repository.js';
 import type { ContentPipe } from '../pipes/content-pipe.js';
 import { createAgentRepository, type AgentRepository } from '../db/agent-repository.js';
+import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
 import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
+import { buildAgentContext } from '../utils/context-files.js';
 import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
+import { provisionAgent } from '../agents/agent-factory.js';
 import { createWorkflowTriggerHandler } from '../workflows/workflow-trigger-handler.js';
 import { createWorkflowAgentHandler } from '../workflows/workflow-agent-handler.js';
 import { GROUPS_DIR } from '../config/config.js';
-import { getSession, setSession } from '../db/index.js';
 
 export class CamBotApp {
   private state = new RouterState();
@@ -482,12 +486,34 @@ export class CamBotApp {
   }
 
   private createAgentSpawner(): import('../agents/persistent-agent-spawner.js').ContainerSpawner {
+    const db = getDatabase();
+    const templateRepo = createAgentTemplateRepository(db);
+    const agentRepo = this.agentRepo ?? createAgentRepository(db);
+
     return createPersistentAgentSpawner({
       getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
       getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
-      getSession: (folder) => getSession(folder),
-      setSession: (folder, sessionId) => setSession(folder, sessionId),
       messageBus: this.bus,
+      getTemplateValue: (key) => templateRepo.get(key),
+      buildAgentContext: (folder, isMain, chatJid, identityOverride, soulOverride) =>
+        buildAgentContext({
+          mcpServers: this.integrationMgr?.getActiveMcpServers() ?? [],
+          agentIdentity: identityOverride,
+          agentSoul: soulOverride,
+          agents: agentRepo.getAll().map(a => ({
+            id: a.id, name: a.name, description: a.description, provider: a.provider, model: a.model,
+          })),
+          tasks: getAllTasks().map(t => ({
+            id: t.id, prompt: t.prompt, schedule_type: t.schedule_type,
+            schedule_value: t.schedule_value, status: t.status, next_run: t.next_run,
+          })),
+          workflows: this.workflowService
+            ? this.workflowService.listWorkflows().map(wf => ({ id: wf.id, name: wf.name, schedule: wf.schedule }))
+            : [],
+          chatJid,
+          getChats: () => getAllChats(),
+        }),
+      resolveAgentImage: (provider, secretKeys) => resolveAgentImage(provider, secretKeys),
       onTelemetry: (telemetry, channel) => {
         this.interceptor?.recordTelemetry(telemetry, channel);
       },
@@ -502,6 +528,7 @@ export class CamBotApp {
       messageBus: this.bus,
       agentRepo,
       spawner,
+      autoProvision: (channel) => provisionAgent({ agentRepo }, { channel }),
     });
     this.workflowAgentHandler = createWorkflowAgentHandler({
       messageBus: this.bus,
@@ -516,20 +543,15 @@ export class CamBotApp {
       const agentRepo = createAgentRepository(db);
       agentRepo.ensureTable();
 
-      const agents = agentRepo.getAll();
-      if (agents.length === 0) {
-        logger.info('No persistent agents registered, skipping persistent agent init');
-        return;
-      }
-
       this.agentRepo = agentRepo;
       const spawner = this.createAgentSpawner();
       this.agentSpawner = spawner;
       this.bootstrapAgentHandlers(agentRepo, spawner);
 
+      const agents = agentRepo.getAll();
       logger.info(
         { agentCount: agents.length, agents: agents.map(a => a.id) },
-        'Persistent agents initialized',
+        'Persistent agents initialized (auto-provisioning enabled)',
       );
     } catch (err) {
       logger.error({ err }, 'Failed to initialize persistent agents');
@@ -541,26 +563,9 @@ export class CamBotApp {
       this.cleanupAgentFolder(deletedFolder);
     }
 
-    const db = getDatabase();
-    const agentRepo = createAgentRepository(db);
-
     if (this.persistentAgentHandler) {
       this.persistentAgentHandler.reload();
-      return;
     }
-
-    const agents = agentRepo.getAll();
-    if (agents.length === 0) return;
-
-    this.agentRepo = agentRepo;
-    const spawner = this.createAgentSpawner();
-    this.agentSpawner = spawner;
-    this.bootstrapAgentHandlers(agentRepo, spawner);
-
-    logger.info(
-      { agentCount: agents.length, agents: agents.map(a => a.id) },
-      'Persistent agents initialized via API mutation',
-    );
   }
 
   /**
@@ -604,7 +609,6 @@ export class CamBotApp {
   private startSubsystems(): void {
     startSchedulerLoop({
       registeredGroups: () => this.state.getRegisteredGroups(),
-      getSessions: () => this.state.getAllSessions(),
       queue: this.queue,
       onProcess: (groupJid, proc, containerName, groupFolder) =>
         this.queue.registerProcess(groupJid, proc, containerName, groupFolder),

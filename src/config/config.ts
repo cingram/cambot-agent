@@ -23,6 +23,9 @@ const envConfig = readEnvFile([
   'EMAIL_RATE_PER_HOUR',
   'EMAIL_RATE_PER_DAY',
   'EMAIL_LOOP_THRESHOLD',
+  'CONVERSATION_ROTATION_ENABLED',
+  'CONVERSATION_IDLE_TIMEOUT_MS',
+  'CONVERSATION_MAX_SIZE_KB',
 ]);
 
 export const ASSISTANT_NAME =
@@ -59,6 +62,7 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+export const SKILLS_DIR = path.resolve(PROJECT_ROOT, 'container', 'skills');
 export const MAIN_GROUP_FOLDER = 'main';
 
 /** Base directory for the file channel. Defaults to filesystem root so workflow
@@ -154,6 +158,21 @@ export const EMAIL_LOOP_THRESHOLD = parseInt(
 // envelope isolation) handles inbound injection. Enable for extra outbound review.
 export const EMAIL_GUARDRAIL_ENABLED =
   (process.env.EMAIL_GUARDRAIL_ENABLED ?? envConfig.EMAIL_GUARDRAIL_ENABLED ?? 'false') === 'true';
+
+// Conversation rotation — auto-start new conversations based on idle time or transcript size.
+// Set CONVERSATION_ROTATION_ENABLED=false to keep conversations indefinitely.
+export const CONVERSATION_ROTATION_ENABLED =
+  (process.env.CONVERSATION_ROTATION_ENABLED ?? envConfig.CONVERSATION_ROTATION_ENABLED ?? 'true') !== 'false';
+// Idle timeout before auto-rotating to a new conversation (default 4 hours).
+export const CONVERSATION_IDLE_TIMEOUT_MS = parseInt(
+  process.env.CONVERSATION_IDLE_TIMEOUT_MS || envConfig.CONVERSATION_IDLE_TIMEOUT_MS || String(4 * 60 * 60 * 1000),
+  10,
+);
+// Max transcript size in KB before rotating (default 500KB).
+export const CONVERSATION_MAX_SIZE_KB = parseInt(
+  process.env.CONVERSATION_MAX_SIZE_KB || envConfig.CONVERSATION_MAX_SIZE_KB || '500',
+  10,
+);
 
 // Heartbeat monitoring interval (host polls container heartbeat file at this rate)
 export const HEARTBEAT_INTERVAL_MS = 5000;

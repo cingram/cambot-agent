@@ -33,10 +33,10 @@ vi.mock('../container/runner.js', () => ({
   runContainerAgent: (...args: unknown[]) => mockRunContainerAgent(...args),
 }));
 
-// Mock db
-vi.mock('../db/index.js', () => ({
-  getSession: vi.fn(() => undefined),
-  setSession: vi.fn(),
+// Mock conversation repository
+vi.mock('../db/conversation-repository.js', () => ({
+  resolveActiveConversation: vi.fn(() => ({ id: 'conv-1', sessionId: null })),
+  setConversationSession: vi.fn(),
 }));
 
 // Mock router

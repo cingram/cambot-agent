@@ -11,7 +11,7 @@ import path from 'path';
 
 import { ADMIN_KEY, ADMIN_TRIGGER, GROUPS_DIR } from '../config/config.js';
 import { runContainerAgent } from '../container/runner.js';
-import { getSession, setSession } from '../db/index.js';
+import { resolveActiveConversation, setConversationSession } from '../db/conversation-repository.js';
 import { formatOutbound } from '../utils/router.js';
 import { logger } from '../logger.js';
 import { Channel, ExecutionContext, MessageBus } from '../types.js';
@@ -87,7 +87,8 @@ async function spawnShadowContainer(
   channels: Channel[],
   agentOpts: AgentOptions,
 ): Promise<void> {
-  const sessionId = getSession(SHADOW_FOLDER);
+  const conversation = resolveActiveConversation(SHADOW_FOLDER, 'admin', sourceChatJid);
+  const sessionId = conversation.sessionId ?? undefined;
   const wrappedPrompt = `<admin_context source_chat="${sourceChatJid}" />\n\n${prompt}`;
 
   const execution: ExecutionContext = {
@@ -109,7 +110,7 @@ async function spawnShadowContainer(
       () => {}, // no process tracking needed
       async (result) => {
         if (result.newSessionId) {
-          setSession(SHADOW_FOLDER, result.newSessionId);
+          setConversationSession(conversation.id, result.newSessionId);
         }
         if (result.result) {
           const text = typeof result.result === 'string'
@@ -122,7 +123,7 @@ async function spawnShadowContainer(
     );
 
     if (output.newSessionId) {
-      setSession(SHADOW_FOLDER, output.newSessionId);
+      setConversationSession(conversation.id, output.newSessionId);
     }
 
     if (output.status === 'error') {

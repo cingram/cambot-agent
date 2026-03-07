@@ -1,11 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import {
-  DATA_DIR,
-  GROUPS_DIR,
-  MAIN_GROUP_FOLDER,
-} from '../config/config.js';
+import { DATA_DIR, MAIN_GROUP_FOLDER } from '../config/config.js';
 import { getLeadAgentId, resolveAgentImage } from '../agents/agents.js';
 import type { IntegrationManager } from '../integrations/index.js';
 import {
@@ -30,13 +26,14 @@ import {
 } from '../db/index.js';
 import { createAgentRepository } from '../db/agent-repository.js';
 import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
-import { resolveGroupIpcPath } from '../groups/group-folder.js';
 import { GroupQueue } from '../groups/group-queue.js';
 import { logger } from '../logger.js';
 import { toExecutionContext } from '../types.js';
 import type { RegisteredGroup } from '../types.js';
 import { resolveToolList } from '../tools/tool-policy.js';
-import { writeContextFiles } from '../utils/context-files.js';
+import { channelFromJid } from '../utils/channel-from-jid.js';
+import { buildAgentContext, type ContextFileDeps } from '../utils/context-files.js';
+import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 import type { WorkflowService } from '../workflows/workflow-service.js';
 import type { WorkflowBuilderService } from '../workflows/workflow-builder-service.js';
 import type { RouterState } from './router-state.js';
@@ -85,37 +82,26 @@ export class AgentRunner {
     chatJid: string,
     onOutput?: (output: ContainerOutput) => Promise<void>,
   ): Promise<'success' | 'error'> {
-    const { state, queue } = this.deps;
+    const { queue } = this.deps;
     const isMain = group.folder === MAIN_GROUP_FOLDER;
-    let sessionId: string | undefined = state.getSession(chatJid);
 
-    // Rotate session when transcript gets too large (>500KB)
-    if (sessionId) {
-      const transcriptPath = path.join(
-        DATA_DIR, 'sessions', group.folder, '.claude', 'projects',
-        '-workspace-group', `${sessionId}.jsonl`,
-      );
-      try {
-        const stat = fs.statSync(transcriptPath);
-        if (stat.size > 512_000) {
-          logger.info(
-            { group: group.name, sessionId, sizeKB: Math.round(stat.size / 1024) },
-            'Session transcript too large, starting fresh session',
-          );
-          sessionId = undefined;
-        }
-      } catch {
-        // File not found — session may have been cleaned up, start fresh
-      }
-    }
+    // Resolve active conversation — handles auto-rotation (idle + size)
+    const channel = channelFromJid(chatJid);
+    const conversation = resolveActiveConversation(group.folder, channel, chatJid);
+    const sessionId = conversation.sessionId ?? undefined;
 
-    this.writeSnapshots(group, isMain, chatJid);
+    const snapshot = this.fetchSnapshot(group.folder);
+    const agentContext = this.buildContext(snapshot, isMain, chatJid);
+    this.writeSnapshots(group, isMain, snapshot);
 
     // Wrap onOutput to track session ID from streamed results
     const wrappedOnOutput = onOutput
       ? async (output: ContainerOutput) => {
           if (output.newSessionId) {
-            state.setSession(chatJid, output.newSessionId);
+            setConversationSession(conversation.id, output.newSessionId);
+          }
+          if (output.result) {
+            updatePreview(conversation.id, output.result);
           }
           await onOutput(output);
         }
@@ -136,6 +122,7 @@ export class AgentRunner {
           isMain,
           mcpServers: integrationMgr?.getActiveMcpServers(),
           allowedSdkTools: resolveToolList(group.containerConfig?.toolPolicy),
+          agentContext,
         },
         (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
         wrappedOnOutput,
@@ -143,7 +130,7 @@ export class AgentRunner {
       );
 
       if (output.newSessionId) {
-        state.setSession(chatJid, output.newSessionId);
+        setConversationSession(conversation.id, output.newSessionId);
       }
 
       if (output.status === 'error') {
@@ -161,72 +148,91 @@ export class AgentRunner {
     }
   }
 
-  private writeSnapshots(group: RegisteredGroup, isMain: boolean, chatJid: string): void {
-    const { state } = this.deps;
+  /** Fetch all data needed by both context files and snapshots — single pass. */
+  private fetchSnapshot(folder: string) {
     const workflowService = this.deps.getWorkflowService();
-    const workflowBuilderService = this.deps.getWorkflowBuilderService();
     const integrationMgr = this.deps.getIntegrationManager();
+    const agent = this.agentRepo.getByFolder(folder);
 
-    // Tasks snapshot
-    const tasks = getAllTasks();
+    return {
+      tasks: getAllTasks(),
+      agents: this.agentRepo.getAll(),
+      workflows: workflowService?.listWorkflows() ?? [],
+      mcpServers: integrationMgr?.getActiveMcpServers() ?? [],
+      agentIdentity: agent?.systemPrompt ?? this.templateRepo.get('identity'),
+      agentSoul: agent?.soul ?? this.templateRepo.get('soul'),
+    };
+  }
+
+  /** Build the agent context for injection into ContainerInput. */
+  private buildContext(
+    snapshot: ReturnType<AgentRunner['fetchSnapshot']>,
+    isMain: boolean,
+    chatJid: string,
+  ): ContextFileDeps {
+    return buildAgentContext({
+      mcpServers: snapshot.mcpServers,
+      agentIdentity: snapshot.agentIdentity,
+      agentSoul: snapshot.agentSoul,
+      agents: snapshot.agents.map(a => ({
+        id: a.id, name: a.name, description: a.description, provider: a.provider, model: a.model,
+      })),
+      tasks: snapshot.tasks.map(t => ({
+        id: t.id, prompt: t.prompt, schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value, status: t.status, next_run: t.next_run,
+      })),
+      workflows: snapshot.workflows.map(wf => ({
+        id: wf.id, name: wf.name, schedule: wf.schedule,
+      })),
+      chatJid,
+      getChats: () => getAllChats(),
+    });
+  }
+
+  private writeSnapshots(
+    group: RegisteredGroup,
+    isMain: boolean,
+    snapshot: ReturnType<AgentRunner['fetchSnapshot']>,
+  ): void {
+    const { state } = this.deps;
+    const workflowBuilderService = this.deps.getWorkflowBuilderService();
+
     writeTasksSnapshot(
-      group.folder,
-      isMain,
-      tasks.map((t) => ({
-        id: t.id,
-        groupFolder: t.group_folder,
-        prompt: t.prompt,
-        schedule_type: t.schedule_type,
-        schedule_value: t.schedule_value,
-        status: t.status,
-        next_run: t.next_run,
+      group.folder, isMain,
+      snapshot.tasks.map(t => ({
+        id: t.id, groupFolder: t.group_folder, prompt: t.prompt,
+        schedule_type: t.schedule_type, schedule_value: t.schedule_value,
+        status: t.status, next_run: t.next_run,
       })),
     );
 
-    // Archived tasks snapshot
     const archived = getArchivedTasks();
     writeArchivedTasksSnapshot(
-      group.folder,
-      isMain,
-      archived.map((t) => ({
-        id: t.id,
-        groupFolder: t.group_folder,
-        prompt: t.prompt,
-        schedule_type: t.schedule_type,
-        schedule_value: t.schedule_value,
-        status: t.status,
+      group.folder, isMain,
+      archived.map(t => ({
+        id: t.id, groupFolder: t.group_folder, prompt: t.prompt,
+        schedule_type: t.schedule_type, schedule_value: t.schedule_value, status: t.status,
       })),
     );
 
-    // Available groups snapshot
     const availableGroups = state.getAvailableGroups();
     writeGroupsSnapshot(
-      group.folder,
-      isMain,
-      availableGroups,
+      group.folder, isMain, availableGroups,
       new Set(Object.keys(state.getRegisteredGroups())),
     );
 
-    // Workflows snapshot (per-workflow files)
-    if (workflowService) {
-      const workflows = workflowService.listWorkflows().map(wf => ({
-        id: wf.id,
-        name: wf.name,
-        description: wf.description,
-        version: wf.version,
-        hash: wf.hash,
-        schedule: wf.schedule,
+    if (snapshot.workflows.length > 0) {
+      const workflowService = this.deps.getWorkflowService()!;
+      const workflows = snapshot.workflows.map(wf => ({
+        id: wf.id, name: wf.name, description: wf.description,
+        version: wf.version, hash: wf.hash, schedule: wf.schedule,
         steps: wf.steps.map(s => ({ id: s.id, type: s.type, name: s.name, config: s.config, after: s.after })),
         policy: wf.policy as unknown as Record<string, unknown>,
       }));
       const runs = workflowService.listRuns(undefined, 20).map(r => ({
-        runId: r.runId,
-        workflowId: r.workflowId,
-        status: r.status,
-        startedAt: r.startedAt,
-        completedAt: r.completedAt,
-        error: r.error,
-        totalCostUsd: r.totalCostUsd,
+        runId: r.runId, workflowId: r.workflowId, status: r.status,
+        startedAt: r.startedAt, completedAt: r.completedAt,
+        error: r.error, totalCostUsd: r.totalCostUsd,
       }));
       writeWorkflowsSnapshot(group.folder, isMain, workflows, runs);
 
@@ -235,52 +241,9 @@ export class AgentRunner {
       }
     }
 
-    // Workers snapshot
-    const allWorkers = getAllAgentDefinitions();
-    writeWorkersSnapshot(group.folder, allWorkers);
+    writeWorkersSnapshot(group.folder, getAllAgentDefinitions());
 
-    // Persistent agents snapshot (for send_to_agent discovery)
     const registeredAgents = this.deps.getRegisteredAgents?.() ?? [];
     writePersistentAgentsSnapshot(group.folder, registeredAgents);
-
-    // Resolve agent identity and soul from DB
-    const agent = this.agentRepo.getByFolder(group.folder);
-    const agentIdentity = agent?.systemPrompt ?? this.templateRepo.get('identity');
-    const agentSoul = agent?.soul ?? this.templateRepo.get('soul');
-
-    // Dynamic context files
-    const groupIpcDir = resolveGroupIpcPath(group.folder);
-    const activeMcpServers = integrationMgr?.getActiveMcpServers() ?? [];
-    const skillsDir = path.join(process.cwd(), 'container', 'skills');
-    writeContextFiles(groupIpcDir, isMain, {
-      mcpServers: activeMcpServers,
-      skillsDir,
-      agentIdentity,
-      agentSoul,
-      agents: this.agentRepo.getAll().map(a => ({
-        id: a.id,
-        name: a.name,
-        description: a.description,
-        provider: a.provider,
-        model: a.model,
-      })),
-      tasks: tasks.map(t => ({
-        id: t.id,
-        prompt: t.prompt,
-        schedule_type: t.schedule_type,
-        schedule_value: t.schedule_value,
-        status: t.status,
-        next_run: t.next_run,
-      })),
-      workflows: workflowService
-        ? workflowService.listWorkflows().map(wf => ({
-            id: wf.id,
-            name: wf.name,
-            schedule: wf.schedule,
-          }))
-        : [],
-      chatJid,
-      getChats: () => getAllChats(),
-    });
   }
 }

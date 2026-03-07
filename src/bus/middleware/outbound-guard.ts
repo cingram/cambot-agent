@@ -50,12 +50,7 @@ interface SlidingWindow {
 }
 
 /** Derive channel name from JID prefix (e.g. "email:foo@bar" → "email") */
-function channelFromJid(jid: string): string {
-  const colonIdx = jid.indexOf(':');
-  if (colonIdx > 0) return jid.slice(0, colonIdx);
-  if (jid.includes('@g.us') || jid.includes('@s.whatsapp.net')) return 'whatsapp';
-  return 'unknown';
-}
+import { channelFromJid } from '../../utils/channel-from-jid.js';
 
 /** Prune timestamps older than the given window from the array (mutates in place). */
 function pruneWindow(timestamps: number[], windowMs: number, now: number): void {

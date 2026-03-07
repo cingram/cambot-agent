@@ -358,6 +358,113 @@ describe('createPersistentAgentHandler', () => {
     );
   });
 
+  it('auto-provisions agent for unclaimed channel when autoProvision is set', async () => {
+    const routingTable = new Map<string, string>();
+    const agentMap = new Map<string, RegisteredAgent>();
+    const agentRepo = makeMockAgentRepo(routingTable, agentMap);
+    const spawner = makeMockSpawner();
+    const messageBus = new MessageBus();
+
+    const provisionedAgent = makeAgent({ id: 'web-agent', channels: ['web'] });
+    const autoProvision = vi.fn((channel: string) => {
+      // Simulate provisioning: add to maps so subsequent lookups work
+      agentMap.set('web-agent', provisionedAgent);
+      const newTable = new Map([['web', 'web-agent']]);
+      (agentRepo.buildRoutingTable as ReturnType<typeof vi.fn>).mockReturnValue(newTable);
+      (agentRepo.getById as ReturnType<typeof vi.fn>).mockImplementation((id: string) => agentMap.get(id));
+      return provisionedAgent;
+    });
+
+    createPersistentAgentHandler({
+      messageBus, agentRepo, spawner, autoProvision,
+    });
+
+    const event = makeInboundEvent('web');
+    await messageBus.emit(event);
+
+    expect(autoProvision).toHaveBeenCalledWith('web');
+    expect(event.cancelled).toBe(true);
+    expect(spawner.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'web-agent' }),
+      'Hello',
+      'web:jid',
+      60_000,
+    );
+  });
+
+  it('falls through when autoProvision is not set and channel unclaimed', async () => {
+    const routingTable = new Map<string, string>();
+    const agentRepo = makeMockAgentRepo(routingTable);
+    const spawner = makeMockSpawner();
+    const messageBus = new MessageBus();
+
+    createPersistentAgentHandler({ messageBus, agentRepo, spawner });
+
+    const event = makeInboundEvent('web');
+    await messageBus.emit(event);
+
+    expect(event.cancelled).toBe(false);
+    expect(spawner.spawn).not.toHaveBeenCalled();
+  });
+
+  it('handles autoProvision failure gracefully (race condition)', async () => {
+    const routingTable = new Map<string, string>();
+    const agentRepo = makeMockAgentRepo(routingTable);
+    const spawner = makeMockSpawner();
+    const messageBus = new MessageBus();
+
+    const autoProvision = vi.fn(() => {
+      throw new Error('UNIQUE constraint failed: folder');
+    });
+
+    createPersistentAgentHandler({
+      messageBus, agentRepo, spawner, autoProvision,
+    });
+
+    const event = makeInboundEvent('web');
+    await messageBus.emit(event);
+
+    // Should fall through gracefully — no crash, no cancel
+    expect(event.cancelled).toBe(false);
+    expect(spawner.spawn).not.toHaveBeenCalled();
+  });
+
+  it('handles autoProvision race by retrying routing table lookup', async () => {
+    const routingTable = new Map<string, string>();
+    const agentMap = new Map<string, RegisteredAgent>();
+    const agentRepo = makeMockAgentRepo(routingTable, agentMap);
+    const spawner = makeMockSpawner();
+    const messageBus = new MessageBus();
+
+    const provisionedAgent = makeAgent({ id: 'web-agent', channels: ['web'] });
+
+    // First call throws (race), but routing table has the agent after rebuild
+    const autoProvision = vi.fn(() => {
+      // Simulate: another concurrent call already created it
+      agentMap.set('web-agent', provisionedAgent);
+      const newTable = new Map([['web', 'web-agent']]);
+      (agentRepo.buildRoutingTable as ReturnType<typeof vi.fn>).mockReturnValue(newTable);
+      (agentRepo.getById as ReturnType<typeof vi.fn>).mockImplementation((id: string) => agentMap.get(id));
+      throw new Error('UNIQUE constraint failed');
+    });
+
+    createPersistentAgentHandler({
+      messageBus, agentRepo, spawner, autoProvision,
+    });
+
+    const event = makeInboundEvent('web');
+    await messageBus.emit(event);
+
+    // Should succeed via routing table retry
+    expect(event.cancelled).toBe(true);
+    expect(spawner.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'web-agent' }),
+      'Hello',
+      'web:jid',
+      60_000,
+    );
+  });
+
   it('destroy() unsubscribes from bus and stops routing', async () => {
     const agent = makeAgent({ id: 'wa-agent' });
     const routingTable = new Map([['whatsapp', 'wa-agent']]);
