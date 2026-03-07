@@ -1,4 +1,5 @@
 import { exec } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 
 import {
@@ -28,7 +29,7 @@ import {
   type ContainerOutput,
 } from '../container/runner.js';
 import { writeGroupsSnapshot } from '../container/snapshot-writers.js';
-import { cleanupStaleContainers, cleanupStaleHeartbeats, ensureContainerRuntimeRunning, cleanupOrphans, stopContainer } from '../container/runtime.js';
+import { cleanupStaleContainers, cleanupStaleHeartbeats, ensureContainerRuntimeRunning, cleanupOrphans, stopContainersForGroup, stopContainer } from '../container/runtime.js';
 import {
   getAgentDefinition,
   getDatabase,
@@ -66,7 +67,6 @@ import { registerContentPipeHandler } from '../pipes/content-pipe-handler.js';
 import { createRawContentRepository, type RawContentRepository } from '../db/raw-content-repository.js';
 import type { ContentPipe } from '../pipes/content-pipe.js';
 import { createAgentRepository, type AgentRepository } from '../db/agent-repository.js';
-import { createPersistentAgentBootstrap } from '../agents/persistent-agent-bootstrap.js';
 import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
 import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
 import { createWorkflowTriggerHandler } from '../workflows/workflow-trigger-handler.js';
@@ -249,7 +249,7 @@ export class CamBotApp {
       messageBus: this.bus,
       getChannels: () => this.channels,
       adminJid: ADMIN_JID,
-      agentRepo: { getById: (id: string) => this.agentRepo?.getById(id) } as AgentRepository,
+      agentRepo: { getById: (id: string) => this.agentRepo?.getById(id) },
       onStepCost: (cost) => {
         this.interceptor?.recordStepCost(cost);
       },
@@ -463,7 +463,7 @@ export class CamBotApp {
             this.routeAuditEvent(event);
           }
         : undefined,
-      onAgentMutation: () => this.handleAgentMutation(),
+      onAgentMutation: (deletedFolder: string | undefined) => this.handleAgentMutation(deletedFolder),
     };
 
     this.integrationMgr = createIntegrationManager(buildIntegrationDefinitions());
@@ -481,87 +481,8 @@ export class CamBotApp {
     });
   }
 
-  private initPersistentAgents(): void {
-    try {
-      const db = getDatabase();
-      const agentRepo = createAgentRepository(db);
-      agentRepo.ensureTable();
-
-      const agents = agentRepo.getAll();
-      if (agents.length === 0) {
-        logger.info('No persistent agents registered, skipping persistent agent init');
-        return;
-      }
-
-      // Bootstrap workspace folders
-      const bootstrap = createPersistentAgentBootstrap(GROUPS_DIR);
-      bootstrap.bootstrapAll(agents);
-
-      // Store repo for IPC inter-agent messaging
-      this.agentRepo = agentRepo;
-
-      // Create spawner with scoped MCP servers
-      const spawner = createPersistentAgentSpawner({
-        getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
-        getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
-        getSession: (folder) => getSession(folder),
-        setSession: (folder, sessionId) => setSession(folder, sessionId),
-        messageBus: this.bus,
-        onTelemetry: (telemetry, channel) => {
-          this.interceptor?.recordTelemetry(telemetry, channel);
-        },
-        onContainerError: (error, durationMs, channel) => {
-          this.interceptor?.recordContainerError(error, durationMs, channel);
-        },
-      });
-
-      // Store spawner for IPC inter-agent messaging
-      this.agentSpawner = spawner;
-
-      // Create unified handler (routes messages + resilience in one place)
-      this.persistentAgentHandler = createPersistentAgentHandler({
-        messageBus: this.bus,
-        agentRepo,
-        spawner,
-      });
-
-      // Create workflow agent handler (bus-based workflow→agent routing)
-      this.workflowAgentHandler = createWorkflowAgentHandler({
-        messageBus: this.bus,
-        agentRepo,
-        spawner,
-      });
-
-      logger.info(
-        { agentCount: agents.length, agents: agents.map(a => a.id) },
-        'Persistent agents initialized',
-      );
-    } catch (err) {
-      logger.error({ err }, 'Failed to initialize persistent agents');
-    }
-  }
-
-  private handleAgentMutation(): void {
-    const db = getDatabase();
-    const agentRepo = createAgentRepository(db);
-
-    // Bootstrap workspace folders for any new agents
-    const bootstrap = createPersistentAgentBootstrap(GROUPS_DIR);
-    bootstrap.bootstrapAll(agentRepo.getAll());
-
-    // If the handler already exists, just reload routing
-    if (this.persistentAgentHandler) {
-      this.persistentAgentHandler.reload();
-      return;
-    }
-
-    // First agent created at runtime — spin up the full persistent agent infra
-    const agents = agentRepo.getAll();
-    if (agents.length === 0) return;
-
-    this.agentRepo = agentRepo;
-
-    const spawner = createPersistentAgentSpawner({
+  private createAgentSpawner(): import('../agents/persistent-agent-spawner.js').ContainerSpawner {
+    return createPersistentAgentSpawner({
       getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
       getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
       getSession: (folder) => getSession(folder),
@@ -574,25 +495,110 @@ export class CamBotApp {
         this.interceptor?.recordContainerError(error, durationMs, channel);
       },
     });
+  }
 
-    this.agentSpawner = spawner;
-
+  private bootstrapAgentHandlers(agentRepo: AgentRepository, spawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner): void {
     this.persistentAgentHandler = createPersistentAgentHandler({
       messageBus: this.bus,
       agentRepo,
       spawner,
     });
-
     this.workflowAgentHandler = createWorkflowAgentHandler({
       messageBus: this.bus,
       agentRepo,
       spawner,
     });
+  }
+
+  private initPersistentAgents(): void {
+    try {
+      const db = getDatabase();
+      const agentRepo = createAgentRepository(db);
+      agentRepo.ensureTable();
+
+      const agents = agentRepo.getAll();
+      if (agents.length === 0) {
+        logger.info('No persistent agents registered, skipping persistent agent init');
+        return;
+      }
+
+      this.agentRepo = agentRepo;
+      const spawner = this.createAgentSpawner();
+      this.agentSpawner = spawner;
+      this.bootstrapAgentHandlers(agentRepo, spawner);
+
+      logger.info(
+        { agentCount: agents.length, agents: agents.map(a => a.id) },
+        'Persistent agents initialized',
+      );
+    } catch (err) {
+      logger.error({ err }, 'Failed to initialize persistent agents');
+    }
+  }
+
+  private handleAgentMutation(deletedFolder?: string): void {
+    if (deletedFolder) {
+      this.cleanupAgentFolder(deletedFolder);
+    }
+
+    const db = getDatabase();
+    const agentRepo = createAgentRepository(db);
+
+    if (this.persistentAgentHandler) {
+      this.persistentAgentHandler.reload();
+      return;
+    }
+
+    const agents = agentRepo.getAll();
+    if (agents.length === 0) return;
+
+    this.agentRepo = agentRepo;
+    const spawner = this.createAgentSpawner();
+    this.agentSpawner = spawner;
+    this.bootstrapAgentHandlers(agentRepo, spawner);
 
     logger.info(
       { agentCount: agents.length, agents: agents.map(a => a.id) },
       'Persistent agents initialized via API mutation',
     );
+  }
+
+  /**
+   * Async cleanup of a deleted agent's disk artifacts.
+   * Kills any running containers first, then removes workspace, session, and IPC directories.
+   */
+  private cleanupAgentFolder(folder: string): void {
+    // Safety: never clean up system folders
+    const PROTECTED_FOLDERS = new Set(['main', 'workflows']);
+    if (PROTECTED_FOLDERS.has(folder)) {
+      logger.warn({ folder }, 'Refusing to clean up protected folder');
+      return;
+    }
+
+    // Run async so the API response isn't blocked
+    setImmediate(() => {
+      try {
+        stopContainersForGroup(folder);
+      } catch (err) {
+        logger.warn({ err, folder }, 'Failed to stop containers during agent cleanup');
+      }
+
+      const dirs = [
+        path.join(GROUPS_DIR, folder),
+        path.join(DATA_DIR, 'sessions', folder),
+        path.join(DATA_DIR, 'ipc', folder),
+      ];
+
+      for (const dir of dirs) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+        } catch (err) {
+          logger.warn({ err, dir }, 'Failed to remove agent directory during cleanup');
+        }
+      }
+
+      logger.info({ folder, dirs }, 'Cleaned up deleted agent disk artifacts');
+    });
   }
 
   private startSubsystems(): void {

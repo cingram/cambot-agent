@@ -140,8 +140,8 @@ export interface WorkflowServiceDeps {
   adminJid?: string;
   /** Optional: callback to record step-level costs to the core telemetry system. */
   onStepCost?: (cost: { provider: string; model: string; tokensIn: number; tokensOut: number; costUsd: number; taskLabel: string }) => void;
-  /** Optional: agent repository for bus-based routing of registered agents. */
-  agentRepo?: AgentRepository;
+  /** Optional: agent lookup for bus-based routing of registered agents. */
+  agentRepo?: Pick<AgentRepository, 'getById'>;
 }
 
 // ── Heartbeat tool registration ──────────────────────────────────────
@@ -480,6 +480,26 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     };
   }
 
+  function toStepResult(
+    containerResult: AgentContainerResult,
+    durationMs: number,
+    agentLabel?: string,
+  ): StepCallbackResult {
+    let parsedData: unknown = containerResult.text;
+    try {
+      parsedData = JSON.parse(stripCodeFences(containerResult.text));
+    } catch {
+      // Keep as raw string
+    }
+    return {
+      data: parsedData,
+      tokensIn: containerResult.tokensIn ?? 0,
+      tokensOut: containerResult.tokensOut ?? 0,
+      costUsd: containerResult.totalCostUsd ?? 0,
+      metadata: { durationMs, customAgent: agentLabel, modelUsage: containerResult.modelUsage },
+    };
+  }
+
   async function runAgentPrompt(
     config: Record<string, unknown>,
     previousOutputs: Record<string, unknown>,
@@ -503,14 +523,14 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     const agentId = config.agentId as string | undefined;
     const registeredAgent = agentId ? deps.agentRepo?.getById(agentId) : undefined;
 
-    if (registeredAgent && runId && stepId) {
+    if (agentId && registeredAgent && runId && stepId) {
       logger.info(
         { agentId, runId, stepId, promptLength: prompt.length },
         'Workflow agent step: routing via bus',
       );
 
       const startTime = Date.now();
-      const containerResult = await runAgentViaBus(agentId!, prompt, runId, stepId, registeredAgent.timeoutMs);
+      const containerResult = await runAgentViaBus(agentId, prompt, runId, stepId, registeredAgent.timeoutMs);
       const durationMs = Date.now() - startTime;
 
       logger.info(
@@ -518,20 +538,7 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
         'Workflow agent step completed (bus)',
       );
 
-      let parsedData: unknown = containerResult.text;
-      try {
-        parsedData = JSON.parse(stripCodeFences(containerResult.text));
-      } catch {
-        // Keep as raw string
-      }
-
-      return {
-        data: parsedData,
-        tokensIn: containerResult.tokensIn ?? 0,
-        tokensOut: containerResult.tokensOut ?? 0,
-        costUsd: containerResult.totalCostUsd ?? 0,
-        metadata: { durationMs, customAgent: agentId, modelUsage: containerResult.modelUsage },
-      };
+      return toStepResult(containerResult, durationMs, agentId);
     }
 
     // Fallback: direct container spawn (inline provider or no registered agent)
@@ -565,23 +572,7 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
       'Workflow agent step completed',
     );
 
-    // Agent steps are typically prompted to return JSON. Parse it so
-    // downstream gate steps can access fields (e.g. data.has_alerts).
-    // Falls back to raw string if the response isn't valid JSON.
-    let parsedData: unknown = containerResult.text;
-    try {
-      parsedData = JSON.parse(stripCodeFences(containerResult.text));
-    } catch {
-      // Keep as raw string
-    }
-
-    return {
-      data: parsedData,
-      tokensIn: containerResult.tokensIn ?? 0,
-      tokensOut: containerResult.tokensOut ?? 0,
-      costUsd: containerResult.totalCostUsd ?? 0,
-      metadata: { durationMs, customAgent: customAgent?.agentId, modelUsage: containerResult.modelUsage },
-    };
+    return toStepResult(containerResult, durationMs, customAgent?.agentId);
   }
 
   // Tool registry
@@ -655,23 +646,6 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     });
   }
 
-  eventBus.on('*', (event) => {
-    if (event.type !== 'workflow.step.completed') return;
-    const data = event.data as Record<string, unknown>;
-    if (data.stepType !== 'message') return;
-
-    const output = data.output as Record<string, unknown> | undefined;
-    if (!output) return;
-
-    const channel = typeof output.channel === 'string' ? output.channel : undefined;
-    if (!channel) return;
-
-    const content = typeof output.content === 'string' ? output.content : '';
-    const workflowId = data.workflowId as string;
-
-    deliverMessage(channel, content, output, workflowId);
-  });
-
   // Bridge internal EventBus lifecycle events to the app MessageBus for observability
   const FORWARDED_TYPES = new Set([
     'workflow.started', 'workflow.completed', 'workflow.failed',
@@ -679,12 +653,27 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
   ]);
 
   eventBus.on('*', (event) => {
-    if (!FORWARDED_TYPES.has(event.type)) return;
-    deps.messageBus.emit(
-      new GenericEvent(event.type, 'workflow-service', event.data as Record<string, unknown>),
-    ).catch((err) => {
-      logger.warn({ err, eventType: event.type }, 'Failed to forward workflow event to MessageBus');
-    });
+    // Deliver completed message steps via the message bus
+    if (event.type === 'workflow.step.completed') {
+      const data = event.data as Record<string, unknown>;
+      if (data.stepType === 'message') {
+        const output = data.output as Record<string, unknown> | undefined;
+        const channel = typeof output?.channel === 'string' ? output.channel : undefined;
+        if (channel) {
+          const content = typeof output!.content === 'string' ? output!.content : '';
+          deliverMessage(channel, content, output!, data.workflowId as string);
+        }
+      }
+    }
+
+    // Forward lifecycle events to app MessageBus
+    if (FORWARDED_TYPES.has(event.type)) {
+      deps.messageBus.emit(
+        new GenericEvent(event.type, 'workflow-service', event.data as Record<string, unknown>),
+      ).catch((err) => {
+        logger.warn({ err, eventType: event.type }, 'Failed to forward workflow event to MessageBus');
+      });
+    }
   });
 
   // In-memory workflow definition cache

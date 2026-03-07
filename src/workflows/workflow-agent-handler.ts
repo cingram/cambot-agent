@@ -70,20 +70,27 @@ export function createWorkflowAgentHandler(deps: WorkflowAgentHandlerDeps): { de
     }
   }
 
+  function emitResponse(
+    event: WorkflowAgentRequest,
+    status: 'success' | 'error',
+    text: string,
+    durationMs: number,
+  ): Promise<void> {
+    return messageBus.emit(new WorkflowAgentResponse('workflow-agent-handler', {
+      status, text, durationMs,
+      runId: event.runId,
+      stepId: event.stepId,
+      correlationId: event.correlationId,
+    }));
+  }
+
   const unsubscribe = messageBus.on(
     WorkflowAgentRequest,
     async (event) => {
       const agent = agentRepo.getById(event.agentId);
       if (!agent) {
         logger.warn({ agentId: event.agentId, runId: event.runId }, 'WorkflowAgentRequest for unknown agent');
-        await messageBus.emit(new WorkflowAgentResponse('workflow-agent-handler', {
-          status: 'error',
-          text: `Agent not found: ${event.agentId}`,
-          runId: event.runId,
-          stepId: event.stepId,
-          durationMs: 0,
-          correlationId: event.correlationId,
-        }));
+        await emitResponse(event, 'error', `Agent not found: ${event.agentId}`, 0);
         return;
       }
 
@@ -91,27 +98,13 @@ export function createWorkflowAgentHandler(deps: WorkflowAgentHandlerDeps): { de
 
       if (state.circuitState === 'open') {
         logger.warn({ agentId: event.agentId }, 'Workflow agent rejected by circuit breaker');
-        await messageBus.emit(new WorkflowAgentResponse('workflow-agent-handler', {
-          status: 'error',
-          text: `Circuit open for agent "${event.agentId}"`,
-          runId: event.runId,
-          stepId: event.stepId,
-          durationMs: 0,
-          correlationId: event.correlationId,
-        }));
+        await emitResponse(event, 'error', `Circuit open for agent "${event.agentId}"`, 0);
         return;
       }
 
       if (state.activeCount >= state.concurrencyLimit) {
         logger.warn({ agentId: event.agentId, activeCount: state.activeCount }, 'Workflow agent rejected by bulkhead');
-        await messageBus.emit(new WorkflowAgentResponse('workflow-agent-handler', {
-          status: 'error',
-          text: `Bulkhead full for agent "${event.agentId}"`,
-          runId: event.runId,
-          stepId: event.stepId,
-          durationMs: 0,
-          correlationId: event.correlationId,
-        }));
+        await emitResponse(event, 'error', `Bulkhead full for agent "${event.agentId}"`, 0);
         return;
       }
 
@@ -132,28 +125,14 @@ export function createWorkflowAgentHandler(deps: WorkflowAgentHandlerDeps): { de
           recordFailure(event.agentId, state);
         }
 
-        await messageBus.emit(new WorkflowAgentResponse('workflow-agent-handler', {
-          status: result.status,
-          text: result.content,
-          runId: event.runId,
-          stepId: event.stepId,
-          durationMs,
-          correlationId: event.correlationId,
-        }));
+        await emitResponse(event, result.status, result.content, durationMs);
       } catch (err) {
         const durationMs = Date.now() - startTime;
         recordFailure(event.agentId, state);
         const errorMsg = err instanceof Error ? err.message : String(err);
         logger.error({ err, agentId: event.agentId, runId: event.runId }, 'Workflow agent spawn failed');
 
-        await messageBus.emit(new WorkflowAgentResponse('workflow-agent-handler', {
-          status: 'error',
-          text: `Spawn failed: ${errorMsg}`,
-          runId: event.runId,
-          stepId: event.stepId,
-          durationMs,
-          correlationId: event.correlationId,
-        }));
+        await emitResponse(event, 'error', `Spawn failed: ${errorMsg}`, durationMs);
       } finally {
         state.activeCount--;
       }
