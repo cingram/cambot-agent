@@ -60,7 +60,8 @@ import type {
 
 import { DATA_DIR } from '../config/config.js';
 import type { ContainerInput } from '../container/runner.js';
-import { getCustomAgent } from '../db/index.js';
+import { getDatabase } from '../db/index.js';
+import { createAgentRepository } from '../db/agent-repository.js';
 import { logger } from '../logger.js';
 import type { MessageBus } from '../types.js';
 import { OutboundMessage } from '../bus/index.js';
@@ -287,6 +288,7 @@ function registerMaintenanceTools(
 
 export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowService {
   const { db } = deps;
+  const agentRepo = createAgentRepository(getDatabase());
   const workflowsDir = path.join(DATA_DIR, 'workflows');
   fs.mkdirSync(workflowsDir, { recursive: true });
 
@@ -367,9 +369,9 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
     // Start from DB row if agentId is present
     let base: ContainerInput['customAgent'] | undefined;
     if (agentId) {
-      const row = getCustomAgent(agentId);
+      const row = agentRepo.getById(agentId);
       if (!row) {
-        logger.warn({ agentId }, 'Custom agent not found, falling back to default');
+        logger.warn({ agentId }, 'Agent not found in registered_agents, falling back to default');
         // If there's no inline provider either, fall back to default
         if (!inlineProvider) return undefined;
       } else {
@@ -377,14 +379,14 @@ export function createWorkflowService(deps: WorkflowServiceDeps): WorkflowServic
           agentId: row.id,
           provider: row.provider as 'openai' | 'xai' | 'anthropic' | 'google',
           model: row.model,
-          baseUrl: row.base_url ?? undefined,
-          apiKeyEnvVar: row.api_key_env_var,
-          systemPrompt: row.system_prompt,
-          tools: JSON.parse(row.tools) as string[],
-          maxTokens: row.max_tokens ?? undefined,
+          baseUrl: row.baseUrl ?? undefined,
+          apiKeyEnvVar: row.secretKeys[0] ?? '',
+          systemPrompt: row.systemPrompt ?? '',
+          tools: row.tools,
+          maxTokens: row.maxTokens ?? undefined,
           temperature: row.temperature ?? undefined,
-          maxIterations: row.max_iterations,
-          timeoutMs: row.timeout_ms,
+          maxIterations: 10,
+          timeoutMs: row.timeoutMs,
         };
       }
     }

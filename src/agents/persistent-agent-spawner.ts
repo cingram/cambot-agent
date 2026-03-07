@@ -13,6 +13,7 @@ import { runContainerAgent } from '../container/runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
 import { OutboundMessage } from '../bus/index.js';
 import { logger } from '../logger.js';
+import { resolveToolList } from '../tools/tool-policy.js';
 
 // ── Public types ───────────────────────────────────────────────
 
@@ -99,6 +100,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             isMain: agent.isMain,
             isInterAgentTarget: isInterAgent,
             mcpServers: scopedServers,
+            allowedSdkTools: resolveToolList(agent.toolPolicy),
           },
           (_proc, containerName) => {
             spawnedContainerName = containerName;

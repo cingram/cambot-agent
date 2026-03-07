@@ -58,9 +58,22 @@ vi.mock('../container/snapshot-writers.js', () => ({
 vi.mock('../db/index.js', () => ({
   getAllAgentDefinitions: vi.fn(() => []),
   getAllChats: vi.fn(() => []),
-  getAllCustomAgents: vi.fn(() => []),
   getAllTasks: vi.fn(() => []),
   getArchivedTasks: vi.fn(() => []),
+  getDatabase: vi.fn(() => ({})),
+}));
+
+vi.mock('../db/agent-repository.js', () => ({
+  createAgentRepository: vi.fn(() => ({
+    getByFolder: vi.fn(() => undefined),
+    getAll: vi.fn(() => []),
+  })),
+}));
+
+vi.mock('../db/agent-template-repository.js', () => ({
+  createAgentTemplateRepository: vi.fn(() => ({
+    get: vi.fn(() => undefined),
+  })),
 }));
 
 vi.mock('../groups/group-folder.js', () => ({

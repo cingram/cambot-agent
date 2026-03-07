@@ -55,7 +55,15 @@ describe('create', () => {
     expect(agent.concurrency).toBe(1);
     expect(agent.timeoutMs).toBe(300_000);
     expect(agent.isMain).toBe(false);
-    expect(agent.agentDefId).toBeNull();
+    expect(agent.systemPrompt).toBeNull();
+    expect(agent.soul).toBeNull();
+    expect(agent.provider).toBe('claude');
+    expect(agent.model).toBe('claude-sonnet-4-6');
+    expect(agent.secretKeys).toEqual([]);
+    expect(agent.tools).toEqual([]);
+    expect(agent.temperature).toBeNull();
+    expect(agent.maxTokens).toBeNull();
+    expect(agent.baseUrl).toBeNull();
     expect(agent.createdAt).toBeDefined();
     expect(agent.updatedAt).toBeDefined();
   });
@@ -69,7 +77,14 @@ describe('create', () => {
       concurrency: 3,
       timeoutMs: 60_000,
       isMain: true,
-      agentDefId: 'claude-default',
+      provider: 'openai',
+      model: 'gpt-4o',
+      secretKeys: ['OPENAI_API_KEY'],
+      tools: ['web_search'],
+      systemPrompt: 'You are a helper.',
+      temperature: 0.7,
+      maxTokens: 4096,
+      baseUrl: 'https://api.openai.com',
     }));
 
     expect(agent.channels).toEqual(['whatsapp', 'web']);
@@ -78,7 +93,14 @@ describe('create', () => {
     expect(agent.concurrency).toBe(3);
     expect(agent.timeoutMs).toBe(60_000);
     expect(agent.isMain).toBe(true);
-    expect(agent.agentDefId).toBe('claude-default');
+    expect(agent.provider).toBe('openai');
+    expect(agent.model).toBe('gpt-4o');
+    expect(agent.secretKeys).toEqual(['OPENAI_API_KEY']);
+    expect(agent.tools).toEqual(['web_search']);
+    expect(agent.systemPrompt).toBe('You are a helper.');
+    expect(agent.temperature).toBe(0.7);
+    expect(agent.maxTokens).toBe(4096);
+    expect(agent.baseUrl).toBe('https://api.openai.com');
   });
 
   it('defaults description to empty string when not provided', () => {
@@ -209,7 +231,8 @@ describe('update', () => {
       concurrency: 5,
       timeoutMs: 120_000,
       isMain: true,
-      agentDefId: 'def-1',
+      provider: 'openai',
+      model: 'gpt-4o',
     });
 
     expect(updated.name).toBe('New Name');
@@ -217,7 +240,8 @@ describe('update', () => {
     expect(updated.concurrency).toBe(5);
     expect(updated.timeoutMs).toBe(120_000);
     expect(updated.isMain).toBe(true);
-    expect(updated.agentDefId).toBe('def-1');
+    expect(updated.provider).toBe('openai');
+    expect(updated.model).toBe('gpt-4o');
   });
 
   it('returns existing agent unchanged when no updates are provided', () => {

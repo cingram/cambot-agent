@@ -21,13 +21,12 @@ interface McpServerInfo {
   url: string;
 }
 
-interface CustomAgentRow {
+interface AgentSummaryRow {
   id: string;
   name: string;
   description: string;
   provider: string;
   model: string;
-  trigger_pattern: string | null;
 }
 
 interface ScheduledTaskRow {
@@ -55,10 +54,11 @@ interface ChatInfo {
 export interface ContextFileDeps {
   mcpServers: McpServerInfo[];
   skillsDir: string;
-  customAgents: CustomAgentRow[];
+  agents: AgentSummaryRow[];
   tasks: ScheduledTaskRow[];
   workflows: WorkflowSummary[];
-  globalDir: string; // groups/global/ — source for static context files (SOUL.md)
+  agentIdentity?: string;  // system_prompt from DB (or global template)
+  agentSoul?: string;      // soul from DB (or global template)
   chatJid?: string;                    // current message's JID
   getChats?: () => ChatInfo[];         // getAllChats from db.ts
 }
@@ -77,9 +77,7 @@ function generateToolsMd(deps: ContextFileDeps): string {
   lines.push('| list_tasks | List all scheduled tasks |');
   lines.push('| pause_task / resume_task / cancel_task | Task lifecycle |');
   lines.push('| register_group | Register a new group (main only) |');
-  lines.push('| create_custom_agent | Create a multi-provider custom agent |');
-  lines.push('| list_custom_agents / update_custom_agent / delete_custom_agent | Agent CRUD |');
-  lines.push('| invoke_custom_agent | Delegate to a custom agent |');
+  lines.push('| send_to_agent | Send a message to another persistent agent |');
   lines.push('| list_workflows / workflow_status | Query workflows |');
   lines.push('| run_workflow / pause_workflow / cancel_workflow | Workflow lifecycle |');
   lines.push('| delegate_to_worker | Delegate sub-task to a worker agent |');
@@ -122,19 +120,18 @@ function generateToolsMd(deps: ContextFileDeps): string {
   return lines.join('\n');
 }
 
-function generateAgentsMd(agents: CustomAgentRow[]): string {
+function generateAgentsMd(agents: AgentSummaryRow[]): string {
   if (agents.length === 0) {
-    return '## Custom Agents\n\nNo custom agents registered.\n';
+    return '## Agents\n\nNo agents registered.\n';
   }
 
-  const lines: string[] = ['## Custom Agents\n'];
-  lines.push('| Name | Provider | Model | Trigger | Description |');
-  lines.push('|------|----------|-------|---------|-------------|');
+  const lines: string[] = ['## Agents\n'];
+  lines.push('| Name | Provider | Model | Description |');
+  lines.push('|------|----------|-------|-------------|');
 
   for (const agent of agents) {
-    const trigger = agent.trigger_pattern || '—';
     const desc = agent.description || '—';
-    lines.push(`| ${agent.name} | ${agent.provider} | ${agent.model} | \`${trigger}\` | ${desc} |`);
+    lines.push(`| ${agent.name} | ${agent.provider} | ${agent.model} | ${desc} |`);
   }
 
   lines.push('');
@@ -257,24 +254,6 @@ function generateChannelsMd(deps: ContextFileDeps): string {
   return lines.join('\n');
 }
 
-// ── Static file copy ─────────────────────────────────────────────────
-
-function copyStaticContextFile(
-  sourceDir: string,
-  contextDir: string,
-  sourceName: string,
-  destName: string,
-): void {
-  const sourcePath = path.join(sourceDir, sourceName);
-  if (fs.existsSync(sourcePath)) {
-    const content = fs.readFileSync(sourcePath, 'utf-8').trim();
-    fs.writeFileSync(path.join(contextDir, destName), content);
-  } else {
-    // No source file — write empty so assembler skips it
-    fs.writeFileSync(path.join(contextDir, destName), '');
-  }
-}
-
 // ── Public API ───────────────────────────────────────────────────────
 
 export function writeContextFiles(
@@ -286,8 +265,17 @@ export function writeContextFiles(
   fs.mkdirSync(contextDir, { recursive: true });
 
   try {
-    // Static context files — copied from groups/global/ if they exist
-    copyStaticContextFile(deps.globalDir, contextDir, 'SOUL.md', '01-SOUL.md');
+    // 00-IDENTITY.md — agent's system prompt (from DB or global template)
+    fs.writeFileSync(
+      path.join(contextDir, '00-IDENTITY.md'),
+      deps.agentIdentity ?? '',
+    );
+
+    // 01-SOUL.md — agent's personality (from DB or global template)
+    fs.writeFileSync(
+      path.join(contextDir, '01-SOUL.md'),
+      deps.agentSoul ?? '',
+    );
 
     // 02-USER.md is intentionally empty — agent queries the DB on demand
     fs.writeFileSync(path.join(contextDir, '02-USER.md'), '');
@@ -299,7 +287,7 @@ export function writeContextFiles(
 
     fs.writeFileSync(
       path.join(contextDir, '04-AGENTS.md'),
-      generateAgentsMd(deps.customAgents),
+      generateAgentsMd(deps.agents),
     );
 
     fs.writeFileSync(

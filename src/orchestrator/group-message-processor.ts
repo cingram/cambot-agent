@@ -4,7 +4,6 @@ import {
   TRIGGER_PATTERN,
 } from '../config/config.js';
 import {
-  findCustomAgentByTrigger,
   getMessagesSince,
 } from '../db/index.js';
 import { GroupQueue } from '../groups/group-queue.js';
@@ -12,7 +11,6 @@ import { formatMessages, formatOutbound } from '../utils/router.js';
 import { logger } from '../logger.js';
 import type { MessageBus, Channel } from '../types.js';
 import type { LifecycleInterceptor } from '../utils/lifecycle-interceptor.js';
-import type { CustomAgentService } from '../agents/custom-agent-service.js';
 import { OutboundMessage, TypingUpdate } from '../bus/index.js';
 import type { AgentRunner } from './agent-runner.js';
 import type { RouterState } from './router-state.js';
@@ -23,7 +21,6 @@ export interface GroupMessageProcessorDeps {
   bus: MessageBus;
   getChannels: () => Channel[];
   getInterceptor: () => LifecycleInterceptor | null;
-  getCustomAgentService: () => CustomAgentService | null;
   agentRunner: AgentRunner;
 }
 
@@ -37,7 +34,6 @@ export class GroupMessageProcessor {
   async process(chatJid: string): Promise<boolean> {
     const { state, queue, bus, agentRunner } = this.deps;
     const interceptor = this.deps.getInterceptor();
-    const customAgentService = this.deps.getCustomAgentService();
 
     const group = state.getRegisteredGroup(chatJid);
     if (!group) return true;
@@ -58,38 +54,6 @@ export class GroupMessageProcessor {
     const sinceTimestamp = state.getAgentTimestamp(chatJid);
     const missedMessages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
     if (missedMessages.length === 0) return true;
-
-    // Check for custom agent trigger BEFORE normal trigger check
-    if (customAgentService) {
-      for (const msg of missedMessages) {
-        const matchedAgent = findCustomAgentByTrigger(msg.content);
-        if (matchedAgent && matchedAgent.group_folder === group.folder) {
-          const agentPrompt = formatMessages(missedMessages);
-          logger.info(
-            { agentId: matchedAgent.id, agentName: matchedAgent.name, group: group.name },
-            'Custom agent trigger matched',
-          );
-          // Advance cursor
-          state.setAgentTimestamp(chatJid, missedMessages[missedMessages.length - 1].timestamp);
-          state.save();
-          // Invoke custom agent with session lifecycle tracking
-          interceptor?.startSession(group.folder, chatJid);
-          customAgentService.invokeAgent(
-            matchedAgent.id,
-            agentPrompt,
-            chatJid,
-            group.folder,
-            isMainGroup,
-          ).then(() => {
-            interceptor?.endSession(group.folder, true);
-          }).catch((err) => {
-            interceptor?.endSession(group.folder, false);
-            logger.error({ agentId: matchedAgent.id, err }, 'Custom agent trigger invocation failed');
-          });
-          return true; // consumed
-        }
-      }
-    }
 
     // For non-main groups, check if trigger is required and present
     if (!isMainGroup && group.requiresTrigger !== false) {

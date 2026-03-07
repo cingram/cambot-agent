@@ -12,14 +12,12 @@ import fs from 'fs';
 import path from 'path';
 
 export interface ContextSources {
-  claudeMd?: string;
   memoryInstructions?: string;
   contextDir?: string;
 }
 
 export function buildCambotContext(sources: ContextSources): string | undefined {
   const hasContent =
-    sources.claudeMd ||
     sources.memoryInstructions ||
     (sources.contextDir && fs.existsSync(sources.contextDir));
 
@@ -29,11 +27,6 @@ export function buildCambotContext(sources: ContextSources): string | undefined 
 
   sections.push('<cambot-context>');
   sections.push('# CamBot System Context\n');
-
-  if (sources.claudeMd) {
-    sections.push('## Identity\n');
-    sections.push(sources.claudeMd);
-  }
 
   if (sources.memoryInstructions) {
     sections.push('\n## Memory\n');

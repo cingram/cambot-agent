@@ -3,7 +3,7 @@
  *
  * Usage: bun run scripts/register-email-agent.ts
  */
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,11 +12,11 @@ const STORE_DIR = path.resolve(__dirname, '..', 'store');
 const dbPath = path.join(STORE_DIR, 'cambot.sqlite');
 
 const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+db.run('PRAGMA journal_mode = WAL');
+db.run('PRAGMA foreign_keys = ON');
 
 // Ensure table exists
-db.exec(`
+db.run(`
   CREATE TABLE IF NOT EXISTS registered_agents (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
@@ -29,13 +29,14 @@ db.exec(`
     timeout_ms    INTEGER NOT NULL DEFAULT 300000,
     is_main       INTEGER NOT NULL DEFAULT 0,
     agent_def_id  TEXT,
+    tool_policy   TEXT,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
   );
 `);
 
 // Check if already registered
-const existing = db.prepare('SELECT id FROM registered_agents WHERE id = ?').get('email-agent');
+const existing = db.query('SELECT id FROM registered_agents WHERE id = ?').get('email-agent');
 if (existing) {
   console.log('Email agent already registered.');
   db.close();
@@ -43,23 +44,25 @@ if (existing) {
 }
 
 const now = new Date().toISOString();
-db.prepare(`
-  INSERT INTO registered_agents
-    (id, name, description, folder, channels, mcp_servers, capabilities, concurrency, timeout_ms, is_main, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`).run(
-  'email-agent',
-  'Email Agent',
-  'Handles inbound emails and composes replies',
-  'email-agent',
-  JSON.stringify(['email']),
-  JSON.stringify([]),   // no tools for now
-  JSON.stringify([]),
-  1,
-  300_000,
-  0,
-  now,
-  now,
+db.run(
+  `INSERT INTO registered_agents
+    (id, name, description, folder, channels, mcp_servers, capabilities, concurrency, timeout_ms, is_main, tool_policy, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  [
+    'email-agent',
+    'Email Agent',
+    'Handles inbound emails and composes replies',
+    'email-agent',
+    JSON.stringify(['email']),
+    JSON.stringify([]),
+    JSON.stringify([]),
+    1,
+    300_000,
+    0,
+    JSON.stringify({ preset: 'minimal' }),
+    now,
+    now,
+  ],
 );
 
 db.close();

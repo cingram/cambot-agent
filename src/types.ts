@@ -27,9 +27,12 @@ export interface AllowedRoot {
   description?: string;
 }
 
+import type { ToolPolicy } from './tools/tool-policy.js';
+
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  toolPolicy?: ToolPolicy;
 }
 
 /**
@@ -171,7 +174,17 @@ export interface RegisteredAgent {
   concurrency: number;
   timeoutMs: number;
   isMain: boolean;
-  agentDefId: string | null;
+  toolPolicy?: ToolPolicy;
+  systemPrompt: string | null;
+  soul: string | null;
+  provider: string;
+  model: string;
+  secretKeys: string[];
+  tools: string[];
+  temperature: number | null;
+  maxTokens: number | null;
+  baseUrl: string | null;
+  containerConfig?: ContainerConfig;
   createdAt: string;
   updatedAt: string;
 }

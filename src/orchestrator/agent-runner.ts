@@ -13,7 +13,6 @@ import {
   runContainerAgent,
 } from '../container/runner.js';
 import {
-  writeCustomAgentsSnapshot,
   writeGroupsSnapshot,
   writeArchivedTasksSnapshot,
   writeTasksSnapshot,
@@ -25,15 +24,18 @@ import {
 import {
   getAllAgentDefinitions,
   getAllChats,
-  getAllCustomAgents,
   getAllTasks,
   getArchivedTasks,
+  getDatabase,
 } from '../db/index.js';
+import { createAgentRepository } from '../db/agent-repository.js';
+import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
 import { resolveGroupIpcPath } from '../groups/group-folder.js';
 import { GroupQueue } from '../groups/group-queue.js';
 import { logger } from '../logger.js';
 import { toExecutionContext } from '../types.js';
 import type { RegisteredGroup } from '../types.js';
+import { resolveToolList } from '../tools/tool-policy.js';
 import { writeContextFiles } from '../utils/context-files.js';
 import type { WorkflowService } from '../workflows/workflow-service.js';
 import type { WorkflowBuilderService } from '../workflows/workflow-builder-service.js';
@@ -56,9 +58,14 @@ export interface AgentRunnerDeps {
 
 export class AgentRunner {
   private deps: AgentRunnerDeps;
+  private agentRepo: ReturnType<typeof createAgentRepository>;
+  private templateRepo: ReturnType<typeof createAgentTemplateRepository>;
 
   constructor(deps: AgentRunnerDeps) {
     this.deps = deps;
+    const db = getDatabase();
+    this.agentRepo = createAgentRepository(db);
+    this.templateRepo = createAgentTemplateRepository(db);
   }
 
   cleanIpcInputDir(groupFolder: string): void {
@@ -128,6 +135,7 @@ export class AgentRunner {
           chatJid,
           isMain,
           mcpServers: integrationMgr?.getActiveMcpServers(),
+          allowedSdkTools: resolveToolList(group.containerConfig?.toolPolicy),
         },
         (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
         wrappedOnOutput,
@@ -199,22 +207,6 @@ export class AgentRunner {
       new Set(Object.keys(state.getRegisteredGroups())),
     );
 
-    // Custom agents snapshot
-    const customAgents = getAllCustomAgents();
-    writeCustomAgentsSnapshot(
-      group.folder,
-      isMain,
-      customAgents.map((a) => ({
-        id: a.id,
-        name: a.name,
-        description: a.description,
-        provider: a.provider,
-        model: a.model,
-        trigger_pattern: a.trigger_pattern,
-        group_folder: a.group_folder,
-      })),
-    );
-
     // Workflows snapshot (per-workflow files)
     if (workflowService) {
       const workflows = workflowService.listWorkflows().map(wf => ({
@@ -251,6 +243,11 @@ export class AgentRunner {
     const registeredAgents = this.deps.getRegisteredAgents?.() ?? [];
     writePersistentAgentsSnapshot(group.folder, registeredAgents);
 
+    // Resolve agent identity and soul from DB
+    const agent = this.agentRepo.getByFolder(group.folder);
+    const agentIdentity = agent?.systemPrompt ?? this.templateRepo.get('identity');
+    const agentSoul = agent?.soul ?? this.templateRepo.get('soul');
+
     // Dynamic context files
     const groupIpcDir = resolveGroupIpcPath(group.folder);
     const activeMcpServers = integrationMgr?.getActiveMcpServers() ?? [];
@@ -258,14 +255,14 @@ export class AgentRunner {
     writeContextFiles(groupIpcDir, isMain, {
       mcpServers: activeMcpServers,
       skillsDir,
-      globalDir: path.join(GROUPS_DIR, 'global'),
-      customAgents: customAgents.map(a => ({
+      agentIdentity,
+      agentSoul,
+      agents: this.agentRepo.getAll().map(a => ({
         id: a.id,
         name: a.name,
         description: a.description,
         provider: a.provider,
         model: a.model,
-        trigger_pattern: a.trigger_pattern,
       })),
       tasks: tasks.map(t => ({
         id: t.id,

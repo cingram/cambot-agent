@@ -20,6 +20,17 @@ import { MessageStream } from './message-stream.js';
 import { IpcQueryBridge } from './ipc-query-bridge.js';
 import { loadMcpConfig } from './mcp-config.js';
 
+/** Fallback when the host doesn't send allowedSdkTools (backwards compat). */
+const DEFAULT_SDK_TOOLS = [
+  'Bash',
+  'Read', 'Write', 'Edit', 'Glob', 'Grep',
+  'WebSearch', 'WebFetch',
+  'Task', 'TaskOutput', 'TaskStop',
+  'TeamCreate', 'TeamDelete', 'SendMessage',
+  'TodoWrite', 'ToolSearch', 'Skill',
+  'NotebookEdit',
+];
+
 export interface QueryResult {
   newSessionId?: string;
   lastAssistantUuid?: string;
@@ -177,13 +188,7 @@ export class SdkQueryRunner {
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: context.systemPrompt }
         : undefined,
       allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
+        ...(input.allowedSdkTools ?? DEFAULT_SDK_TOOLS),
         ...mcpConfig.allowedTools,
       ],
       env: sdkEnv,

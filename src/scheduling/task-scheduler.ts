@@ -24,6 +24,7 @@ import { logger } from '../logger.js';
 import { formatOutbound } from '../utils/router.js';
 import { MessageBus, RegisteredGroup, ScheduledTask, toExecutionContext } from '../types.js';
 import { OutboundMessage } from '../bus/index.js';
+import { resolveToolList } from '../tools/tool-policy.js';
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -138,6 +139,7 @@ async function runTask(
         chatJid: task.chat_jid,
         isMain,
         isScheduledTask: true,
+        allowedSdkTools: resolveToolList(group?.containerConfig?.toolPolicy),
       },
       (proc, containerName) => deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {

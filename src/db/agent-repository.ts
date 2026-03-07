@@ -7,7 +7,9 @@
  */
 import type Database from 'better-sqlite3';
 
-import type { RegisteredAgent } from '../types.js';
+import type { ContainerConfig, RegisteredAgent } from '../types.js';
+import type { ToolPolicy } from '../tools/tool-policy.js';
+import { logger } from '../logger.js';
 
 // ── Raw row shape coming out of SQLite ────────────────────────────
 interface AgentRow {
@@ -21,7 +23,17 @@ interface AgentRow {
   concurrency: number;
   timeout_ms: number;
   is_main: number;
-  agent_def_id: string | null;
+  tool_policy: string | null;
+  system_prompt: string | null;
+  soul: string | null;
+  provider: string;
+  model: string;
+  secret_keys: string;
+  container_config: string | null;
+  tools: string;
+  temperature: number | null;
+  max_tokens: number | null;
+  base_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -38,7 +50,17 @@ export interface CreateAgentInput {
   concurrency?: number;
   timeoutMs?: number;
   isMain?: boolean;
-  agentDefId?: string | null;
+  toolPolicy?: ToolPolicy;
+  systemPrompt?: string | null;
+  soul?: string | null;
+  provider?: string;
+  model?: string;
+  secretKeys?: string[];
+  containerConfig?: ContainerConfig;
+  tools?: string[];
+  temperature?: number | null;
+  maxTokens?: number | null;
+  baseUrl?: string | null;
 }
 
 export interface UpdateAgentInput {
@@ -50,13 +72,24 @@ export interface UpdateAgentInput {
   concurrency?: number;
   timeoutMs?: number;
   isMain?: boolean;
-  agentDefId?: string | null;
+  toolPolicy?: ToolPolicy;
+  systemPrompt?: string | null;
+  soul?: string | null;
+  provider?: string;
+  model?: string;
+  secretKeys?: string[];
+  containerConfig?: ContainerConfig;
+  tools?: string[];
+  temperature?: number | null;
+  maxTokens?: number | null;
+  baseUrl?: string | null;
 }
 
 export interface AgentRepository {
   ensureTable(): void;
   getAll(): RegisteredAgent[];
   getById(id: string): RegisteredAgent | undefined;
+  getByFolder(folder: string): RegisteredAgent | undefined;
   create(agent: CreateAgentInput): RegisteredAgent;
   update(id: string, updates: UpdateAgentInput): RegisteredAgent;
   delete(id: string): boolean;
@@ -119,10 +152,120 @@ function rowToAgent(row: AgentRow): RegisteredAgent {
     concurrency: row.concurrency,
     timeoutMs: row.timeout_ms,
     isMain: row.is_main === 1,
-    agentDefId: row.agent_def_id,
+    toolPolicy: row.tool_policy ? JSON.parse(row.tool_policy) : undefined,
+    systemPrompt: row.system_prompt,
+    soul: row.soul,
+    provider: row.provider,
+    model: row.model,
+    secretKeys: JSON.parse(row.secret_keys),
+    containerConfig: row.container_config ? JSON.parse(row.container_config) : undefined,
+    tools: JSON.parse(row.tools),
+    temperature: row.temperature,
+    maxTokens: row.max_tokens,
+    baseUrl: row.base_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+// ── Migration helpers ─────────────────────────────────────────────
+
+function addColumnIfMissing(db: Database.Database, column: string, definition: string): void {
+  try {
+    db.exec(`ALTER TABLE registered_agents ADD COLUMN ${column} ${definition}`);
+  } catch {
+    // Column already exists
+  }
+}
+
+function migrateFromAgentDefinitions(db: Database.Database): void {
+  // Check if agent_definitions table exists
+  const hasTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_definitions'",
+  ).get();
+  if (!hasTable) return;
+
+  // For each registered_agent with an agent_def_id, copy provider/model/secret_keys
+  const rows = db.prepare(
+    'SELECT ra.id, ra.agent_def_id, ad.provider, ad.model, ad.secret_keys FROM registered_agents ra INNER JOIN agent_definitions ad ON ra.agent_def_id = ad.id WHERE ra.provider = \'claude\' AND ra.agent_def_id IS NOT NULL',
+  ).all() as Array<{ id: string; agent_def_id: string; provider: string; model: string; secret_keys: string }>;
+
+  if (rows.length === 0) return;
+
+  const stmt = db.prepare(
+    'UPDATE registered_agents SET provider = ?, model = ?, secret_keys = ? WHERE id = ?',
+  );
+  for (const row of rows) {
+    stmt.run(row.provider, row.model, row.secret_keys, row.id);
+  }
+  logger.info({ count: rows.length }, 'Migrated agent_definitions data into registered_agents');
+}
+
+function migrateCustomAgents(db: Database.Database): void {
+  const hasTable = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='custom_agents'",
+  ).get();
+  if (!hasTable) return;
+
+  const rows = db.prepare('SELECT * FROM custom_agents').all() as Array<{
+    id: string;
+    name: string;
+    description: string;
+    provider: string;
+    model: string;
+    api_key_env_var: string;
+    base_url: string | null;
+    system_prompt: string;
+    tools: string;
+    group_folder: string;
+    max_tokens: number | null;
+    temperature: number | null;
+    max_iterations: number;
+    timeout_ms: number;
+    created_at: string;
+    updated_at: string;
+  }>;
+
+  if (rows.length === 0) {
+    db.exec('DROP TABLE custom_agents');
+    logger.info('Dropped empty custom_agents table');
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO registered_agents
+      (id, name, description, folder, channels, mcp_servers, capabilities,
+       concurrency, timeout_ms, is_main, tool_policy,
+       system_prompt, soul, provider, model, secret_keys,
+       container_config, tools, temperature, max_tokens, base_url,
+       created_at, updated_at)
+    VALUES (?, ?, ?, ?, '[]', '[]', '[]', 1, ?, 0, NULL,
+            ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const row of rows) {
+    insertStmt.run(
+      row.id,
+      row.name,
+      row.description,
+      row.group_folder,
+      row.timeout_ms,
+      row.system_prompt,
+      row.provider,
+      row.model,
+      JSON.stringify([row.api_key_env_var]),
+      row.tools, // already JSON
+      row.temperature,
+      row.max_tokens,
+      row.base_url,
+      row.created_at || now,
+      row.updated_at || now,
+    );
+  }
+
+  db.exec('DROP TABLE custom_agents');
+  logger.info({ count: rows.length }, 'Migrated custom_agents into registered_agents and dropped custom_agents table');
 }
 
 // ── Factory ───────────────────────────────────────────────────────
@@ -142,10 +285,38 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
           timeout_ms    INTEGER NOT NULL DEFAULT 300000,
           is_main       INTEGER NOT NULL DEFAULT 0,
           agent_def_id  TEXT,
+          tool_policy   TEXT,
+          system_prompt TEXT,
+          soul          TEXT,
+          provider      TEXT NOT NULL DEFAULT 'claude',
+          model         TEXT NOT NULL DEFAULT 'claude-sonnet-4-6',
+          secret_keys   TEXT NOT NULL DEFAULT '[]',
+          container_config TEXT,
+          tools         TEXT NOT NULL DEFAULT '[]',
+          temperature   REAL,
+          max_tokens    INTEGER,
+          base_url      TEXT,
           created_at    TEXT NOT NULL,
           updated_at    TEXT NOT NULL
         );
       `);
+
+      // Migrations for existing tables
+      addColumnIfMissing(db, 'tool_policy', 'TEXT');
+      addColumnIfMissing(db, 'system_prompt', 'TEXT');
+      addColumnIfMissing(db, 'soul', 'TEXT');
+      addColumnIfMissing(db, 'provider', "TEXT NOT NULL DEFAULT 'claude'");
+      addColumnIfMissing(db, 'model', "TEXT NOT NULL DEFAULT 'claude-sonnet-4-6'");
+      addColumnIfMissing(db, 'secret_keys', "TEXT NOT NULL DEFAULT '[]'");
+      addColumnIfMissing(db, 'container_config', 'TEXT');
+      addColumnIfMissing(db, 'tools', "TEXT NOT NULL DEFAULT '[]'");
+      addColumnIfMissing(db, 'temperature', 'REAL');
+      addColumnIfMissing(db, 'max_tokens', 'INTEGER');
+      addColumnIfMissing(db, 'base_url', 'TEXT');
+
+      // Data migrations
+      migrateFromAgentDefinitions(db);
+      migrateCustomAgents(db);
     },
 
     getAll(): RegisteredAgent[] {
@@ -155,6 +326,11 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
 
     getById(id: string): RegisteredAgent | undefined {
       const row = db.prepare('SELECT * FROM registered_agents WHERE id = ?').get(id) as AgentRow | undefined;
+      return row ? rowToAgent(row) : undefined;
+    },
+
+    getByFolder(folder: string): RegisteredAgent | undefined {
+      const row = db.prepare('SELECT * FROM registered_agents WHERE folder = ?').get(folder) as AgentRow | undefined;
       return row ? rowToAgent(row) : undefined;
     },
 
@@ -173,8 +349,12 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       const now = new Date().toISOString();
       db.prepare(`
         INSERT INTO registered_agents
-          (id, name, description, folder, channels, mcp_servers, capabilities, concurrency, timeout_ms, is_main, agent_def_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, name, description, folder, channels, mcp_servers, capabilities,
+           concurrency, timeout_ms, is_main, tool_policy,
+           system_prompt, soul, provider, model, secret_keys,
+           container_config, tools, temperature, max_tokens, base_url,
+           created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.id,
         input.name,
@@ -186,7 +366,17 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         concurrency,
         timeoutMs,
         input.isMain ? 1 : 0,
-        input.agentDefId ?? null,
+        input.toolPolicy ? JSON.stringify(input.toolPolicy) : null,
+        input.systemPrompt ?? null,
+        input.soul ?? null,
+        input.provider ?? 'claude',
+        input.model ?? 'claude-sonnet-4-6',
+        JSON.stringify(input.secretKeys ?? []),
+        input.containerConfig ? JSON.stringify(input.containerConfig) : null,
+        JSON.stringify(input.tools ?? []),
+        input.temperature ?? null,
+        input.maxTokens ?? null,
+        input.baseUrl ?? null,
         now,
         now,
       );
@@ -238,9 +428,49 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         fields.push('is_main = ?');
         values.push(updates.isMain ? 1 : 0);
       }
-      if (updates.agentDefId !== undefined) {
-        fields.push('agent_def_id = ?');
-        values.push(updates.agentDefId);
+      if (updates.toolPolicy !== undefined) {
+        fields.push('tool_policy = ?');
+        values.push(JSON.stringify(updates.toolPolicy));
+      }
+      if (updates.systemPrompt !== undefined) {
+        fields.push('system_prompt = ?');
+        values.push(updates.systemPrompt);
+      }
+      if (updates.soul !== undefined) {
+        fields.push('soul = ?');
+        values.push(updates.soul);
+      }
+      if (updates.provider !== undefined) {
+        fields.push('provider = ?');
+        values.push(updates.provider);
+      }
+      if (updates.model !== undefined) {
+        fields.push('model = ?');
+        values.push(updates.model);
+      }
+      if (updates.secretKeys !== undefined) {
+        fields.push('secret_keys = ?');
+        values.push(JSON.stringify(updates.secretKeys));
+      }
+      if (updates.containerConfig !== undefined) {
+        fields.push('container_config = ?');
+        values.push(updates.containerConfig ? JSON.stringify(updates.containerConfig) : null);
+      }
+      if (updates.tools !== undefined) {
+        fields.push('tools = ?');
+        values.push(JSON.stringify(updates.tools));
+      }
+      if (updates.temperature !== undefined) {
+        fields.push('temperature = ?');
+        values.push(updates.temperature);
+      }
+      if (updates.maxTokens !== undefined) {
+        fields.push('max_tokens = ?');
+        values.push(updates.maxTokens);
+      }
+      if (updates.baseUrl !== undefined) {
+        fields.push('base_url = ?');
+        values.push(updates.baseUrl);
       }
 
       if (fields.length === 0) return existing;

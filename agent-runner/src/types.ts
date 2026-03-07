@@ -54,6 +54,8 @@ export interface ClaudeContainerInput extends BaseContainerInput {
   memoryMode?: 'markdown' | 'database' | 'both';
   /** Enable inline Haiku guardrail for tool call review. Default: true */
   guardrailEnabled?: boolean;
+  /** SDK tools this agent is allowed to use (resolved from ToolPolicy on host) */
+  allowedSdkTools?: string[];
   customAgent?: undefined;
 }
 
@@ -133,7 +135,6 @@ export interface ContainerPaths {
   ipcOwnerFile: string;
   heartbeatFile: string;
   groupDir: string;
-  globalClaudeMdPath: string;
   extraMountsDir: string;
   contextDir: string;
   contextDumpFile: string;
@@ -150,7 +151,6 @@ export function createDefaultContainerPaths(): ContainerPaths {
     ipcOwnerFile: '/workspace/ipc/_owner',
     heartbeatFile: '/workspace/ipc/_heartbeat',
     groupDir: '/workspace/group',
-    globalClaudeMdPath: '/workspace/global/CLAUDE.md',
     extraMountsDir: '/workspace/extra',
     contextDir: '/workspace/ipc/context',
     contextDumpFile: '/workspace/ipc/context-dump.md',

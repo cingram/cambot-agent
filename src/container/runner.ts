@@ -62,6 +62,8 @@ export interface ContainerInput {
   /** Unique token identifying this container. Used by the agent-runner to
    *  detect when it has been superseded by a newer container (orphan self-exit). */
   ipcToken?: string;
+  /** SDK tools this agent is allowed to use (resolved from ToolPolicy) */
+  allowedSdkTools?: string[];
 }
 
 export interface ContainerTelemetry {
@@ -125,17 +127,8 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
       containerPath: '/workspace/group',
       readonly: false,
     });
-
-    // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
-    const globalDir = path.join(GROUPS_DIR, 'global');
-    if (fs.existsSync(globalDir)) {
-      mounts.push({
-        hostPath: globalDir,
-        containerPath: '/workspace/global',
-        readonly: true,
-      });
-    }
+    // Identity is now injected via 00-IDENTITY.md in the context dir,
+    // so no global mount is needed for non-main agents.
   }
 
   // Per-group Claude sessions directory (isolated from other groups)

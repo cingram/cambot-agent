@@ -94,17 +94,31 @@ export function getLeadAgentId(): string {
   return leadAgentId;
 }
 
-export function resolveAgentImage(agentId: string): AgentOptions {
+/**
+ * Resolve container image and secret keys for an agent.
+ * Accepts either an agent definition ID (legacy) or a RegisteredAgent.
+ */
+export function resolveAgentImage(agentIdOrProvider: string, secretKeys?: string[]): AgentOptions {
+  // If secretKeys provided, treat first arg as a provider string
+  if (secretKeys) {
+    const containerImage = getProviderImage(agentIdOrProvider);
+    if (!containerImage) {
+      throw new Error(`No container image for provider "${agentIdOrProvider}"`);
+    }
+    return { containerImage, secretKeys };
+  }
+
+  // Legacy path: look up by agent definition ID
   const agents = getAllAgentDefinitions();
-  const agent = agents.find((a) => a.id === agentId);
+  const agent = agents.find((a) => a.id === agentIdOrProvider);
   if (!agent) {
-    throw new Error(`Agent "${agentId}" not found`);
+    throw new Error(`Agent "${agentIdOrProvider}" not found`);
   }
 
   const containerImage = getProviderImage(agent.provider);
   if (!containerImage) {
     throw new Error(
-      `No container image for provider "${agent.provider}" (agent "${agentId}")`,
+      `No container image for provider "${agent.provider}" (agent "${agentIdOrProvider}")`,
     );
   }
 

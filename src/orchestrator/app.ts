@@ -45,7 +45,6 @@ import {
 import type { MessageBus } from '../types.js';
 import { createAppBus, type AppBus } from '../bus/index.js';
 import { logger } from '../logger.js';
-import { createCustomAgentService, type CustomAgentService } from '../agents/custom-agent-service.js';
 import { createShadowAgent } from '../agents/shadow-agent.js';
 import { createWorkflowService, type WorkflowService, type AgentStepInput, type AgentContainerResult } from '../workflows/workflow-service.js';
 import { createWorkflowBuilderService, type WorkflowBuilderService } from '../workflows/workflow-builder-service.js';
@@ -81,7 +80,6 @@ export class CamBotApp {
   private appBus: AppBus | null = null;
   private workflowService: WorkflowService | null = null;
   private workflowBuilderService: WorkflowBuilderService | null = null;
-  private customAgentService: CustomAgentService | null = null;
   private interceptor: LifecycleInterceptor | null = null;
   private integrationMgr: IntegrationManager | null = null;
   private busHandlers!: BusHandlerRegistry;
@@ -117,8 +115,6 @@ export class CamBotApp {
     this.bus = this.appBus.bus;
     this.initWorkflowService();
     await this.initWorkflowBuilderService();
-    this.initCustomAgentService();
-
     this.busHandlers = new BusHandlerRegistry({
       bus: this.bus,
       getChannels: () => this.channels,
@@ -157,7 +153,6 @@ export class CamBotApp {
       bus: this.bus,
       getChannels: () => this.channels,
       getInterceptor: () => this.interceptor,
-      getCustomAgentService: () => this.customAgentService,
       agentRunner,
     });
 
@@ -384,25 +379,6 @@ export class CamBotApp {
     });
   }
 
-  private initCustomAgentService(): void {
-    this.customAgentService = createCustomAgentService({
-      getRegisteredGroup: (groupFolder: string) => {
-        return this.state.getRegisteredGroupByFolder(groupFolder);
-      },
-      messageBus: this.bus,
-      onProcess: (proc, containerName, groupFolder) => {
-        logger.debug({ containerName, groupFolder }, 'Custom agent container spawned');
-      },
-      getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
-      onTelemetry: (telemetry, channel) => {
-        this.interceptor?.recordTelemetry(telemetry, channel);
-      },
-      onContainerError: (error, durationMs, channel) => {
-        this.interceptor?.recordContainerError(error, durationMs, channel);
-      },
-    });
-  }
-
   private initContentPipe(): void {
     if (!CONTENT_PIPE_ENABLED) {
       logger.info('Content pipe disabled (CONTENT_PIPE_ENABLED=false)');
@@ -568,7 +544,6 @@ export class CamBotApp {
       writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
       workflowService: this.workflowService ?? undefined,
       workflowBuilderService: this.workflowBuilderService ?? undefined,
-      customAgentService: this.customAgentService ?? undefined,
       resolveAgentImage,
       getAgentDefinition,
       integrationManager: this.integrationMgr ?? undefined,

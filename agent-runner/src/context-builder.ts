@@ -24,14 +24,11 @@ export class ContextBuilder {
   ) {}
 
   build(input: ClaudeContainerInput): ContextResult {
-    const claudeMd = !input.isMain && fs.existsSync(this.paths.globalClaudeMdPath)
-      ? fs.readFileSync(this.paths.globalClaudeMdPath, 'utf-8')
-      : undefined;
-
+    // Identity is now injected as 00-IDENTITY.md in the context dir,
+    // so no separate globalClaudeMdPath read is needed.
     const memoryInstructions = getMemoryInstructions(input.memoryMode ?? 'both');
 
     const systemPrompt = buildCambotContext({
-      claudeMd,
       memoryInstructions: memoryInstructions ?? undefined,
       contextDir: this.paths.contextDir,
     });

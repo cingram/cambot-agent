@@ -3,9 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { createSchemaManager } from 'cambot-core';
 
-import { STORE_DIR } from '../config/config.js';
+import { GROUPS_DIR, STORE_DIR } from '../config/config.js';
 import { logger } from '../logger.js';
 import { migrateJsonState } from './migration.js';
+import { createAgentRepository } from './agent-repository.js';
+import { createAgentTemplateRepository } from './agent-template-repository.js';
 
 let db: Database.Database;
 
@@ -37,6 +39,14 @@ export function initDatabase(): void {
   const schema = createSchemaManager();
   schema.initialize(db);
 
+  // Ensure agent tables and run migrations
+  const agentRepo = createAgentRepository(db);
+  agentRepo.ensureTable();
+
+  const templateRepo = createAgentTemplateRepository(db);
+  templateRepo.ensureTable();
+  templateRepo.seedFromDisk(path.join(GROUPS_DIR, 'global'));
+
   // Migrate from JSON files if they exist
   migrateJsonState();
 }
@@ -60,22 +70,13 @@ export function _initTestDatabase(): void {
       personality TEXT,
       secret_keys TEXT NOT NULL DEFAULT '[]'
     );
-    CREATE TABLE IF NOT EXISTS registered_agents (
-      id            TEXT PRIMARY KEY,
-      name          TEXT NOT NULL,
-      description   TEXT NOT NULL DEFAULT '',
-      folder        TEXT NOT NULL UNIQUE,
-      channels      TEXT NOT NULL DEFAULT '[]',
-      mcp_servers   TEXT NOT NULL DEFAULT '[]',
-      capabilities  TEXT NOT NULL DEFAULT '[]',
-      concurrency   INTEGER NOT NULL DEFAULT 1,
-      timeout_ms    INTEGER NOT NULL DEFAULT 300000,
-      is_main       INTEGER NOT NULL DEFAULT 0,
-      agent_def_id  TEXT,
-      created_at    TEXT NOT NULL,
-      updated_at    TEXT NOT NULL
-    );
   `);
+
+  const agentRepo = createAgentRepository(db);
+  agentRepo.ensureTable();
+
+  const templateRepo = createAgentTemplateRepository(db);
+  templateRepo.ensureTable();
 }
 
 /** Expose the database instance for subsystems that need direct access. */

@@ -35,11 +35,7 @@ export async function processTaskIpc(
     // For workflow commands
     workflowId?: string;
     runId?: string;
-    // For custom agent commands
-    agent?: Record<string, unknown>;
     agentId?: string;
-    updates?: Record<string, unknown>;
-    cleanupMemory?: boolean;
     // For delegate_worker
     delegationId?: string;
     workerId?: string;
@@ -338,98 +334,6 @@ export async function processTaskIpc(
         } catch (err) {
           logger.error({ runId: data.runId, err }, 'Workflow cancel failed');
         }
-      }
-      break;
-
-    case 'create_custom_agent':
-      if (!deps.customAgentService) {
-        logger.warn('create_custom_agent IPC received but custom agent service not initialized');
-        break;
-      }
-      if (!isMain) {
-        logger.warn({ sourceGroup }, 'Unauthorized create_custom_agent attempt blocked (main only)');
-        break;
-      }
-      if (data.agent) {
-        try {
-          deps.customAgentService.createAgent(data.agent as unknown as Parameters<typeof deps.customAgentService.createAgent>[0]);
-          logger.info({ agentId: (data.agent as { id: string }).id, sourceGroup }, 'Custom agent created via IPC');
-        } catch (err) {
-          logger.error({ err }, 'Failed to create custom agent');
-        }
-      }
-      break;
-
-    case 'update_custom_agent':
-      if (!deps.customAgentService) {
-        logger.warn('update_custom_agent IPC received but custom agent service not initialized');
-        break;
-      }
-      if (!isMain) {
-        logger.warn({ sourceGroup }, 'Unauthorized update_custom_agent attempt blocked (main only)');
-        break;
-      }
-      if (data.agentId && data.updates) {
-        try {
-          deps.customAgentService.updateAgent(data.agentId, data.updates as Parameters<typeof deps.customAgentService.updateAgent>[1]);
-          logger.info({ agentId: data.agentId, sourceGroup }, 'Custom agent updated via IPC');
-        } catch (err) {
-          logger.error({ agentId: data.agentId, err }, 'Failed to update custom agent');
-        }
-      }
-      break;
-
-    case 'delete_custom_agent':
-      if (!deps.customAgentService) {
-        logger.warn('delete_custom_agent IPC received but custom agent service not initialized');
-        break;
-      }
-      if (!isMain) {
-        logger.warn({ sourceGroup }, 'Unauthorized delete_custom_agent attempt blocked (main only)');
-        break;
-      }
-      if (data.agentId) {
-        try {
-          deps.customAgentService.deleteAgent(data.agentId);
-          logger.info({ agentId: data.agentId, sourceGroup }, 'Custom agent deleted via IPC');
-        } catch (err) {
-          logger.error({ agentId: data.agentId, err }, 'Failed to delete custom agent');
-        }
-      }
-      break;
-
-    case 'invoke_custom_agent':
-      if (!deps.customAgentService) {
-        logger.warn('invoke_custom_agent IPC received but custom agent service not initialized');
-        break;
-      }
-      if (data.agentId && data.prompt) {
-        const agentDef = deps.customAgentService.getAgent(data.agentId);
-        if (!agentDef) {
-          logger.warn({ agentId: data.agentId }, 'invoke_custom_agent: agent not found');
-          break;
-        }
-        if (!isMain && agentDef.group_folder !== sourceGroup) {
-          logger.warn({ agentId: data.agentId, sourceGroup }, 'Unauthorized invoke_custom_agent attempt blocked');
-          break;
-        }
-        const targetJid = data.chatJid || data.targetJid || '';
-        const targetGroup = data.groupFolder || sourceGroup;
-
-        deps.customAgentService.invokeAgent(
-          data.agentId,
-          data.prompt as string,
-          targetJid as string,
-          targetGroup as string,
-          isMain,
-        ).catch((err) => {
-          logger.error({ agentId: data.agentId, err }, 'Custom agent invocation failed');
-          const errorText = `Custom agent invocation failed: ${err instanceof Error ? err.message : String(err)}`;
-          if (targetJid) {
-            deps.messageBus.emit(new OutboundMessage('ipc', targetJid, errorText, { groupFolder: targetGroup })).catch(() => {});
-          }
-        });
-        logger.info({ agentId: data.agentId, sourceGroup }, 'Custom agent invocation dispatched');
       }
       break;
 

@@ -95,49 +95,22 @@ describe('createLifecycleInterceptor', () => {
   });
 
   describe('redactPrompt', () => {
-    it('delegates to core.redactPii', () => {
+    it('passes through unchanged (PII redaction disabled)', () => {
       const result = interceptor.redactPrompt('Email: test@example.com');
 
-      expect(core.redactPii).toHaveBeenCalledWith('Email: test@example.com');
-      expect(result.redacted).toBe('Email: [EMAIL_1]');
-      expect(result.mappings).toHaveLength(1);
-    });
-
-    it('returns original on error', () => {
-      core = mockCore({
-        redactPii: vi.fn().mockImplementation(() => { throw new Error('fail'); }),
-      });
-      interceptor = createLifecycleInterceptor(core, logger);
-
-      const result = interceptor.redactPrompt('test@example.com');
-      expect(result.redacted).toBe('test@example.com');
+      expect(core.redactPii).not.toHaveBeenCalled();
+      expect(result.redacted).toBe('Email: test@example.com');
       expect(result.mappings).toEqual([]);
     });
   });
 
   describe('restoreOutput', () => {
-    it('round-trips PII correctly', () => {
-      const { redacted, mappings } = interceptor.redactPrompt('Email: test@example.com');
-      const restored = interceptor.restoreOutput(redacted, mappings);
-
-      expect(restored).toBe('Email: test@example.com');
-    });
-
-    it('returns original when no mappings', () => {
-      const result = interceptor.restoreOutput('hello', []);
-      expect(result).toBe('hello');
-    });
-
-    it('returns original on error', () => {
-      core = mockCore({
-        restorePii: vi.fn().mockImplementation(() => { throw new Error('fail'); }),
-      });
-      interceptor = createLifecycleInterceptor(core, logger);
-
+    it('passes through unchanged (PII restoration disabled)', () => {
       const result = interceptor.restoreOutput('[EMAIL_1]', [
         { placeholder: '[EMAIL_1]', tag: 'email' as any, originalValue: 'x@y.com' },
       ]);
       expect(result).toBe('[EMAIL_1]');
+      expect(core.restorePii).not.toHaveBeenCalled();
     });
   });
 

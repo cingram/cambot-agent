@@ -5,11 +5,15 @@ import { randomUUID } from 'node:crypto';
 import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, WEB_ALLOWED_ORIGINS, WEB_AUTH_TOKEN, WEB_CHANNEL_PORT } from '../config/config.js';
 import {
   getChatHistory,
+  getDatabase,
   listConversations,
   upsertConversation,
   renameConversation as dbRenameConversation,
   deleteConversation as dbDeleteConversation,
 } from '../db/index.js';
+import { createAgentRepository } from '../db/agent-repository.js';
+import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
+import { handleAgentRoutes } from '../api/agent-routes.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts, NewMessage } from '../types.js';
 import { ChatMetadata, InboundMessage } from '../bus/index.js';
@@ -67,12 +71,24 @@ export class WebChannel implements Channel {
   private wsManager: WebSocketManager;
   private messageBuffer: BufferedMessage[] = [];
   private auth: WebAuth;
+  private agentRoutesDeps?: import('../api/agent-routes.js').AgentRoutesDeps;
 
   constructor(opts: ChannelOpts, port?: number) {
     this.opts = opts;
     this.port = port ?? DEFAULT_PORT;
     this.auth = createWebAuth(WEB_AUTH_TOKEN);
     this.wsManager = createWebSocketManager();
+  }
+
+  private getAgentRoutesDeps(): import('../api/agent-routes.js').AgentRoutesDeps {
+    if (!this.agentRoutesDeps) {
+      const db = getDatabase();
+      this.agentRoutesDeps = {
+        agentRepo: createAgentRepository(db),
+        templateRepo: createAgentTemplateRepository(db),
+      };
+    }
+    return this.agentRoutesDeps;
   }
 
   async connect(): Promise<void> {
@@ -262,6 +278,12 @@ export class WebChannel implements Channel {
       this.handleBody(req, res, (body) => this.handleRenameConversation(convoMatch[1], body, res));
     } else if (convoMatch && req.method === 'DELETE') {
       this.handleDeleteConversation(convoMatch[1], res);
+    } else if (url.pathname.startsWith('/api/')) {
+      const handled = handleAgentRoutes(req, res, url, this.getAgentRoutesDeps());
+      if (!handled) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+      }
     } else {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));

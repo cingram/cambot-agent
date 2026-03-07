@@ -12,7 +12,6 @@ import { logger } from '../logger.js';
 import { MessageBus, RegisteredGroup, WorkerDefinition } from '../types.js';
 import type { WorkflowService } from '../workflows/workflow-service.js';
 import type { WorkflowBuilderService } from '../workflows/workflow-builder-service.js';
-import type { CustomAgentService } from '../agents/custom-agent-service.js';
 import type { IntegrationManager } from '../integrations/types.js';
 import { processMessageFiles } from './message-handler.js';
 import { processTaskIpc } from './task-handler.js';
@@ -37,8 +36,6 @@ export interface IpcDeps {
   workflowService?: WorkflowService;
   /** Workflow builder service. When present, workflow CRUD IPC commands are handled. */
   workflowBuilderService?: WorkflowBuilderService;
-  /** Custom agent service. When present, custom agent IPC commands are handled. */
-  customAgentService?: CustomAgentService;
   resolveAgentImage: (agentId: string) => AgentOptions;
   getAgentDefinition: (id: string) => WorkerDefinition | undefined;
   /** Integration manager. When present, integration IPC commands are handled. */
