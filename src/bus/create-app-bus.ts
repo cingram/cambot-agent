@@ -14,6 +14,7 @@ import { createDedupFilter } from './middleware/dedup-filter.js';
 import { createBackpressureMiddleware } from './middleware/backpressure.js';
 import { createEventJournal, type EventJournal } from './middleware/event-journal.js';
 import { createOutboundGuard, type OutboundGuardOptions } from './middleware/outbound-guard.js';
+import { createInjectionScanner } from './middleware/injection-scanner.js';
 import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -52,7 +53,10 @@ export function createAppBus(opts: AppBusOptions): AppBus {
   // 2. Dedup filter — drop duplicate events by ID
   bus.use(createDedupFilter({ maxSize: opts.dedupMaxSize ?? 10_000 }));
 
-  // 3. Outbound guard — rate limits and loop detection for outbound messages
+  // 3. Injection scanner — detect prompt injection in untrusted inbound messages
+  bus.use(createInjectionScanner());
+
+  // 4. Outbound guard — rate limits and loop detection for outbound messages
   bus.use(createOutboundGuard({
     ...opts.outboundGuard,
     onLimitHit: (channel, jid, window) => {
@@ -63,7 +67,7 @@ export function createAppBus(opts: AppBusOptions): AppBus {
     },
   }));
 
-  // 4. Backpressure — warn when in-flight events exceed threshold
+  // 5. Backpressure — warn when in-flight events exceed threshold
   bus.use(createBackpressureMiddleware({
     highWaterMark: opts.backpressureHighWaterMark ?? 500,
     strategy: 'warn',
@@ -72,7 +76,7 @@ export function createAppBus(opts: AppBusOptions): AppBus {
     },
   }));
 
-  // 5. Event journal — persist all events to SQLite for audit/replay
+  // 6. Event journal — persist all events to SQLite for audit/replay
   const journal = createEventJournal(opts.db);
   journal.ensureTable();
   bus.use(journal);

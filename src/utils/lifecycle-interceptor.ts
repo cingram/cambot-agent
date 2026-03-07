@@ -6,7 +6,7 @@
  */
 
 import type { Logger } from 'pino';
-import type { CamBotCoreServices, PiiMapping, RedactionResult } from 'cambot-core';
+import type { CamBotCoreServices, PiiMapping } from 'cambot-core';
 import type { NewMessage } from '../types.js';
 import type { ContainerTelemetry } from '../container/runner.js';
 import type { AuditEmitter } from '../audit/index.js';
@@ -156,23 +156,13 @@ export function createLifecycleInterceptor(
     },
 
     redactPrompt(prompt: string): { redacted: string; mappings: PiiMapping[] } {
-      try {
-        const result: RedactionResult = core.redactPii(prompt);
-        return { redacted: result.redacted, mappings: result.mappings };
-      } catch (err) {
-        logger.warn({ err }, 'PII redaction failed, passing prompt through');
-        return { redacted: prompt, mappings: [] };
-      }
+      // PII redaction disabled — pass through unchanged
+      return { redacted: prompt, mappings: [] };
     },
 
-    restoreOutput(text: string, mappings: PiiMapping[]): string {
-      try {
-        if (mappings.length === 0) return text;
-        return core.restorePii(text, mappings);
-      } catch (err) {
-        logger.warn({ err }, 'PII restoration failed, passing text through');
-        return text;
-      }
+    restoreOutput(text: string, _mappings: PiiMapping[]): string {
+      // PII restoration disabled — pass through unchanged
+      return text;
     },
 
     recordTelemetry(telemetry: ContainerTelemetry, channel?: string): void {
