@@ -202,7 +202,7 @@ export class AgentRunner {
       snapshot.tasks.map(t => ({
         id: t.id, groupFolder: t.group_folder, prompt: t.prompt,
         schedule_type: t.schedule_type, schedule_value: t.schedule_value,
-        status: t.status, next_run: t.next_run,
+        status: t.status, next_run: t.next_run, agentId: t.agent_id,
       })),
     );
 

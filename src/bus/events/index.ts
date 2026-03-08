@@ -7,3 +7,4 @@ export { AgentError } from './agent-error.js';
 export { WorkflowTrigger } from './workflow-trigger.js';
 export { WorkflowAgentRequest } from './workflow-agent-request.js';
 export { WorkflowAgentResponse } from './workflow-agent-response.js';
+export { TaskPrompt } from './task-prompt.js';

@@ -50,6 +50,9 @@ export const EVENT_TYPES: readonly EventTypeEntry[] = [
   { type: 'bus.backpressure', description: 'Bus backpressure threshold exceeded' },
   { type: 'bus.dead_letter', description: 'Event moved to dead letter queue' },
 
+  // Task
+  { type: 'task.prompt', description: 'Scheduled task prompt ready for execution' },
+
   // Workflow
   { type: 'workflow.trigger', description: 'Request to trigger a workflow run' },
   { type: 'workflow.agent.request', description: 'Workflow step requesting agent execution' },

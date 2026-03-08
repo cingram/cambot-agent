@@ -40,6 +40,8 @@ import {
 import { GroupQueue } from '../groups/group-queue.js';
 import { startIpcWatcher } from '../ipc/watcher.js';
 import { startSchedulerLoop } from '../scheduling/task-scheduler.js';
+import { createTaskPromptHandler, type TaskPromptHandler } from '../scheduling/task-prompt-handler.js';
+import { runDefaultTaskPipeline } from '../scheduling/default-task-pipeline.js';
 import { startWorkflowSchedulerLoop } from '../workflows/workflow-scheduler.js';
 import {
   Channel,
@@ -94,6 +96,7 @@ export class CamBotApp {
   private contentPipeUnsub: (() => void) | null = null;
   private contentPipe: ContentPipe | null = null;
   private persistentAgentHandler: PersistentAgentHandler | null = null;
+  private taskPromptHandler: TaskPromptHandler | null = null;
   private workflowTriggerHandler: { destroy: () => void } | null = null;
   private workflowAgentHandler: { destroy: () => void } | null = null;
   private agentSpawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner | null = null;
@@ -442,6 +445,7 @@ export class CamBotApp {
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received');
       if (this.interceptor) await this.interceptor.close();
+      if (this.taskPromptHandler) this.taskPromptHandler.destroy();
       if (this.persistentAgentHandler) this.persistentAgentHandler.destroy();
       if (this.workflowTriggerHandler) this.workflowTriggerHandler.destroy();
       if (this.workflowAgentHandler) this.workflowAgentHandler.destroy();
@@ -520,6 +524,7 @@ export class CamBotApp {
       onContainerError: (error, durationMs, channel) => {
         this.interceptor?.recordContainerError(error, durationMs, channel);
       },
+      getInterceptor: () => this.interceptor ?? null,
     });
   }
 
@@ -608,11 +613,22 @@ export class CamBotApp {
 
   private startSubsystems(): void {
     startSchedulerLoop({
-      registeredGroups: () => this.state.getRegisteredGroups(),
       queue: this.queue,
-      onProcess: (groupJid, proc, containerName, groupFolder) =>
-        this.queue.registerProcess(groupJid, proc, containerName, groupFolder),
       messageBus: this.bus,
+    });
+
+    this.taskPromptHandler = createTaskPromptHandler({
+      messageBus: this.bus,
+      getAgentRepo: () => this.agentRepo,
+      getSpawner: () => this.agentSpawner,
+      runDefaultPipeline: (task) => runDefaultTaskPipeline(task, {
+        registeredGroups: () => this.state.getRegisteredGroups(),
+        queue: this.queue,
+        onProcess: (groupJid, proc, containerName, groupFolder) =>
+          this.queue.registerProcess(groupJid, proc, containerName, groupFolder),
+        messageBus: this.bus,
+        getIntegrationManager: () => this.integrationMgr,
+      }),
     });
     startWorkflowSchedulerLoop({ workflowService: this.workflowService! });
     startIpcWatcher({
