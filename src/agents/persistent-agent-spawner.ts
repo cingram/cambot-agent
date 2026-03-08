@@ -10,6 +10,7 @@ import type { AgentOptions } from './agents.js';
 import type { ContainerTelemetry } from '../container/runner.js';
 import type { ExecutionContext, MessageBus, RegisteredAgent } from '../types.js';
 import type { ContextFileDeps } from '../utils/context-files.js';
+import type { LifecycleInterceptor } from '../utils/lifecycle-interceptor.js';
 import { runContainerAgent } from '../container/runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
 import { OutboundMessage } from '../bus/index.js';
@@ -58,6 +59,7 @@ export interface PersistentAgentSpawnerDeps {
   resolveAgentImage?: (provider: string, secretKeys: string[]) => AgentOptions;
   onTelemetry?: (telemetry: ContainerTelemetry, channel: string) => void;
   onContainerError?: (error: string, durationMs: number, channel: string) => void;
+  getInterceptor?: () => LifecycleInterceptor | null;
 }
 
 // ── Factory ────────────────────────────────────────────────────
@@ -170,6 +172,8 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
                   }),
                 );
               }
+              // Ingest response into memory system (fact extraction + short-term memory)
+              deps.getInterceptor?.()?.ingestResponse(agent.folder, callerGroup, result.result);
             }
             // Stop the container after delivering the first result
             if (!gotFirstResult) {

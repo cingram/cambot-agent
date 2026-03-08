@@ -59,20 +59,23 @@ export class BusHandlerRegistry {
       }, { id: 'input-sanitizer', priority: 15, sequential: true, source: 'cambot-agent' }),
     );
 
-    // DB storage: inbound messages (priority 100)
+    // DB storage: inbound messages (priority 18 — before persistent-agent-handler
+    // at 20, which cancels events for claimed channels. Must run before cancellation
+    // so every inbound message is persisted regardless of routing.)
     this.unsubscribers.push(
       bus.on(InboundMessage, (event) => {
         storeMessage(event.message);
-      }, { id: 'db-store-inbound', priority: 100, source: 'cambot-agent' }),
+      }, { id: 'db-store-inbound', priority: 18, sequential: true, source: 'cambot-agent' }),
     );
 
-    // Lifecycle interceptor: ingest inbound messages for memory (priority 100)
+    // Lifecycle interceptor: ingest inbound messages for memory (priority 18 —
+    // same reasoning: must fire before persistent-agent-handler cancellation.)
     if (this.deps.getInterceptor) {
       const getInterceptor = this.deps.getInterceptor;
       this.unsubscribers.push(
         bus.on(InboundMessage, (event) => {
           getInterceptor()?.ingestMessage(event.message);
-        }, { id: 'lifecycle-ingest', priority: 100, source: 'cambot-agent' }),
+        }, { id: 'lifecycle-ingest', priority: 18, sequential: true, source: 'cambot-agent' }),
       );
     }
 

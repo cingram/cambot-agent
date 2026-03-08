@@ -27,6 +27,7 @@ describe('task scheduler', () => {
       schedule_type: 'once',
       schedule_value: '2026-02-22T00:00:00.000Z',
       context_mode: 'isolated',
+      agent_id: null,
       next_run: new Date(Date.now() - 60_000).toISOString(),
       status: 'active',
       created_at: '2026-02-22T00:00:00.000Z',
@@ -39,9 +40,7 @@ describe('task scheduler', () => {
     );
 
     startSchedulerLoop({
-      registeredGroups: () => ({}),
       queue: { enqueueTask } as any,
-      onProcess: () => {},
       messageBus: createMessageBus(),
     });
 

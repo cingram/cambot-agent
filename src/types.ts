@@ -94,6 +94,7 @@ export interface ScheduledTask {
   schedule_type: 'cron' | 'interval' | 'once';
   schedule_value: string;
   context_mode: 'group' | 'isolated';
+  agent_id: string | null;
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
@@ -122,6 +123,7 @@ export {
   TypingUpdate,
   AgentTelemetry,
   AgentError,
+  TaskPrompt,
 } from './bus/index.js';
 
 // Alias for local use in interfaces below

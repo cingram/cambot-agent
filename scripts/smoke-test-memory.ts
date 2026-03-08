@@ -68,16 +68,6 @@ async function main() {
     console.log(`  "${q}" → ${result.factIds.length} facts, ${contextLen} chars context (${elapsed}ms)`);
   }
 
-  // 4. Test the host-side buildMemoryContext function
-  console.log('\n--- Test 3: Host-side buildMemoryContext ---');
-  const { buildMemoryContext } = await import('../src/memory-context.js');
-  for (const q of queries) {
-    const start = Date.now();
-    const context = await buildMemoryContext(q);
-    const elapsed = Date.now() - start;
-    console.log(`  "${q}" → ${context ? `${context.length} chars` : 'null'} (${elapsed}ms)`);
-  }
-
   db.close();
   console.log('\n=== All tests passed ===');
 }

@@ -16,6 +16,7 @@ export function writeTasksSnapshot(
     schedule_value: string;
     status: string;
     next_run: string | null;
+    agentId?: string | null;
   }>,
 ): void {
   // Write filtered tasks to the group's IPC directory

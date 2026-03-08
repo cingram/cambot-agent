@@ -1,6 +1,7 @@
 import { CronExpressionParser } from 'cron-parser';
 
 import { TIMEZONE, CONTENT_PIPE_ENABLED } from '../config/config.js';
+import { readEnvFile } from '../config/env.js';
 import { AgentOptions } from '../agents/agents.js';
 import { runWorkerAgent } from '../container/runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from '../db/index.js';
@@ -154,6 +155,7 @@ export async function processTaskIpc(
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          agent_id: data.agentId || null,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
@@ -670,7 +672,8 @@ export async function processTaskIpc(
 
     case 'check_email': {
       if (!deps.contentPipe || !deps.workspaceMcpUrl || !data.requestId) break;
-      const checkDeps: EmailHandlerDeps = { url: deps.workspaceMcpUrl, pipe: deps.contentPipe, rawStore: deps.rawContentStore };
+      const userEmail = readEnvFile(['USER_GOOGLE_EMAIL']).USER_GOOGLE_EMAIL || '';
+      const checkDeps: EmailHandlerDeps = { url: deps.workspaceMcpUrl, userEmail, pipe: deps.contentPipe, rawStore: deps.rawContentStore };
       handleCheckEmail(data, sourceGroup, checkDeps).catch((err) => {
         logger.error({ err, requestId: data.requestId }, 'check_email IPC failed');
         writeEmailResult(sourceGroup, data.requestId!, { status: 'error', error: String(err) });
@@ -680,7 +683,8 @@ export async function processTaskIpc(
 
     case 'read_email': {
       if (!deps.contentPipe || !deps.workspaceMcpUrl || !data.requestId) break;
-      const readDeps: EmailHandlerDeps = { url: deps.workspaceMcpUrl, pipe: deps.contentPipe, rawStore: deps.rawContentStore };
+      const userEmail = readEnvFile(['USER_GOOGLE_EMAIL']).USER_GOOGLE_EMAIL || '';
+      const readDeps: EmailHandlerDeps = { url: deps.workspaceMcpUrl, userEmail, pipe: deps.contentPipe, rawStore: deps.rawContentStore };
       handleReadEmail(data, sourceGroup, readDeps).catch((err) => {
         logger.error({ err, requestId: data.requestId }, 'read_email IPC failed');
         writeEmailResult(sourceGroup, data.requestId!, { status: 'error', error: String(err) });
@@ -695,44 +699,150 @@ export async function processTaskIpc(
 
 // ── Email IPC helpers ────────────────────────────────────────────
 
-let mcpRpcId = 1;
+/**
+ * Minimal MCP streamable-http client with session management.
+ * The server requires: initialize → get session ID → include it in all calls.
+ */
+class McpHttpClient {
+  private rpcId = 1;
+  private sessionId: string | null = null;
+  private initialized = false;
+  private initPromise: Promise<void> | null = null;
+
+  constructor(private url: string) {}
+
+  private parseSSE(text: string): unknown {
+    const dataLines = text.split('\n')
+      .filter((l) => l.startsWith('data: '))
+      .map((l) => l.slice(6));
+    for (let i = dataLines.length - 1; i >= 0; i--) {
+      try {
+        const obj = JSON.parse(dataLines[i]);
+        if (obj.result !== undefined || obj.error !== undefined) return obj;
+      } catch { /* skip */ }
+    }
+    throw new Error('No JSON-RPC response found in SSE stream');
+  }
+
+  private async rpc(method: string, params: Record<string, unknown>): Promise<{
+    result?: { content?: Array<{ text?: string }> };
+    error?: { message: string };
+  }> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream, application/json',
+    };
+    if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
+
+    const res = await fetch(this.url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: this.rpcId++,
+        method,
+        params,
+      }),
+    });
+
+    if (!res.ok) throw new Error(`MCP HTTP error: ${res.status} ${res.statusText}`);
+
+    // Capture session ID from response
+    const sid = res.headers.get('mcp-session-id');
+    if (sid) this.sessionId = sid;
+
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('text/event-stream')) {
+      return this.parseSSE(await res.text()) as ReturnType<McpHttpClient['rpc']> extends Promise<infer T> ? T : never;
+    }
+    return res.json() as ReturnType<McpHttpClient['rpc']>;
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
+      try {
+        await this.rpc('initialize', {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'cambot-agent', version: '1.0' },
+        });
+        // Send initialized notification (no id = notification)
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream, application/json',
+        };
+        if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
+        await fetch(this.url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        });
+        this.initialized = true;
+      } catch (err) {
+        this.initPromise = null; // allow retry on next call
+        throw err;
+      }
+    })();
+
+    return this.initPromise;
+  }
+
+  async callTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
+    await this.ensureInitialized();
+
+    const json = await this.rpc('tools/call', { name: tool, arguments: args });
+    if (json.error) throw new Error(`MCP tool error: ${json.error.message}`);
+
+    const textParts = json.result?.content
+      ?.filter((c) => c.text)
+      .map((c) => c.text)
+      .join('');
+
+    if (textParts) {
+      try { return JSON.parse(textParts); } catch { return textParts; }
+    }
+    return json.result;
+  }
+
+  /** Reset session (e.g. after server restart). */
+  reset(): void {
+    this.sessionId = null;
+    this.initialized = false;
+    this.initPromise = null;
+  }
+}
+
+// Lazy-initialized per-URL clients (typically just one for workspace-mcp)
+const mcpClients = new Map<string, McpHttpClient>();
+
+function getMcpClient(url: string): McpHttpClient {
+  let client = mcpClients.get(url);
+  if (!client) {
+    client = new McpHttpClient(url);
+    mcpClients.set(url, client);
+  }
+  return client;
+}
 
 async function callWorkspaceMcp(
   url: string,
   tool: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  const body = {
-    jsonrpc: '2.0',
-    id: mcpRpcId++,
-    method: 'tools/call',
-    params: { name: tool, arguments: args },
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) throw new Error(`MCP HTTP error: ${res.status} ${res.statusText}`);
-
-  const json = await res.json() as {
-    result?: { content?: Array<{ text?: string }> };
-    error?: { message: string };
-  };
-
-  if (json.error) throw new Error(`MCP tool error: ${json.error.message}`);
-
-  const textParts = json.result?.content
-    ?.filter((c) => c.text)
-    .map((c) => c.text)
-    .join('');
-
-  if (textParts) {
-    try { return JSON.parse(textParts); } catch { return textParts; }
+  const client = getMcpClient(url);
+  try {
+    return await client.callTool(tool, args);
+  } catch (err) {
+    // If session expired, reset and retry once
+    if (err instanceof Error && (err.message.includes('session') || err.message.includes('Session'))) {
+      client.reset();
+      return client.callTool(tool, args);
+    }
+    throw err;
   }
-  return json.result;
 }
 
 interface GmailMessageResult {
@@ -747,6 +857,7 @@ interface GmailMessageResult {
 
 interface EmailHandlerDeps {
   url: string;
+  userEmail: string;
   pipe: ContentPipe;
   rawStore?: RawContentRepository;
 }
@@ -757,17 +868,21 @@ async function handleCheckEmail(
   deps: EmailHandlerDeps,
 ): Promise<void> {
   const { url, pipe, rawStore } = deps;
+  const email = deps.userEmail;
 
-  const result = await callWorkspaceMcp(url, 'search_gmail_messages', {
+  // Step 1: Search for message IDs
+  const searchResult = await callWorkspaceMcp(url, 'search_gmail_messages', {
     query: data.query || 'is:unread',
-    max_results: data.maxResults || 10,
-  }) as GmailMessageResult[] | { messages?: GmailMessageResult[] } | null;
+    page_size: data.maxResults || 10,
+    user_google_email: email,
+  });
 
-  const messages: GmailMessageResult[] = Array.isArray(result)
-    ? result
-    : (result as { messages?: GmailMessageResult[] })?.messages || [];
+  const searchText = typeof searchResult === 'string' ? searchResult : JSON.stringify(searchResult);
 
-  if (messages.length === 0) {
+  // Extract message IDs from the text response
+  const messageIds = [...searchText.matchAll(/Message ID:\s*([a-f0-9]+)/gi)].map(m => m[1]);
+
+  if (messageIds.length === 0) {
     writeEmailResult(sourceGroup, data.requestId!, {
       status: 'ok',
       result: 'No emails found matching the query.',
@@ -775,26 +890,38 @@ async function handleCheckEmail(
     return;
   }
 
+  // Step 2: Batch-fetch full content for all found messages
+  const batchResult = await callWorkspaceMcp(url, 'get_gmail_messages_content_batch', {
+    message_ids: messageIds,
+    user_google_email: email,
+    format: 'full',
+  });
+
+  const batchText = typeof batchResult === 'string' ? batchResult : JSON.stringify(batchResult);
+
+  // Parse individual messages from the batch response text
+  const messages = parseGmailBatchResponse(batchText, messageIds);
+
   const lines: string[] = [`Found ${messages.length} email(s):\n`];
 
-  for (const email of messages) {
+  for (const msg of messages) {
     const raw = {
-      id: `email-${email.id}`,
+      id: `email-${msg.id}`,
       channel: 'email',
-      source: email.from || 'unknown',
-      body: email.body || email.snippet || '(empty)',
+      source: msg.from || 'unknown',
+      body: msg.body || '(empty)',
       metadata: {
-        ...(email.subject ? { Subject: email.subject } : {}),
-        ...(email.from ? { From: email.from } : {}),
-        ...(email.date ? { Date: email.date } : {}),
+        ...(msg.subject ? { Subject: msg.subject } : {}),
+        ...(msg.from ? { From: msg.from } : {}),
+        ...(msg.date ? { Date: msg.date } : {}),
       },
-      receivedAt: email.date || new Date().toISOString(),
+      receivedAt: msg.date || new Date().toISOString(),
     };
 
     const envelope = await pipe.process(raw);
     if (rawStore) rawStore.store(raw, envelope.safetyFlags);
     lines.push(formatEnvelope(envelope));
-    lines.push(`Message ID: ${email.id}`);
+    lines.push(`Message ID: ${msg.id}`);
     lines.push('---');
   }
 
@@ -804,12 +931,55 @@ async function handleCheckEmail(
   });
 }
 
+/** Parse the batch response text into structured message objects. */
+function parseGmailBatchResponse(text: string, fallbackIds: string[]): GmailMessageResult[] {
+  // The batch response contains blocks separated by message boundaries.
+  // Each block has headers like Subject:, From:, Date:, and a Body: section.
+  const messages: GmailMessageResult[] = [];
+
+  // Split by message boundaries (numbered messages or "---" separators)
+  const blocks = text.split(/(?=Message \d+|--- Message |\n={3,}\n)/);
+
+  for (const block of blocks) {
+    if (!block.trim()) continue;
+
+    const subject = block.match(/Subject:\s*(.+)/i)?.[1]?.trim();
+    const from = block.match(/From:\s*(.+)/i)?.[1]?.trim();
+    const date = block.match(/Date:\s*(.+)/i)?.[1]?.trim();
+    const messageId = block.match(/Message[ -]?ID:\s*([a-f0-9]+)/i)?.[1];
+
+    // Extract body: everything after "Body:" or after the headers block
+    let body: string | undefined;
+    const bodyMatch = block.match(/(?:Body|Content):\s*([\s\S]*?)(?=(?:\n(?:Message \d+|--- |={3,}))|$)/i);
+    if (bodyMatch) body = bodyMatch[1].trim();
+
+    if (subject || from || body) {
+      messages.push({
+        id: messageId || fallbackIds[messages.length] || 'unknown',
+        subject,
+        from,
+        date,
+        body,
+      });
+    }
+  }
+
+  // If parsing failed, return a single entry to avoid duplicating the full
+  // batch text N times through the content pipeline.
+  if (messages.length === 0) {
+    return fallbackIds.length > 0 ? [{ id: fallbackIds[0], body: text }] : [];
+  }
+
+  return messages;
+}
+
 async function handleReadEmail(
   data: { requestId?: string; messageId?: string; includeRaw?: boolean },
   sourceGroup: string,
   deps: EmailHandlerDeps,
 ): Promise<void> {
   const { url, pipe, rawStore } = deps;
+  const email = deps.userEmail;
 
   if (!data.messageId) {
     writeEmailResult(sourceGroup, data.requestId!, {
@@ -819,11 +989,12 @@ async function handleReadEmail(
     return;
   }
 
-  const result = await callWorkspaceMcp(url, 'get_gmail_message', {
+  const result = await callWorkspaceMcp(url, 'get_gmail_message_content', {
     message_id: data.messageId,
-  }) as GmailMessageResult | null;
+    user_google_email: email,
+  });
 
-  if (!result) {
+  if (result === null || result === undefined) {
     writeEmailResult(sourceGroup, data.requestId!, {
       status: 'error',
       error: `Email not found: ${data.messageId}`,
@@ -831,17 +1002,34 @@ async function handleReadEmail(
     return;
   }
 
+  const resultText = typeof result === 'string' ? result : JSON.stringify(result);
+
+  if (!resultText || resultText.toLowerCase().includes('not found')) {
+    writeEmailResult(sourceGroup, data.requestId!, {
+      status: 'error',
+      error: `Email not found: ${data.messageId}`,
+    });
+    return;
+  }
+
+  // Parse the text response into structured fields
+  const subject = resultText.match(/Subject:\s*(.+)/i)?.[1]?.trim();
+  const from = resultText.match(/From:\s*(.+)/i)?.[1]?.trim();
+  const date = resultText.match(/Date:\s*(.+)/i)?.[1]?.trim();
+  const bodyMatch = resultText.match(/(?:Body|Content):\s*([\s\S]*?)$/i);
+  const body = bodyMatch?.[1]?.trim() || resultText;
+
   const raw = {
-    id: `email-${result.id}`,
+    id: `email-${data.messageId}`,
     channel: 'email',
-    source: result.from || 'unknown',
-    body: result.body || result.snippet || '(empty)',
+    source: from || 'unknown',
+    body: body || '(empty)',
     metadata: {
-      ...(result.subject ? { Subject: result.subject } : {}),
-      ...(result.from ? { From: result.from } : {}),
-      ...(result.date ? { Date: result.date } : {}),
+      ...(subject ? { Subject: subject } : {}),
+      ...(from ? { From: from } : {}),
+      ...(date ? { Date: date } : {}),
     },
-    receivedAt: result.date || new Date().toISOString(),
+    receivedAt: date || new Date().toISOString(),
   };
 
   const envelope = await pipe.process(raw);
