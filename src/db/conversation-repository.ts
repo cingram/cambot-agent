@@ -208,6 +208,25 @@ export function deleteConversation(id: string): void {
   })();
 }
 
+/** Delete all conversations (and associated messages/chats) for a given agent folder. */
+export function deleteConversationsByFolder(agentFolder: string): void {
+  const db = getDatabase();
+  const convos = db.prepare(
+    'SELECT id, chat_jid FROM conversations WHERE agent_folder = ?',
+  ).all(agentFolder) as Array<{ id: string; chat_jid: string | null }>;
+
+  if (convos.length === 0) return;
+
+  db.transaction(() => {
+    for (const c of convos) {
+      const jid = c.chat_jid ?? `web:ui:${c.id}`;
+      db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
+      db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
+    }
+    db.prepare('DELETE FROM conversations WHERE agent_folder = ?').run(agentFolder);
+  })();
+}
+
 /**
  * Check if an active conversation should be rotated (idle timeout or size exceeded).
  */

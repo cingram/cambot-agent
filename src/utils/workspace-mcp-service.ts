@@ -116,13 +116,15 @@ async function ensureGoogleAuth(port: number, email: string): Promise<void> {
       const authUrl = urlMatch[1];
       logger.info('Google OAuth re-authorization required — opening browser');
 
-      // Open browser cross-platform
-      const { exec: execCb } = await import('child_process');
-      const openCmd = process.platform === 'win32' ? `start "" "${authUrl}"`
-        : process.platform === 'darwin' ? `open "${authUrl}"`
-        : `xdg-open "${authUrl}"`;
-
-      execCb(openCmd, { shell: process.platform === 'win32' ? 'cmd.exe' : undefined });
+      // Open browser cross-platform (use execFile to avoid shell injection)
+      const { execFile: execFileCb } = await import('child_process');
+      if (process.platform === 'win32') {
+        execFileCb('cmd', ['/c', 'start', '', authUrl], { timeout: 5000 });
+      } else if (process.platform === 'darwin') {
+        execFileCb('open', [authUrl], { timeout: 5000 });
+      } else {
+        execFileCb('xdg-open', [authUrl], { timeout: 5000 });
+      }
 
       // Wait for the OAuth callback (poll until a probe succeeds)
       const authDeadline = Date.now() + 120_000; // 2 minutes

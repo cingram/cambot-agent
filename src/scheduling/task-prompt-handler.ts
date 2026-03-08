@@ -85,6 +85,12 @@ export function createTaskPromptHandler(deps: TaskPromptHandlerDeps): TaskPrompt
           }
         }
       } else {
+        if (event.agentId) {
+          logger.warn(
+            { taskId: event.taskId, agentId: event.agentId, hasRepo: !!agentRepo, hasSpawner: !!spawner },
+            'Agent-targeted task falling back to default pipeline — agentRepo or spawner unavailable',
+          );
+        }
         const pipelineResult = await deps.runDefaultPipeline(task);
         result = pipelineResult.result;
         error = pipelineResult.error;

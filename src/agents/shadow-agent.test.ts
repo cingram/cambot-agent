@@ -49,6 +49,9 @@ import { NewMessage, MessageBus } from '../types.js';
 import { InboundMessage } from '../bus/index.js';
 
 const stubGetAgentOptions = () => ({ containerImage: 'test:latest', secretKeys: [] });
+const templateStore = new Map<string, string>();
+const stubGetTemplate = (key: string) => templateStore.get(key);
+const stubSetTemplate = (key: string, value: string) => templateStore.set(key, value);
 
 const ADMIN_JID = '1234567890@s.whatsapp.net';
 
@@ -101,6 +104,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       expect(onSpy).not.toHaveBeenCalled();
@@ -115,6 +120,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin secretkey hello');
@@ -134,6 +141,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('hello world');
@@ -150,6 +159,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!adminfoo secretkey hello');
@@ -166,6 +177,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin wrongkey hello');
@@ -183,6 +196,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin secretkey');
@@ -200,6 +215,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin secretkey   ');
@@ -220,6 +237,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       expect(onSpy).toHaveBeenCalledWith(
@@ -237,6 +256,8 @@ describe('createShadowAgent', () => {
         channels: [makeChannel()],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin secretkey hello', 'web:user');
@@ -254,6 +275,8 @@ describe('createShadowAgent', () => {
         channels: [makeChannel()],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin secretkey show me groups');
@@ -273,6 +296,8 @@ describe('createShadowAgent', () => {
         channels: [makeChannel()],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin secretkey hello');
@@ -290,6 +315,8 @@ describe('createShadowAgent', () => {
         channels: [makeChannel()],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       const event = makeBusEvent('!admin secretkey hello');
@@ -308,6 +335,8 @@ describe('createShadowAgent', () => {
         channels: [],
         messageBus: bus,
         getAgentOptions: stubGetAgentOptions,
+        getTemplate: stubGetTemplate,
+        setTemplate: stubSetTemplate,
       });
 
       expect(onSpy).toHaveBeenCalledWith(

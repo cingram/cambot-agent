@@ -26,6 +26,8 @@ interface ShadowAgentDeps {
   channels: Channel[];
   messageBus: MessageBus;
   getAgentOptions: () => AgentOptions;
+  getTemplate: (key: string) => string | undefined;
+  setTemplate: (key: string, value: string) => void;
 }
 
 /**
@@ -36,33 +38,41 @@ function phoneFromJid(jid: string): string {
   return jid.split('@')[0].split(':')[0];
 }
 
-function ensureShadowGroup(): void {
+const SHADOW_TEMPLATE_KEY = 'shadow-admin-identity';
+
+const DEFAULT_SHADOW_IDENTITY = [
+  '# Shadow Admin Agent',
+  '',
+  'You are a privileged admin agent with elevated access.',
+  '',
+  '## Capabilities',
+  '- Full read access to the project at /workspace/project',
+  '- Read/write access to your working directory at /workspace/group',
+  '- Access to all group data under /workspace/project/groups/',
+  '- Access to the message database at /workspace/project/store/',
+  '',
+  '## Response Format',
+  '- Responses are sent directly to the admin via DM',
+  '- Use WhatsApp formatting: *bold*, _italic_, ```code```',
+  '- Be concise and direct',
+  '',
+  '## Context',
+  '- The `<admin_context>` tag in your prompt tells you which chat the command originated from',
+  '- You can inspect any group folder, logs, or the SQLite database',
+].join('\n');
+
+function ensureShadowGroup(getTemplate: (key: string) => string | undefined, setTemplate: (key: string, value: string) => void): void {
   const groupDir = path.join(GROUPS_DIR, SHADOW_FOLDER);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
-  const claudeMd = path.join(groupDir, 'CLAUDE.md');
-  if (!fs.existsSync(claudeMd)) {
-    fs.writeFileSync(claudeMd, [
-      '# Shadow Admin Agent',
-      '',
-      'You are a privileged admin agent with elevated access.',
-      '',
-      '## Capabilities',
-      '- Full read access to the project at /workspace/project',
-      '- Read/write access to your working directory at /workspace/group',
-      '- Access to all group data under /workspace/project/groups/',
-      '- Access to the message database at /workspace/project/store/',
-      '',
-      '## Response Format',
-      '- Responses are sent directly to the admin via DM',
-      '- Use WhatsApp formatting: *bold*, _italic_, ```code```',
-      '- Be concise and direct',
-      '',
-      '## Context',
-      '- The `<admin_context>` tag in your prompt tells you which chat the command originated from',
-      '- You can inspect any group folder, logs, or the SQLite database',
-    ].join('\n') + '\n');
+  // Seed DB template on first run if not present
+  if (!getTemplate(SHADOW_TEMPLATE_KEY)) {
+    setTemplate(SHADOW_TEMPLATE_KEY, DEFAULT_SHADOW_IDENTITY);
   }
+
+  // Always write CLAUDE.md from DB template (container needs it on disk)
+  const identity = getTemplate(SHADOW_TEMPLATE_KEY) ?? DEFAULT_SHADOW_IDENTITY;
+  fs.writeFileSync(path.join(groupDir, 'CLAUDE.md'), identity + '\n');
 }
 
 function sendReply(channels: Channel[], replyJid: string, text: string): void {
@@ -183,7 +193,7 @@ function checkGates(
  * bus-routed messages (web channel) before the DB store at priority 100.
  */
 export function createShadowAgent(deps: ShadowAgentDeps): void {
-  const { adminJid, adminTrigger, channels, messageBus, getAgentOptions } = deps;
+  const { adminJid, adminTrigger, channels, messageBus, getAgentOptions, getTemplate, setTemplate } = deps;
 
   // Feature disabled — KEY is required; JID is only needed for WhatsApp path
   if (!ADMIN_KEY) {
@@ -191,7 +201,7 @@ export function createShadowAgent(deps: ShadowAgentDeps): void {
     return;
   }
 
-  ensureShadowGroup();
+  ensureShadowGroup(getTemplate, setTemplate);
   const adminPhone = adminJid ? phoneFromJid(adminJid) : '';
   const triggerPrefix = adminTrigger + ' ';
 

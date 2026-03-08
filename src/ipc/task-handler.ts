@@ -763,23 +763,28 @@ class McpHttpClient {
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
-      await this.rpc('initialize', {
-        protocolVersion: '2025-03-26',
-        capabilities: {},
-        clientInfo: { name: 'cambot-agent', version: '1.0' },
-      });
-      // Send initialized notification (no id = notification)
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream, application/json',
-      };
-      if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
-      await fetch(this.url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-      });
-      this.initialized = true;
+      try {
+        await this.rpc('initialize', {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'cambot-agent', version: '1.0' },
+        });
+        // Send initialized notification (no id = notification)
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream, application/json',
+        };
+        if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
+        await fetch(this.url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        });
+        this.initialized = true;
+      } catch (err) {
+        this.initPromise = null; // allow retry on next call
+        throw err;
+      }
     })();
 
     return this.initPromise;

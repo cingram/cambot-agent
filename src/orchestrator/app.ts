@@ -63,6 +63,7 @@ import { AgentRunner } from './agent-runner.js';
 import { GroupMessageProcessor } from './group-message-processor.js';
 import { registerMessageRouter } from './message-router.js';
 import { recoverPendingMessages } from './message-recovery.js';
+import { deleteConversationsByFolder } from '../db/conversation-repository.js';
 import { createAuditEmitter, type AuditEmitter } from '../audit/index.js';
 import { createInputSanitizer, createInjectionDetector } from 'cambot-core';
 import { createSummarizer } from '../pipes/summarizer.js';
@@ -480,12 +481,16 @@ export class CamBotApp {
   }
 
   private initShadowAgent(): void {
+    const db = getDatabase();
+    const templateRepo = createAgentTemplateRepository(db);
     createShadowAgent({
       adminJid: ADMIN_JID,
       adminTrigger: ADMIN_TRIGGER,
       channels: this.integrationMgr?.getActiveChannels() ?? this.channels,
       messageBus: this.bus,
       getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
+      getTemplate: (key) => templateRepo.get(key),
+      setTemplate: (key, value) => templateRepo.set(key, value),
     });
   }
 
@@ -591,6 +596,13 @@ export class CamBotApp {
         stopContainersForGroup(folder);
       } catch (err) {
         logger.warn({ err, folder }, 'Failed to stop containers during agent cleanup');
+      }
+
+      // Cascade-delete conversations, messages, and chats for this agent
+      try {
+        deleteConversationsByFolder(folder);
+      } catch (err) {
+        logger.warn({ err, folder }, 'Failed to delete conversations during agent cleanup');
       }
 
       const dirs = [
