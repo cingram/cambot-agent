@@ -994,9 +994,17 @@ async function handleReadEmail(
     user_google_email: email,
   });
 
+  if (result === null || result === undefined) {
+    writeEmailResult(sourceGroup, data.requestId!, {
+      status: 'error',
+      error: `Email not found: ${data.messageId}`,
+    });
+    return;
+  }
+
   const resultText = typeof result === 'string' ? result : JSON.stringify(result);
 
-  if (!resultText || resultText.includes('not found')) {
+  if (!resultText || resultText.toLowerCase().includes('not found')) {
     writeEmailResult(sourceGroup, data.requestId!, {
       status: 'error',
       error: `Email not found: ${data.messageId}`,

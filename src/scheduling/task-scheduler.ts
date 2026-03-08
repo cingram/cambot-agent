@@ -57,12 +57,16 @@ async function fireTask(
     'Firing scheduled task',
   );
 
-  await deps.messageBus.emit(
-    new TaskPrompt('task-scheduler', task.id, task.chat_jid, task.prompt, task.group_folder, {
-      contextMode: task.context_mode,
-      agentId: task.agent_id,
-    }),
-  );
+  try {
+    await deps.messageBus.emit(
+      new TaskPrompt('task-scheduler', task.id, task.chat_jid, task.prompt, task.group_folder, {
+        contextMode: task.context_mode,
+        agentId: task.agent_id,
+      }),
+    );
+  } catch (err) {
+    logger.error({ taskId: task.id, err }, 'TaskPrompt bus emission failed');
+  }
 }
 
 let schedulerRunning = false;

@@ -132,7 +132,8 @@ export function createTaskPromptHandler(deps: TaskPromptHandlerDeps): TaskPrompt
       id: 'task-prompt-handler',
       priority: 50,
       source: 'task-scheduler',
-      sequential: true,
+      // Not sequential — per-JID serialization is handled by GroupQueue.
+      // Using sequential here would globally serialize all task execution.
     },
   );
 
