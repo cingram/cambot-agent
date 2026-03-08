@@ -30,7 +30,7 @@ const TOOL_PRESETS: Record<ToolPreset, readonly string[]> = {
   ),
   readonly: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill'],
   minimal: ['Read', 'Glob', 'Grep'],
-  sandboxed: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'Skill'],
+  sandboxed: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'ToolSearch', 'Skill'],
   gateway: ['Read', 'Glob', 'Grep'],
 };
 
