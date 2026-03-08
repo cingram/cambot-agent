@@ -964,9 +964,10 @@ function parseGmailBatchResponse(text: string, fallbackIds: string[]): GmailMess
     }
   }
 
-  // If parsing failed, return minimal entries with just IDs
+  // If parsing failed, return a single entry to avoid duplicating the full
+  // batch text N times through the content pipeline.
   if (messages.length === 0) {
-    return fallbackIds.map(id => ({ id, body: text }));
+    return fallbackIds.length > 0 ? [{ id: fallbackIds[0], body: text }] : [];
   }
 
   return messages;

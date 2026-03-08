@@ -70,7 +70,9 @@ function ensureShadowGroup(getTemplate: (key: string) => string | undefined, set
     setTemplate(SHADOW_TEMPLATE_KEY, DEFAULT_SHADOW_IDENTITY);
   }
 
-  // Always write CLAUDE.md from DB template (container needs it on disk)
+  // Always overwrite CLAUDE.md from the DB template — the DB is the single
+  // source of truth for the shadow identity. Manual edits to the file will
+  // be overwritten on the next restart; update the DB template instead.
   const identity = getTemplate(SHADOW_TEMPLATE_KEY) ?? DEFAULT_SHADOW_IDENTITY;
   fs.writeFileSync(path.join(groupDir, 'CLAUDE.md'), identity + '\n');
 }
