@@ -249,6 +249,9 @@ export function resolveToolList(policy?: ToolPolicy): string[] {
  */
 export function resolveMcpToolList(policy?: ToolPolicy): string[] {
   if (!policy) return [];
+  // If the policy only specifies SDK-level allow/deny/add (no preset, no mcp field),
+  // treat MCP tools as unspecified → least-privilege empty list.
+  if (!policy.preset && !policy.mcp) return [];
   return resolveFromPresets(MCP_PRESETS, policy.preset ?? 'full', policy.mcp);
 }
 
@@ -268,13 +271,22 @@ export function qualifyMcpTool(shortName: string, serverName: string): string {
  */
 export function qualifyMcpToolList(shortNames: string[]): string[] {
   const qualified: string[] = [];
+  const unknown: string[] = [];
   for (const name of shortNames) {
     const servers = MCP_TOOL_SERVERS[name];
     if (servers) {
       for (const server of servers) {
         qualified.push(qualifyMcpTool(name, server));
       }
+    } else {
+      unknown.push(name);
     }
+  }
+  if (unknown.length > 0) {
+    console.warn(
+      `[tool-policy] Unknown MCP tool(s) dropped during qualification: ${unknown.join(', ')}. ` +
+      `These tools are not registered in MCP_TOOL_SERVERS and will not be available to the agent.`,
+    );
   }
   return qualified;
 }
