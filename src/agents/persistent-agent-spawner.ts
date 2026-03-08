@@ -61,7 +61,8 @@ export interface PersistentAgentSpawnerDeps {
   onTelemetry?: (telemetry: ContainerTelemetry, channel: string) => void;
   onContainerError?: (error: string, durationMs: number, channel: string) => void;
   getInterceptor?: () => LifecycleInterceptor | null;
-  socketServer?: CambotSocketServer;
+  /** Lazy getter — socket server may not be available at spawner construction time. */
+  getSocketServer?: () => CambotSocketServer | undefined;
 }
 
 // ── Factory ────────────────────────────────────────────────────
@@ -200,7 +201,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             }
           },
           agentOpts,
-          deps.socketServer,
+          deps.getSocketServer?.(),
         );
 
         if (output.newSessionId) {

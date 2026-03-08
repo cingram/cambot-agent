@@ -33,8 +33,8 @@ export class FrameDecoder {
    * Push a chunk of data and return any complete frames decoded from
    * the accumulated buffer.
    */
-  push(chunk: Buffer): SocketFrame[] {
-    this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
+  push(chunk: Uint8Array): SocketFrame[] {
+    this.buffer = Buffer.from(this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]));
     const frames: SocketFrame[] = [];
 
     while (this.buffer.length >= 4) {

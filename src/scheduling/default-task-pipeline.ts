@@ -21,6 +21,7 @@ import { resolveToolList } from '../tools/tool-policy.js';
 import { getActiveConversation } from '../db/conversation-repository.js';
 import type { DefaultPipelineResult } from './task-prompt-handler.js';
 import type { IntegrationManager } from '../integrations/index.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 
 export interface DefaultPipelineDeps {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -28,6 +29,7 @@ export interface DefaultPipelineDeps {
   onProcess: (groupJid: string, proc: ChildProcess, containerName: string, groupFolder: string) => void;
   messageBus: MessageBus;
   getIntegrationManager: () => IntegrationManager | null;
+  getSocketServer?: () => CambotSocketServer | undefined;
 }
 
 export async function runDefaultTaskPipeline(
@@ -102,6 +104,7 @@ export async function runDefaultTaskPipeline(
         }
       },
       agentOpts,
+      deps.getSocketServer?.(),
     );
 
     if (output.status === 'error') {

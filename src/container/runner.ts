@@ -215,10 +215,14 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     readonly: true,
   });
 
-  // Sync agent-runner source into a per-group writable location
+  // Sync agent-runner source into a per-group writable location.
+  // Clean first to remove stale files from previous code versions.
   const agentRunnerSrc = path.join(projectRoot, 'agent-runner', 'src');
   const groupAgentRunnerDir = path.join(DATA_DIR, 'sessions', execution.folder, 'agent-runner-src');
   if (fs.existsSync(agentRunnerSrc)) {
+    if (fs.existsSync(groupAgentRunnerDir)) {
+      fs.rmSync(groupAgentRunnerDir, { recursive: true, force: true });
+    }
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, {
       recursive: true,
       filter: (src) => !src.endsWith('.test.ts'),
@@ -230,10 +234,13 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     readonly: false,
   });
 
-  // Sync cambot-llm source
+  // Sync cambot-llm source. Clean first to remove stale files.
   const cambotAgentsSrc = path.resolve(projectRoot, '..', 'cambot-llm', 'src');
   const groupCambotAgentsDir = path.join(DATA_DIR, 'sessions', execution.folder, 'cambot-llm-src');
   if (fs.existsSync(cambotAgentsSrc)) {
+    if (fs.existsSync(groupCambotAgentsDir)) {
+      fs.rmSync(groupCambotAgentsDir, { recursive: true, force: true });
+    }
     fs.cpSync(cambotAgentsSrc, groupCambotAgentsDir, { recursive: true });
   }
   mounts.push({

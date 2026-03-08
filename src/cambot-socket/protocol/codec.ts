@@ -36,7 +36,7 @@ export class FrameDecoder {
    * Push a chunk of data and return any complete frames decoded from
    * the accumulated buffer.
    */
-  push(chunk: Buffer): SocketFrame[] {
+  push(chunk: Uint8Array): SocketFrame[] {
     this.buffer =
       this.buffer.length === 0
         ? Buffer.from(chunk)

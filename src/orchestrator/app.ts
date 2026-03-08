@@ -30,7 +30,7 @@ import {
   type ContainerOutput,
 } from '../container/runner.js';
 import { writeGroupsSnapshot } from '../container/snapshot-writers.js';
-import { cleanupStaleContainers, cleanupStaleHeartbeats, ensureContainerRuntimeRunning, cleanupOrphans, stopContainersForGroup, stopContainer } from '../container/runtime.js';
+import { cleanupStaleContainers, ensureContainerRuntimeRunning, cleanupOrphans, stopContainersForGroup, stopContainer } from '../container/runtime.js';
 import {
   getAgentDefinition,
   getAllChats,
@@ -163,6 +163,7 @@ export class CamBotApp {
       getWorkflowService: () => this.workflowService,
       getWorkflowBuilderService: () => this.workflowBuilderService,
       getIntegrationManager: () => this.integrationMgr,
+      getSocketServer: () => this.socketServer ?? undefined,
       getRegisteredAgents: () => this.agentRepo?.getAll().map(a => ({
         id: a.id,
         name: a.name,
@@ -502,6 +503,7 @@ export class CamBotApp {
       getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
       getTemplate: (key) => templateRepo.get(key),
       setTemplate: (key, value) => templateRepo.set(key, value),
+      getSocketServer: () => this.socketServer ?? undefined,
     });
   }
 
@@ -541,7 +543,7 @@ export class CamBotApp {
         this.interceptor?.recordContainerError(error, durationMs, channel);
       },
       getInterceptor: () => this.interceptor ?? null,
-      socketServer: this.socketServer ?? undefined,
+      getSocketServer: () => this.socketServer ?? undefined,
     });
   }
 
@@ -687,6 +689,7 @@ export class CamBotApp {
           this.queue.registerProcess(groupJid, proc, containerName, groupFolder),
         messageBus: this.bus,
         getIntegrationManager: () => this.integrationMgr,
+        getSocketServer: () => this.socketServer ?? undefined,
       }),
     });
     startWorkflowSchedulerLoop({ workflowService: this.workflowService! });
@@ -778,7 +781,6 @@ export class CamBotApp {
     const STALE_MAX_AGE = 90 * 60_000;
     setInterval(() => {
       cleanupStaleContainers(STALE_MAX_AGE);
-      cleanupStaleHeartbeats(STALE_MAX_AGE);
     }, STALE_CLEANUP_INTERVAL);
   }
 }

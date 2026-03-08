@@ -17,6 +17,7 @@ import { logger } from '../logger.js';
 import { Channel, ExecutionContext, MessageBus } from '../types.js';
 import { InboundMessage } from '../bus/index.js';
 import type { AgentOptions } from './agents.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 
 const SHADOW_FOLDER = 'shadow-admin';
 
@@ -28,6 +29,7 @@ interface ShadowAgentDeps {
   getAgentOptions: () => AgentOptions;
   getTemplate: (key: string) => string | undefined;
   setTemplate: (key: string, value: string) => void;
+  getSocketServer?: () => CambotSocketServer | undefined;
 }
 
 /**
@@ -98,6 +100,7 @@ async function spawnShadowContainer(
   replyJid: string,
   channels: Channel[],
   agentOpts: AgentOptions,
+  socketServer?: CambotSocketServer,
 ): Promise<void> {
   const conversation = resolveActiveConversation(SHADOW_FOLDER, 'admin', sourceChatJid);
   const sessionId = conversation.sessionId ?? undefined;
@@ -132,6 +135,7 @@ async function spawnShadowContainer(
         }
       },
       agentOpts,
+      socketServer,
     );
 
     if (output.newSessionId) {
@@ -195,7 +199,7 @@ function checkGates(
  * bus-routed messages (web channel) before the DB store at priority 100.
  */
 export function createShadowAgent(deps: ShadowAgentDeps): void {
-  const { adminJid, adminTrigger, channels, messageBus, getAgentOptions, getTemplate, setTemplate } = deps;
+  const { adminJid, adminTrigger, channels, messageBus, getAgentOptions, getTemplate, setTemplate, getSocketServer } = deps;
 
   // Feature disabled — KEY is required; JID is only needed for WhatsApp path
   if (!ADMIN_KEY) {
@@ -226,7 +230,7 @@ export function createShadowAgent(deps: ShadowAgentDeps): void {
 
     if (result.action === 'accept') {
       logger.info({ sourceChatJid: event.jid }, 'Shadow admin command accepted (bus)');
-      spawnShadowContainer(result.prompt, event.jid, event.jid, channels, getAgentOptions()).catch((err) => {
+      spawnShadowContainer(result.prompt, event.jid, event.jid, channels, getAgentOptions(), getSocketServer?.()).catch((err) => {
         logger.error({ err }, 'Shadow container error');
       });
     }

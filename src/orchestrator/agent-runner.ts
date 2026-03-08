@@ -34,6 +34,7 @@ import { resolveActiveConversation, setConversationSession, updatePreview } from
 import type { WorkflowService } from '../workflows/workflow-service.js';
 import type { WorkflowBuilderService } from '../workflows/workflow-builder-service.js';
 import type { RouterState } from './router-state.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 
 export interface AgentRunnerDeps {
   state: RouterState;
@@ -41,6 +42,7 @@ export interface AgentRunnerDeps {
   getWorkflowService: () => WorkflowService | null;
   getWorkflowBuilderService: () => WorkflowBuilderService | null;
   getIntegrationManager: () => IntegrationManager | null;
+  getSocketServer?: () => CambotSocketServer | undefined;
   getRegisteredAgents?: () => Array<{
     id: string;
     name: string;
@@ -118,6 +120,7 @@ export class AgentRunner {
         (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
         wrappedOnOutput,
         agentOpts,
+        this.deps.getSocketServer?.(),
       );
 
       if (output.newSessionId) {
