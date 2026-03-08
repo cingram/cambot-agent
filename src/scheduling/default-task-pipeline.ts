@@ -70,17 +70,6 @@ export async function runDefaultTaskPipeline(
     : undefined;
   const sessionId = activeConvo?.sessionId ?? undefined;
 
-  const TASK_CLOSE_DELAY_MS = 10000;
-  let closeTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const scheduleClose = () => {
-    if (closeTimer) return;
-    closeTimer = setTimeout(() => {
-      logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
-    }, TASK_CLOSE_DELAY_MS);
-  };
-
   try {
     const agentOpts = resolveAgentImage(getLeadAgentId());
 
@@ -104,7 +93,6 @@ export async function runDefaultTaskPipeline(
           if (text) {
             await deps.messageBus.emit(new OutboundMessage('task', task.chat_jid, text, { broadcast: true, groupFolder: task.group_folder }));
           }
-          scheduleClose();
         }
         if (streamedOutput.status === 'success') {
           deps.queue.notifyIdle(task.chat_jid);
@@ -115,8 +103,6 @@ export async function runDefaultTaskPipeline(
       },
       agentOpts,
     );
-
-    if (closeTimer) clearTimeout(closeTimer);
 
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
@@ -129,7 +115,6 @@ export async function runDefaultTaskPipeline(
       'Default task pipeline completed',
     );
   } catch (err) {
-    if (closeTimer) clearTimeout(closeTimer);
     error = err instanceof Error ? err.message : String(err);
     logger.error({ taskId: task.id, error }, 'Default task pipeline failed');
   }

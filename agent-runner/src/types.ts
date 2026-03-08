@@ -4,11 +4,6 @@
  * and (via re-export) the host-side container-runner.
  */
 
-// ── Protocol Constants ──────────────────────────────────────────────
-
-export const OUTPUT_START_MARKER = '---CAMBOT_AGENT_OUTPUT_START---';
-export const OUTPUT_END_MARKER = '---CAMBOT_AGENT_OUTPUT_END---';
-
 // ── MCP Server Config ───────────────────────────────────────────────
 
 export interface McpServerConfig {
@@ -45,7 +40,14 @@ interface BaseContainerInput {
   /** When true, agent was spawned via send_to_agent — restricted MCP tools */
   isInterAgentTarget?: boolean;
   secrets?: Record<string, string>;
-  ipcToken?: string;
+  /** Port of the CambotSocketServer on the host. */
+  socketPort: number;
+  /** One-time token for TCP handshake authentication. */
+  socketToken: string;
+  /** Separate one-time token for the MCP stdio subprocess's TCP connection. */
+  mcpSocketToken?: string;
+  /** Group identifier for the MCP stdio subprocess's TCP connection. */
+  mcpSocketGroup?: string;
 }
 
 export interface ClaudeContainerInput extends BaseContainerInput {
@@ -132,10 +134,6 @@ export interface SessionsIndex {
 // ── Container Paths ─────────────────────────────────────────────────
 
 export interface ContainerPaths {
-  ipcInputDir: string;
-  ipcCloseSentinel: string;
-  ipcOwnerFile: string;
-  heartbeatFile: string;
   groupDir: string;
   extraMountsDir: string;
   contextDir: string;
@@ -146,26 +144,24 @@ export interface ContainerPaths {
 }
 
 export function createDefaultContainerPaths(): ContainerPaths {
-  const ipcInputDir = '/workspace/ipc/input';
   return {
-    ipcInputDir,
-    ipcCloseSentinel: `${ipcInputDir}/_close`,
-    ipcOwnerFile: '/workspace/ipc/_owner',
-    heartbeatFile: '/workspace/ipc/_heartbeat',
     groupDir: '/workspace/group',
     extraMountsDir: '/workspace/extra',
-    contextDir: '/workspace/ipc/context',
-    contextDumpFile: '/workspace/ipc/context-dump.md',
+    contextDir: '/workspace/context',
+    contextDumpFile: '/workspace/context-dump.md',
     conversationsDir: '/workspace/group/conversations',
     tempInputFile: '/tmp/input.json',
     mcpConfigPath: '/home/node/.claude/mcp-servers.json',
   };
 }
 
-// ── IPC Constants ───────────────────────────────────────────────────
+// ── Heartbeat Handle ────────────────────────────────────────────────
 
-export const IPC_POLL_MS = 500;
-export const IPC_WAIT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes (heartbeat-based close fires first)
+/** Heartbeat-compatible interface (matches CambotSocketClient). */
+export interface HeartbeatHandle {
+  setPhase(phase: string): void;
+  incrementQueryCount(): void;
+}
 
 // ── Internal Telemetry Tracking ─────────────────────────────────────
 

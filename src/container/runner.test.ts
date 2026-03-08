@@ -2,18 +2,14 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 
-// Sentinel markers must match container-runner.ts
-const OUTPUT_START_MARKER = '---CAMBOT_AGENT_OUTPUT_START---';
-const OUTPUT_END_MARKER = '---CAMBOT_AGENT_OUTPUT_END---';
-
 // Mock config
 vi.mock('../config/config.js', () => ({
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
+  CAMBOT_SOCKET_PORT: 9500,
   DATA_DIR: '/tmp/cambot-agent-test-data',
   GROUPS_DIR: '/tmp/cambot-agent-test-groups',
   STORE_DIR: '/tmp/cambot-agent-test-store',
   IDLE_TIMEOUT: 1800000, // 30min
-  HEARTBEAT_INTERVAL_MS: 5000,
   TIMEZONE: 'America/Los_Angeles',
   MEMORY_MODE: 'both',
   EMAIL_GUARDRAIL_ENABLED: false,
@@ -48,6 +44,7 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
     },
   };
 });
@@ -68,7 +65,6 @@ vi.mock('./runtime.js', () => ({
 // Mock group-folder
 vi.mock('../groups/group-folder.js', () => ({
   resolveGroupFolderPath: vi.fn((folder: string) => `/tmp/cambot-agent-test-groups/${folder}`),
-  resolveGroupIpcPath: vi.fn((folder: string) => `/tmp/cambot-agent-test-data/ipc/${folder}`),
 }));
 
 // Mock config/env
@@ -76,14 +72,9 @@ vi.mock('../config/env.js', () => ({
   readEnvFile: vi.fn(() => ({})),
 }));
 
-// Mock heartbeat monitor
-const mockMonitor = {
-  start: vi.fn(),
-  stop: vi.fn(),
-  acknowledgeActivity: vi.fn(),
-};
-vi.mock('./heartbeat-monitor.js', () => ({
-  createHeartbeatMonitor: vi.fn(() => mockMonitor),
+// Mock context-files
+vi.mock('../utils/context-files.js', () => ({
+  writeContextFiles: vi.fn(),
 }));
 
 // Create a controllable fake ChildProcess
@@ -140,14 +131,7 @@ const testAgentOptions: AgentOptions = {
   secretKeys: ['ANTHROPIC_API_KEY'],
 };
 
-function emitOutputMarker(proc: ReturnType<typeof createFakeProcess>, output: ContainerOutput) {
-  const json = JSON.stringify(output);
-  proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
-}
-
-describe('container-runner heartbeat and exit behavior', () => {
-  // These tests don't need fake timers — they control the fake process directly.
-  // Using real timers avoids microtask starvation from deeply chained promises.
+describe('container-runner exit behavior', () => {
   const tick = () => new Promise(resolve => setTimeout(resolve, 20));
 
   beforeEach(() => {
@@ -155,7 +139,7 @@ describe('container-runner heartbeat and exit behavior', () => {
     vi.clearAllMocks();
   });
 
-  it('starts and stops heartbeat monitor', async () => {
+  it('resolves as error on non-zero exit without output', async () => {
     const onOutput = vi.fn(async () => {});
     const resultPromise = runContainerAgent(
       testExecution,
@@ -165,80 +149,7 @@ describe('container-runner heartbeat and exit behavior', () => {
       testAgentOptions,
     );
 
-    expect(mockMonitor.start).toHaveBeenCalledTimes(1);
-
-    fakeProc.emit('close', 0);
-    await tick();
-
-    await resultPromise;
-    expect(mockMonitor.stop).toHaveBeenCalledTimes(1);
-  });
-
-  it('acknowledges activity on output markers', async () => {
-    const onOutput = vi.fn(async () => {});
-    const resultPromise = runContainerAgent(
-      testExecution,
-      testInput,
-      () => {},
-      onOutput,
-      testAgentOptions,
-    );
-
-    emitOutputMarker(fakeProc, {
-      status: 'success',
-      result: 'Here is my response',
-      newSessionId: 'session-123',
-    });
-
-    await tick();
-    expect(mockMonitor.acknowledgeActivity).toHaveBeenCalledTimes(1);
-
-    fakeProc.emit('close', 0);
-    await tick();
-
-    const result = await resultPromise;
-    expect(result.status).toBe('success');
-    expect(result.newSessionId).toBe('session-123');
-  });
-
-  it('non-zero exit after output resolves as success (heartbeat shutdown)', async () => {
-    const onOutput = vi.fn(async () => {});
-    const resultPromise = runContainerAgent(
-      testExecution,
-      testInput,
-      () => {},
-      onOutput,
-      testAgentOptions,
-    );
-
-    emitOutputMarker(fakeProc, {
-      status: 'success',
-      result: 'Here is my response',
-      newSessionId: 'session-123',
-    });
-
-    await tick();
-
-    // Container killed by heartbeat escalation (code 137 = SIGKILL)
-    fakeProc.emit('close', 137);
-    await tick();
-
-    const result = await resultPromise;
-    expect(result.status).toBe('success');
-    expect(result.newSessionId).toBe('session-123');
-  });
-
-  it('non-zero exit without output resolves as error', async () => {
-    const onOutput = vi.fn(async () => {});
-    const resultPromise = runContainerAgent(
-      testExecution,
-      testInput,
-      () => {},
-      onOutput,
-      testAgentOptions,
-    );
-
-    // No output emitted — container killed by heartbeat
+    // No output emitted — container killed
     fakeProc.emit('close', 137);
     await tick();
 
@@ -248,7 +159,7 @@ describe('container-runner heartbeat and exit behavior', () => {
     expect(onOutput).not.toHaveBeenCalled();
   });
 
-  it('normal exit after output resolves as success', async () => {
+  it('resolves as success on normal exit', async () => {
     const onOutput = vi.fn(async () => {});
     const resultPromise = runContainerAgent(
       testExecution,
@@ -258,19 +169,10 @@ describe('container-runner heartbeat and exit behavior', () => {
       testAgentOptions,
     );
 
-    emitOutputMarker(fakeProc, {
-      status: 'success',
-      result: 'Done',
-      newSessionId: 'session-456',
-    });
-
-    await tick();
-
     fakeProc.emit('close', 0);
     await tick();
 
     const result = await resultPromise;
     expect(result.status).toBe('success');
-    expect(result.newSessionId).toBe('session-456');
   });
 });

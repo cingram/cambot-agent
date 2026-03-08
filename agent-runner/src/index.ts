@@ -6,27 +6,24 @@
  *
  * Input protocol:
  *   Stdin: Full ContainerInput JSON (read until EOF)
- *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
- *          Sentinel: /workspace/ipc/input/_close — signals session end
+ *   Socket: Follow-up messages arrive as message.input frames
  *
- * Stdout protocol:
- *   Each result is wrapped in OUTPUT_START_MARKER / OUTPUT_END_MARKER pairs.
- *   Multiple results may be emitted (one per agent teams result).
+ * Output protocol:
+ *   Results are sent as output frames over the cambot-socket TCP connection.
  */
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createDefaultContainerPaths, parseContainerInput } from './types.js';
 import { ConsoleLogger } from './logger.js';
-import { StdoutOutputWriter } from './output-writer.js';
-import { IpcChannel } from './ipc-channel.js';
+import { SocketOutputWriter } from './socket-output-writer.js';
+import { CambotSocketClient } from './cambot-socket-client.js';
 import { TelemetryCollector } from './telemetry-collector.js';
 import { TranscriptArchiver } from './transcript-archiver.js';
 import { HookFactory } from './hook-factory.js';
 import { ContextBuilder } from './context-builder.js';
 import { SdkQueryRunner } from './sdk-query-runner.js';
 import { AgentRunner } from './agent-runner.js';
-import { createHeartbeatWriter } from './heartbeat-writer.js';
 import { GuardrailReviewer } from './guardrail-reviewer.js';
 
 async function readStdin(): Promise<string> {
@@ -43,7 +40,6 @@ async function main(): Promise<void> {
   const nodeStartTime = Date.now();
   const paths = createDefaultContainerPaths();
   const logger = new ConsoleLogger();
-  const outputWriter = new StdoutOutputWriter();
 
   // Parse input from stdin
   let rawInput: Record<string, unknown>;
@@ -55,21 +51,32 @@ async function main(): Promise<void> {
       // ENOENT expected if file doesn't exist
     }
   } catch (err: unknown) {
-    outputWriter.write({
-      status: 'error',
-      result: null,
-      error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`,
-    });
+    console.error(`Failed to parse input: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 
   const containerInput = parseContainerInput(rawInput);
   logger.log(`Received input for group: ${containerInput.groupFolder} (node startup: ${Date.now() - nodeStartTime}ms)`);
 
+  // Connect to cambot-socket server on the host
+  const client = await CambotSocketClient.connect(
+    'host.docker.internal',
+    containerInput.socketPort,
+    containerInput.groupFolder,
+    containerInput.socketToken,
+  );
+  logger.log('Connected to cambot-socket server');
+
+  const outputWriter = new SocketOutputWriter(client);
+
   // Fork: custom agent path vs Claude SDK path
   if (containerInput.kind === 'custom') {
     const { runCustomAgent } = await import('./custom-agent-runner.js');
-    await runCustomAgent(containerInput, outputWriter.write.bind(outputWriter), logger.log.bind(logger));
+    try {
+      await runCustomAgent(containerInput, outputWriter.write.bind(outputWriter), logger.log.bind(logger));
+    } finally {
+      client.close();
+    }
     return;
   }
 
@@ -79,25 +86,18 @@ async function main(): Promise<void> {
     sdkEnv[key] = value;
   }
 
-  // Set up IPC channel
-  const ipc = new IpcChannel(paths, logger);
-  ipc.setOwnerToken(containerInput.ipcToken);
-
-  if (containerInput.ipcToken && !ipc.isStillOwner()) {
-    logger.log('Owner mismatch at startup — this container is an orphan, exiting');
-    process.exit(0);
+  // Pass MCP socket credentials so the MCP stdio subprocess can authenticate.
+  // The MCP process opens its own TCP connection with a separate one-time token.
+  sdkEnv['CAMBOT_SOCKET_PORT'] = String(containerInput.socketPort);
+  if (containerInput.mcpSocketToken) {
+    sdkEnv['CAMBOT_SOCKET_TOKEN'] = containerInput.mcpSocketToken;
   }
-  if (containerInput.ipcToken) {
-    logger.log(`IPC owner token: ${containerInput.ipcToken.slice(0, 8)}...`);
+  if (containerInput.mcpSocketGroup) {
+    sdkEnv['CAMBOT_SOCKET_MCP_GROUP'] = containerInput.mcpSocketGroup;
   }
 
-  ipc.initialize();
-
-  // Set up heartbeat writer (host monitors this file for liveness)
-  const heartbeat = createHeartbeatWriter(
-    paths.heartbeatFile,
-    containerInput.ipcToken || 'unknown',
-  );
+  // Start heartbeat
+  client.startHeartbeat();
 
   // Wire dependency graph
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -117,12 +117,11 @@ async function main(): Promise<void> {
 
   const telemetry = new TelemetryCollector();
   const archiver = new TranscriptArchiver(paths, logger);
-  const hookFactory = new HookFactory(telemetry, archiver, logger, heartbeat, guardrail);
+  const hookFactory = new HookFactory(telemetry, archiver, logger, client, guardrail);
   const contextBuilder = new ContextBuilder(paths, logger);
-  const queryRunner = new SdkQueryRunner(paths, logger, outputWriter, ipc, hookFactory, contextBuilder, telemetry, __dirname, heartbeat);
-  const agentRunner = new AgentRunner(logger, outputWriter, ipc, queryRunner, {}, heartbeat);
+  const queryRunner = new SdkQueryRunner(paths, logger, outputWriter, client, hookFactory, contextBuilder, telemetry, __dirname, client);
+  const agentRunner = new AgentRunner(logger, outputWriter, client, queryRunner, {}, client);
 
-  heartbeat.start();
   try {
     await agentRunner.run(containerInput, sdkEnv);
   } catch (err: unknown) {
@@ -135,7 +134,8 @@ async function main(): Promise<void> {
     });
     process.exit(1);
   } finally {
-    heartbeat.stop();
+    client.stopHeartbeat();
+    client.close();
   }
 }
 

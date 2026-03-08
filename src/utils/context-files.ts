@@ -1,7 +1,7 @@
 /**
  * Dynamic Context File Generator
  *
- * Generates numbered .md files into data/ipc/{group}/context/ before each
+ * Generates numbered .md files into data/sessions/{group}/context/ before each
  * container spawn. These files are read by the agent-runner's context-assembler
  * and injected into the system prompt alongside CLAUDE.md.
  *

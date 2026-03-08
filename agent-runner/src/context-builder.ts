@@ -2,7 +2,7 @@
  * Assembles the system prompt from all context sources:
  * - Global CLAUDE.md (for non-main groups)
  * - Memory instructions (based on memoryMode)
- * - Dynamic context files in /workspace/ipc/context/
+ * - Dynamic context files in /workspace/context/
  * - Extra directories mounted at /workspace/extra/*
  */
 import fs from 'fs';

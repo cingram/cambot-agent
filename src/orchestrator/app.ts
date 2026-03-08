@@ -6,6 +6,7 @@ import {
   ADMIN_JID,
   ADMIN_TRIGGER,
   ASSISTANT_NAME,
+  CAMBOT_SOCKET_PORT,
   CONTENT_PIPE_BLOCK_CRITICAL,
   CONTENT_PIPE_ENABLED,
   CONTENT_PIPE_MODEL,
@@ -38,7 +39,6 @@ import {
   initDatabase,
 } from '../db/index.js';
 import { GroupQueue } from '../groups/group-queue.js';
-import { startIpcWatcher } from '../ipc/watcher.js';
 import { startSchedulerLoop } from '../scheduling/task-scheduler.js';
 import { createTaskPromptHandler, type TaskPromptHandler } from '../scheduling/task-prompt-handler.js';
 import { runDefaultTaskPipeline } from '../scheduling/default-task-pipeline.js';
@@ -81,6 +81,10 @@ import { createWorkflowTriggerHandler } from '../workflows/workflow-trigger-hand
 import { createWorkflowAgentHandler } from '../workflows/workflow-agent-handler.js';
 import { GROUPS_DIR } from '../config/config.js';
 
+// cambot-socket imports
+import { CambotSocketServer, CommandRegistry, registerAllHandlers } from '../cambot-socket/index.js';
+import type { SocketDeps } from '../cambot-socket/index.js';
+
 export class CamBotApp {
   private state = new RouterState();
   private queue = new GroupQueue();
@@ -102,6 +106,7 @@ export class CamBotApp {
   private workflowAgentHandler: { destroy: () => void } | null = null;
   private agentSpawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner | null = null;
   private agentRepo: AgentRepository | null = null;
+  private socketServer: CambotSocketServer | null = null;
 
   async start(): Promise<void> {
     this.installProcessHandlers();
@@ -145,6 +150,10 @@ export class CamBotApp {
     await this.initIntegrations();
     this.initShadowAgent();
     this.initPersistentAgents();
+
+    // Start the cambot-socket TCP server
+    await this.initSocketServer();
+
     this.startSubsystems();
 
     // Build message pipeline
@@ -182,6 +191,7 @@ export class CamBotApp {
       queue: this.queue,
       getChannels: () => this.channels,
       getInterceptor: () => this.interceptor,
+      socketServer: this.socketServer ?? undefined,
     });
 
     this.startStaleCleanup();
@@ -335,6 +345,7 @@ export class CamBotApp {
               }
             },
             workflowAgentOpts,
+            this.socketServer ?? undefined,
           );
 
           containerPromise.then((output) => {
@@ -430,7 +441,6 @@ export class CamBotApp {
       blockOnCritical: CONTENT_PIPE_BLOCK_CRITICAL,
     });
 
-    // Cleanup expired raw content on startup
     const cleaned = this.rawContentStore.cleanupExpired();
     if (cleaned > 0) {
       logger.info({ cleaned }, 'Cleaned up expired raw content');
@@ -450,6 +460,7 @@ export class CamBotApp {
       if (this.persistentAgentHandler) this.persistentAgentHandler.destroy();
       if (this.workflowTriggerHandler) this.workflowTriggerHandler.destroy();
       if (this.workflowAgentHandler) this.workflowAgentHandler.destroy();
+      if (this.socketServer) await this.socketServer.shutdown();
       if (this.appBus) await this.appBus.shutdown();
       await this.queue.shutdown(10000);
       if (this.integrationMgr) await this.integrationMgr.shutdown();
@@ -463,7 +474,7 @@ export class CamBotApp {
     const auditEmitter = this.auditEmitter;
     const channelOpts = {
       registeredGroups: () => this.state.getRegisteredGroups(),
-      registerGroup: (jid: string, group: any) => this.state.registerGroup(jid, group),
+      registerGroup: (jid: string, group: import('../types.js').RegisteredGroup) => this.state.registerGroup(jid, group),
       messageBus: this.bus,
       workflowService: this.workflowService ?? undefined,
       channelNames: () => this.channels.map(ch => ch.name),
@@ -530,6 +541,7 @@ export class CamBotApp {
         this.interceptor?.recordContainerError(error, durationMs, channel);
       },
       getInterceptor: () => this.interceptor ?? null,
+      socketServer: this.socketServer ?? undefined,
     });
   }
 
@@ -568,6 +580,45 @@ export class CamBotApp {
     }
   }
 
+  private async initSocketServer(): Promise<void> {
+    const socketDeps: SocketDeps = {
+      bus: this.bus,
+      registeredGroups: () => this.state.getRegisteredGroups(),
+      registerGroup: (jid, group) => this.state.registerGroup(jid, group),
+      syncGroupMetadata: async (force) => {
+        const activeChannels = this.integrationMgr?.getActiveChannels() ?? this.channels;
+        for (const ch of activeChannels) await ch.syncMetadata?.(force);
+      },
+      getAvailableGroups: () => this.state.getAvailableGroups(),
+      writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+      workflowService: this.workflowService ?? undefined,
+      workflowBuilderService: this.workflowBuilderService ?? undefined,
+      resolveAgentImage,
+      getAgentDefinition,
+      integrationManager: this.integrationMgr ?? undefined,
+      contentPipe: this.contentPipe ?? undefined,
+      rawContentStore: this.rawContentStore ?? undefined,
+      workspaceMcpUrl: `http://localhost:${WORKSPACE_MCP_PORT}/mcp`,
+      agentSpawner: this.agentSpawner ?? undefined,
+      agentRepo: this.agentRepo ?? undefined,
+      // socketServer assigned below after CambotSocketServer creation
+    };
+
+    const registry = new CommandRegistry(socketDeps);
+    registerAllHandlers(registry);
+
+    this.socketServer = new CambotSocketServer({
+      registry,
+      port: CAMBOT_SOCKET_PORT,
+    });
+
+    // Wire the server reference into deps (circular dependency resolution)
+    socketDeps.socketServer = this.socketServer;
+
+    await this.socketServer.start();
+    logger.info({ port: CAMBOT_SOCKET_PORT }, 'CambotSocketServer started');
+  }
+
   private handleAgentMutation(deletedFolder?: string): void {
     if (deletedFolder) {
       this.cleanupAgentFolder(deletedFolder);
@@ -580,17 +631,15 @@ export class CamBotApp {
 
   /**
    * Async cleanup of a deleted agent's disk artifacts.
-   * Kills any running containers first, then removes workspace, session, and IPC directories.
+   * Kills any running containers first, then removes workspace and session directories.
    */
   private cleanupAgentFolder(folder: string): void {
-    // Safety: never clean up system folders
     const PROTECTED_FOLDERS = new Set(['main', 'workflows']);
     if (PROTECTED_FOLDERS.has(folder)) {
       logger.warn({ folder }, 'Refusing to clean up protected folder');
       return;
     }
 
-    // Run async so the API response isn't blocked
     setImmediate(() => {
       try {
         stopContainersForGroup(folder);
@@ -598,7 +647,6 @@ export class CamBotApp {
         logger.warn({ err, folder }, 'Failed to stop containers during agent cleanup');
       }
 
-      // Cascade-delete conversations, messages, and chats for this agent
       try {
         deleteConversationsByFolder(folder);
       } catch (err) {
@@ -608,7 +656,6 @@ export class CamBotApp {
       const dirs = [
         path.join(GROUPS_DIR, folder),
         path.join(DATA_DIR, 'sessions', folder),
-        path.join(DATA_DIR, 'ipc', folder),
       ];
 
       for (const dir of dirs) {
@@ -643,27 +690,6 @@ export class CamBotApp {
       }),
     });
     startWorkflowSchedulerLoop({ workflowService: this.workflowService! });
-    startIpcWatcher({
-      messageBus: this.bus,
-      registeredGroups: () => this.state.getRegisteredGroups(),
-      registerGroup: (jid, group) => this.state.registerGroup(jid, group),
-      syncGroupMetadata: async (force) => {
-        const activeChannels = this.integrationMgr?.getActiveChannels() ?? this.channels;
-        for (const ch of activeChannels) await ch.syncMetadata?.(force);
-      },
-      getAvailableGroups: () => this.state.getAvailableGroups(),
-      writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
-      workflowService: this.workflowService ?? undefined,
-      workflowBuilderService: this.workflowBuilderService ?? undefined,
-      resolveAgentImage,
-      getAgentDefinition,
-      integrationManager: this.integrationMgr ?? undefined,
-      contentPipe: this.contentPipe ?? undefined,
-      rawContentStore: this.rawContentStore ?? undefined,
-      workspaceMcpUrl: `http://localhost:${WORKSPACE_MCP_PORT}/mcp`,
-      agentSpawner: this.agentSpawner ?? undefined,
-      agentRepo: this.agentRepo ?? undefined,
-    });
   }
 
   private routeAuditEvent(event: { type: string; channel: string; data: Record<string, unknown> }): void {

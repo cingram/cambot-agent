@@ -10,6 +10,7 @@
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts } from '../types.js';
 import { InboundMessage, ChatMetadata } from '../bus/index.js';
+import type { GmailMessage } from '../cambot-socket/handlers/gmail-parser.js';
 
 export interface EmailChannelConfig {
   /** Full URL to the workspace-mcp streamable-http endpoint */
@@ -76,16 +77,6 @@ async function callMcpTool(
   }
 
   return json.result;
-}
-
-interface GmailMessage {
-  id: string;
-  threadId?: string;
-  subject?: string;
-  from?: string;
-  date?: string;
-  snippet?: string;
-  body?: string;
 }
 
 export class EmailChannel implements Channel {

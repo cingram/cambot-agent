@@ -1,7 +1,4 @@
-import fs from 'fs';
-import path from 'path';
-
-import { DATA_DIR, MAIN_GROUP_FOLDER } from '../config/config.js';
+import { MAIN_GROUP_FOLDER } from '../config/config.js';
 import { getLeadAgentId, resolveAgentImage } from '../agents/agents.js';
 import type { IntegrationManager } from '../integrations/index.js';
 import {
@@ -65,15 +62,9 @@ export class AgentRunner {
     this.templateRepo = createAgentTemplateRepository(db);
   }
 
-  cleanIpcInputDir(groupFolder: string): void {
-    const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
-    try {
-      for (const f of fs.readdirSync(inputDir)) {
-        if (f.endsWith('.json') || f === '_close') {
-          try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
-        }
-      }
-    } catch { /* ignore — dir may not exist */ }
+  /** No-op: IPC input directory cleanup is no longer needed with socket transport. */
+  cleanIpcInputDir(_groupFolder: string): void {
+    // Socket-based transport has no file-based input directory to clean.
   }
 
   async run(

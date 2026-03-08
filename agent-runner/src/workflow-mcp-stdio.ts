@@ -5,9 +5,9 @@
  * Registered as 'workflow-builder' in the SDK mcpServers config.
  * Tools are namespaced as mcp__workflow-builder__*.
  *
- * Uses the IPC poll-for-result pattern: writes a request JSON to
- * /workspace/ipc/tasks/, then polls /workspace/ipc/workflow-results/
- * for the host's response.
+ * Read-only tools (get_workflow, get_workflow_schema) read from local
+ * snapshots at /workspace/snapshots/. CRUD tools are deprecated in this
+ * file — use the socket-based versions in socket-mcp-stdio.ts instead.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -16,9 +16,9 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 
-const IPC_DIR = '/workspace/ipc';
-const TASKS_DIR = path.join(IPC_DIR, 'tasks');
-const RESULTS_DIR = path.join(IPC_DIR, 'workflow-results');
+const SNAPSHOTS_DIR = '/workspace/snapshots';
+const TASKS_DIR = path.join(SNAPSHOTS_DIR, 'tasks');
+const RESULTS_DIR = path.join(SNAPSHOTS_DIR, 'workflow-results');
 
 const groupFolder = process.env.CAMBOT_AGENT_GROUP_FOLDER!;
 const isMain = process.env.CAMBOT_AGENT_IS_MAIN === '1';
@@ -156,7 +156,7 @@ server.tool(
     workflow_id: z.string().describe('The workflow ID to retrieve'),
   },
   async (args) => {
-    const wfFile = path.join(IPC_DIR, 'workflows', `${args.workflow_id}.json`);
+    const wfFile = path.join(SNAPSHOTS_DIR, 'workflows', `${args.workflow_id}.json`);
     if (!fs.existsSync(wfFile)) {
       return {
         content: [{ type: 'text' as const, text: `Workflow "${args.workflow_id}" not found.` }],
@@ -296,7 +296,7 @@ server.tool(
   {},
   async () => {
     // Read from snapshot if available
-    const schemaFile = path.join(IPC_DIR, 'workflow_schema.json');
+    const schemaFile = path.join(SNAPSHOTS_DIR, 'workflow_schema.json');
     if (fs.existsSync(schemaFile)) {
       const schema = fs.readFileSync(schemaFile, 'utf-8');
       return {

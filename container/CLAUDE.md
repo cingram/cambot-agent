@@ -5,7 +5,8 @@ You are running inside a sandboxed container. Follow these rules.
 ## Environment
 
 - Working directory: `/workspace/group/` (persistent, per-group)
-- IPC directory: `/workspace/ipc/` (communication with host)
+- Snapshots directory: `/workspace/snapshots/` (discovery files, read-only)
+- Context directory: `/workspace/context/` (dynamic context files, read-only)
 - Extra mounts: `/workspace/extra/` (additional host directories, if configured)
 - Home: `/home/node/`
 
@@ -48,12 +49,12 @@ You interact with the host system through the `cambot-agent` MCP server. These t
 
 - `send_to_agent` — Send a message to another persistent agent and wait for its response. The target agent runs in its own container and returns a result.
 
-To discover available agents, read `/workspace/ipc/persistent_agents.json`. It contains an array of registered agents with their `id`, `name`, `description`, `channels`, and `capabilities`.
+To discover available agents, read `/workspace/snapshots/persistent_agents.json`. It contains an array of registered agents with their `id`, `name`, `description`, `channels`, and `capabilities`.
 
 Example:
 ```
 # Check who's available
-cat /workspace/ipc/persistent_agents.json
+cat /workspace/snapshots/persistent_agents.json
 
 # Ask the email agent to draft a reply
 send_to_agent(target_agent: "email-agent", prompt: "Draft a reply to John's last email thanking him")
@@ -75,7 +76,7 @@ NOTE: If you were spawned by another agent (via `send_to_agent`), you will NOT h
 
 ### Discovery Files
 
-These JSON files in `/workspace/ipc/` are updated before each container spawn:
+These JSON files in `/workspace/snapshots/` are updated before each container spawn:
 
 | File | Contents |
 |------|----------|

@@ -13,6 +13,7 @@ import type { ContextFileDeps } from '../utils/context-files.js';
 import type { LifecycleInterceptor } from '../utils/lifecycle-interceptor.js';
 import { runContainerAgent } from '../container/runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 import { OutboundMessage } from '../bus/index.js';
 import { logger } from '../logger.js';
 import { resolveToolList, resolveMcpToolList, applySafetyDenials, qualifyMcpToolList } from '../tools/tool-policy.js';
@@ -60,6 +61,7 @@ export interface PersistentAgentSpawnerDeps {
   onTelemetry?: (telemetry: ContainerTelemetry, channel: string) => void;
   onContainerError?: (error: string, durationMs: number, channel: string) => void;
   getInterceptor?: () => LifecycleInterceptor | null;
+  socketServer?: CambotSocketServer;
 }
 
 // ── Factory ────────────────────────────────────────────────────
@@ -198,6 +200,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             }
           },
           agentOpts,
+          deps.socketServer,
         );
 
         if (output.newSessionId) {

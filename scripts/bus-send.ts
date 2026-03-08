@@ -2,7 +2,7 @@
 /**
  * bus — CLI tool for agent messaging and management.
  *
- * Messaging (writes IPC files, requires running host):
+ * Messaging (connects via TCP socket to running host):
  *   bun run scripts/bus-send.ts send -a <id> "Your message"
  *   bun run scripts/bus-send.ts send -g <folder> "Your message"
  *   bun run scripts/bus-send.ts send "Message to main group"
@@ -17,13 +17,17 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { randomUUID } from 'crypto';
+import net from 'net';
+import { randomUUID } from 'node:crypto';
+
+import { encodeFrame, FrameDecoder } from '../src/cambot-socket/protocol/codec.js';
+import type { SocketFrame } from '../src/cambot-socket/protocol/types.js';
+import { FRAME_TYPES } from '../src/cambot-socket/protocol/types.js';
 
 const PROJECT_ROOT = path.resolve(import.meta.dir, '..');
-const IPC_DIR = path.join(PROJECT_ROOT, 'data', 'ipc', '_bus');
-const INBOUND_DIR = path.join(IPC_DIR, 'inbound');
-const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
 const DB_PATH = path.join(PROJECT_ROOT, 'store', 'cambot.sqlite');
+const SOCKET_PORT = parseInt(process.env.CAMBOT_SOCKET_PORT || '9500', 10);
+const BUS_TOKEN = process.env.BUS_TOKEN || 'cambot-bus-cli';
 
 // ── Subcommand routing ──────────────────────────────────────────
 
@@ -57,7 +61,7 @@ async function main(): Promise<void> {
       await deleteAgent(args.slice(1));
       break;
     case 'send':
-      sendMessage(args.slice(1));
+      await sendMessage(args.slice(1));
       break;
     case 'help':
     case '--help':
@@ -67,7 +71,7 @@ async function main(): Promise<void> {
     default:
       // No recognized subcommand — treat entire args as implicit "send"
       if (subcommand.startsWith('-') || subcommand.length > 0) {
-        sendMessage(args);
+        await sendMessage(args);
       } else {
         printUsage();
       }
@@ -79,11 +83,10 @@ main();
 
 // ── Send message ────────────────────────────────────────────────
 
-function sendMessage(sendArgs: string[]): void {
+async function sendMessage(sendArgs: string[]): Promise<void> {
   let agent: string | undefined;
   let group: string | undefined;
   let timeout = '300';
-  let poll = '500';
   const positionals: string[] = [];
 
   for (let i = 0; i < sendArgs.length; i++) {
@@ -94,8 +97,6 @@ function sendMessage(sendArgs: string[]): void {
       group = sendArgs[++i];
     } else if ((arg === '-t' || arg === '--timeout') && sendArgs[i + 1]) {
       timeout = sendArgs[++i];
-    } else if ((arg === '-p' || arg === '--poll') && sendArgs[i + 1]) {
-      poll = sendArgs[++i];
     } else if (!arg.startsWith('-')) {
       positionals.push(arg);
     }
@@ -108,58 +109,91 @@ function sendMessage(sendArgs: string[]): void {
     process.exit(1);
   }
 
-  const requestId = randomUUID();
-  fs.mkdirSync(INBOUND_DIR, { recursive: true });
-  fs.mkdirSync(RESPONSES_DIR, { recursive: true });
-
-  const request = { id: requestId, message, agent, group, senderName: 'Bus CLI' };
-  fs.writeFileSync(path.join(INBOUND_DIR, `${requestId}.json`), JSON.stringify(request));
-
   const target = agent ? `agent:${agent}` : group ? `group:${group}` : 'main group';
-  console.log(`Sent to ${target} [${requestId.slice(0, 8)}]`);
-  console.log('Waiting for response...\n');
-
   const timeoutMs = parseInt(timeout, 10) * 1000;
-  const pollMs = parseInt(poll, 10);
-  const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
-  const startTime = Date.now();
 
-  const timer = setInterval(() => {
-    if (fs.existsSync(responseFile)) {
-      clearInterval(timer);
-      let response: { id: string; status: string; text: string; durationMs?: number };
-      try {
-        response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
-        fs.unlinkSync(responseFile);
-      } catch {
-        console.error('Failed to read response file');
-        process.exit(1);
-      }
+  return new Promise<void>((resolve) => {
+    const decoder = new FrameDecoder();
+    const busMessageId = randomUUID();
 
-      if (response.status === 'error') {
-        console.error(response.text);
-        if (response.durationMs) console.error(`\n(${formatDuration(response.durationMs)})`);
-        process.exit(1);
-      }
+    const socket = net.createConnection({ port: SOCKET_PORT, host: '127.0.0.1' }, () => {
+      // Send handshake
+      const handshake: SocketFrame = {
+        id: randomUUID(),
+        type: FRAME_TYPES.HANDSHAKE,
+        payload: { token: BUS_TOKEN, group: '_bus' },
+      };
+      socket.write(encodeFrame(handshake));
+    });
 
-      console.log(response.text);
-      if (response.durationMs) {
-        console.log(`\n(${formatDuration(response.durationMs)})`);
-      }
-      process.exit(0);
-    }
+    let handshakeDone = false;
 
-    if (Date.now() - startTime > timeoutMs) {
-      clearInterval(timer);
+    const timer = setTimeout(() => {
       console.error(`Timeout after ${timeout}s — host may not be running`);
-      const inboundFile = path.join(INBOUND_DIR, `${requestId}.json`);
-      if (fs.existsSync(inboundFile)) {
-        fs.unlinkSync(inboundFile);
-        console.error('(Request was never picked up — is the host running?)');
-      }
+      socket.destroy();
       process.exit(1);
-    }
-  }, pollMs);
+    }, timeoutMs);
+
+    socket.on('data', (chunk: Buffer) => {
+      const frames = decoder.push(chunk);
+
+      for (const frame of frames) {
+        if (frame.type === FRAME_TYPES.HANDSHAKE_ACK && !handshakeDone) {
+          handshakeDone = true;
+          console.log(`Sent to ${target}`);
+          console.log('Waiting for response...\n');
+
+          // Send bus.message
+          const busMsg: SocketFrame = {
+            id: busMessageId,
+            type: FRAME_TYPES.BUS_MESSAGE,
+            payload: { message, agent, group, senderName: 'Bus CLI' },
+          };
+          socket.write(encodeFrame(busMsg));
+          continue;
+        }
+
+        if (frame.type === FRAME_TYPES.BUS_MESSAGE && frame.replyTo === busMessageId) {
+          clearTimeout(timer);
+          const payload = frame.payload as { status: string; text: string; durationMs?: number };
+
+          if (payload.status === 'error') {
+            console.error(payload.text);
+            if (payload.durationMs) console.error(`\n(${formatDuration(payload.durationMs)})`);
+            socket.destroy();
+            process.exit(1);
+          }
+
+          console.log(payload.text);
+          if (payload.durationMs) {
+            console.log(`\n(${formatDuration(payload.durationMs)})`);
+          }
+          socket.destroy();
+          process.exit(0);
+        }
+
+        if (frame.type === FRAME_TYPES.ERROR) {
+          clearTimeout(timer);
+          const payload = frame.payload as { error: string };
+          console.error(`Error: ${payload.error}`);
+          socket.destroy();
+          process.exit(1);
+        }
+      }
+    });
+
+    socket.on('error', (err) => {
+      clearTimeout(timer);
+      console.error(`Connection error: ${err.message}`);
+      console.error('Is the host running?');
+      process.exit(1);
+    });
+
+    socket.on('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 // ── List agents ─────────────────────────────────────────────────

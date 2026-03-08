@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   ASSISTANT_NAME,
   MAIN_GROUP_FOLDER,
@@ -11,6 +13,7 @@ import type { Channel, MessageBus } from '../types.js';
 import type { LifecycleInterceptor } from '../utils/lifecycle-interceptor.js';
 import { InboundMessage, TypingUpdate } from '../bus/index.js';
 import type { RouterState } from './router-state.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 
 export interface MessageRouterDeps {
   bus: MessageBus;
@@ -18,6 +21,7 @@ export interface MessageRouterDeps {
   queue: GroupQueue;
   getChannels: () => Channel[];
   getInterceptor: () => LifecycleInterceptor | null;
+  socketServer?: CambotSocketServer;
 }
 
 /**
@@ -28,7 +32,7 @@ export interface MessageRouterDeps {
  * before routing logic runs.
  */
 export function registerMessageRouter(deps: MessageRouterDeps): () => void {
-  const { bus, state, queue, getChannels, getInterceptor } = deps;
+  const { bus, state, queue, getChannels, getInterceptor, socketServer } = deps;
 
   return bus.on(InboundMessage, (event) => {
     if (event.cancelled) return;
@@ -53,7 +57,7 @@ export function registerMessageRouter(deps: MessageRouterDeps): () => void {
       return; // Stored in DB, awaiting trigger
     }
 
-    // Try to pipe to active container
+    // Try to pipe to active container via socket connection
     const pipeSince = queue.getLastPipedTimestamp(chatJid)
       || state.getAgentTimestamp(chatJid);
     const allPending = getMessagesSince(chatJid, pipeSince, ASSISTANT_NAME);
@@ -65,18 +69,28 @@ export function registerMessageRouter(deps: MessageRouterDeps): () => void {
       : formatted;
 
     const latestTs = messagesToSend[messagesToSend.length - 1]?.timestamp;
-    if (queue.sendMessage(chatJid, safeFormatted, latestTs)) {
+
+    // Try socket-based delivery first
+    if (socketServer && socketServer.hasConnection(group.folder)) {
+      socketServer.send(group.folder, {
+        id: randomUUID(),
+        type: 'message.input',
+        payload: { text: safeFormatted, chatJid },
+      });
       logger.info(
         { chatJid, count: messagesToSend.length },
-        'Piped messages to active container via IPC',
+        'Piped messages to active container via socket',
       );
       state.setAgentTimestamp(chatJid, messagesToSend[messagesToSend.length - 1].timestamp);
       state.save();
       bus.emit(new TypingUpdate('agent', chatJid, true)).catch(() => {});
+      if (latestTs) {
+        queue.recordPipedTimestamp(chatJid, latestTs);
+      }
     } else {
       logger.info(
         { chatJid, count: messagesToSend.length },
-        'No active container, enqueueing for new container',
+        'No active socket connection, enqueueing for new container',
       );
       queue.enqueueMessageCheck(chatJid);
     }

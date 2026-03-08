@@ -1,8 +1,6 @@
 import { ChildProcess } from 'child_process';
-import fs from 'fs';
-import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from '../config/config.js';
+import { MAX_CONCURRENT_CONTAINERS } from '../config/config.js';
 import { logger } from '../logger.js';
 
 interface QueuedTask {
@@ -24,8 +22,8 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
-  /** Timestamp of the latest message piped via IPC to the active container.
-   *  Used to avoid re-piping the same messages on each poll cycle.
+  /** Timestamp of the latest message piped via socket to the active container.
+   *  Used to avoid re-piping the same messages on each cycle.
    *  Reset when the container exits so the safety-net can re-process. */
   lastPipedTimestamp: string | null;
 }
@@ -95,7 +93,6 @@ export class GroupQueue {
 
     const state = this.getGroup(groupJid);
 
-    // Prevent double-queuing of the same task
     if (state.pendingTasks.some((t) => t.id === taskId)) {
       logger.debug({ groupJid, taskId }, 'Task already queued, skipping');
       return;
@@ -103,9 +100,6 @@ export class GroupQueue {
 
     if (state.active) {
       state.pendingTasks.push({ id: taskId, groupJid, fn });
-      if (state.idleWaiting) {
-        this.closeStdin(groupJid);
-      }
       logger.debug({ groupJid, taskId }, 'Container active, task queued');
       return;
     }
@@ -122,7 +116,6 @@ export class GroupQueue {
       return;
     }
 
-    // Run immediately
     this.runTask(groupJid, { id: taskId, groupJid, fn }).catch((err) =>
       logger.error({ groupJid, taskId, err }, 'Unhandled error in runTask'),
     );
@@ -136,65 +129,28 @@ export class GroupQueue {
   }
 
   /**
-   * Mark the container as idle-waiting (finished work, waiting for IPC input).
-   * If tasks are pending, preempt the idle container immediately.
+   * Mark the container as idle-waiting (finished work, waiting for socket input).
    */
   notifyIdle(groupJid: string): void {
     const state = this.getGroup(groupJid);
     state.idleWaiting = true;
-    if (state.pendingTasks.length > 0) {
-      this.closeStdin(groupJid);
-    }
   }
 
   /**
-   * Send a follow-up message to the active container via IPC file.
-   * Returns true if the message was written, false if no active container.
-   * @param latestTimestamp - Timestamp of the newest message in this batch.
-   *   Tracked to avoid re-piping the same messages on subsequent poll cycles.
+   * Record the timestamp of the latest message piped to the container.
+   * Called by the message router after successful socket delivery.
    */
-  sendMessage(groupJid: string, text: string, latestTimestamp?: string): boolean {
+  recordPipedTimestamp(groupJid: string, timestamp: string): void {
     const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder || state.isTaskContainer) return false;
-    state.idleWaiting = false; // Agent is about to receive work, no longer idle
-
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
-    try {
-      fs.mkdirSync(inputDir, { recursive: true });
-      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
-      const filepath = path.join(inputDir, filename);
-      const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text, containerTag: state.containerName }));
-      fs.renameSync(tempPath, filepath);
-      if (latestTimestamp) state.lastPipedTimestamp = latestTimestamp;
-      return true;
-    } catch {
-      return false;
-    }
+    state.lastPipedTimestamp = timestamp;
   }
 
   /**
-   * Get the timestamp of the latest message piped via IPC.
+   * Get the timestamp of the latest message piped via socket.
    * Returns null if no messages have been piped for this container session.
    */
   getLastPipedTimestamp(groupJid: string): string | null {
     return this.getGroup(groupJid).lastPipedTimestamp;
-  }
-
-  /**
-   * Signal the active container to wind down by writing a close sentinel.
-   */
-  closeStdin(groupJid: string): void {
-    const state = this.getGroup(groupJid);
-    if (!state.active || !state.groupFolder) return;
-
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
-    try {
-      fs.mkdirSync(inputDir, { recursive: true });
-      fs.writeFileSync(path.join(inputDir, '_close'), '');
-    } catch {
-      // ignore
-    }
   }
 
   private async runForGroup(
@@ -321,7 +277,6 @@ export class GroupQueue {
       const nextJid = this.waitingGroups.shift()!;
       const state = this.getGroup(nextJid);
 
-      // Prioritize tasks over messages
       if (state.pendingTasks.length > 0) {
         const task = state.pendingTasks.shift()!;
         this.runTask(nextJid, task).catch((err) =>
@@ -332,18 +287,14 @@ export class GroupQueue {
           logger.error({ groupJid: nextJid, err }, 'Unhandled error in runForGroup (waiting)'),
         );
       }
-      // If neither pending, skip this group
     }
   }
 
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 
-    // Count active containers but don't kill them — they'll finish on their own
-    // via idle timeout or container timeout. The --rm flag cleans them up on exit.
-    // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
-    for (const [jid, state] of this.groups) {
+    for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
       }

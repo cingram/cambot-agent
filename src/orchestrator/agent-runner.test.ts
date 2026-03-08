@@ -79,10 +79,6 @@ vi.mock('../db/agent-template-repository.js', () => ({
   })),
 }));
 
-vi.mock('../groups/group-folder.js', () => ({
-  resolveGroupIpcPath: vi.fn(() => '/tmp/ipc'),
-}));
-
 vi.mock('../utils/context-files.js', () => ({
   buildAgentContext: vi.fn(() => ({})),
 }));
