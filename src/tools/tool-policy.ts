@@ -13,7 +13,7 @@ export const ALL_SDK_TOOLS = [
   'WebSearch', 'WebFetch',
   'Task', 'TaskOutput', 'TaskStop',
   'TeamCreate', 'TeamDelete', 'SendMessage',
-  'TodoWrite', 'ToolSearch', 'Skill',
+  'TodoWrite', 'Skill',
   'NotebookEdit',
 ] as const;
 
@@ -26,9 +26,9 @@ const TOOL_PRESETS: Record<ToolPreset, readonly string[]> = {
   standard: ALL_SDK_TOOLS.filter(
     t => !['TeamCreate', 'TeamDelete', 'SendMessage', 'NotebookEdit'].includes(t),
   ),
-  readonly: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'ToolSearch', 'Skill'],
+  readonly: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill'],
   minimal: ['Read', 'Glob', 'Grep'],
-  sandboxed: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'ToolSearch', 'Skill'],
+  sandboxed: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'Skill'],
   gateway: ['Read', 'Glob', 'Grep'],
 };
 
@@ -241,6 +241,16 @@ function resolveFromPresets(
 export function resolveToolList(policy?: ToolPolicy): string[] {
   if (!policy) return [];
   return resolveFromPresets(TOOL_PRESETS, policy.preset ?? 'full', policy);
+}
+
+/**
+ * Compute SDK tools that must be hard-blocked via the SDK's disallowedTools.
+ * This is the complement of resolveToolList against all possible SDK tools,
+ * ensuring tools excluded by deny/preset cannot be re-loaded at runtime.
+ */
+export function resolveDisallowedTools(policy?: ToolPolicy): string[] {
+  const allowed = new Set(resolveToolList(policy));
+  return ALL_SDK_TOOLS.filter(t => !allowed.has(t));
 }
 
 /**

@@ -392,6 +392,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
 
       const fields: string[] = [];
       const values: unknown[] = [];
+      let invalidatesSessions = false;
 
       if (updates.name !== undefined) {
         fields.push('name = ?');
@@ -409,6 +410,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       if (updates.mcpServers !== undefined) {
         fields.push('mcp_servers = ?');
         values.push(JSON.stringify(updates.mcpServers));
+        invalidatesSessions = true;
       }
       if (updates.capabilities !== undefined) {
         fields.push('capabilities = ?');
@@ -431,22 +433,27 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       if (updates.toolPolicy !== undefined) {
         fields.push('tool_policy = ?');
         values.push(JSON.stringify(updates.toolPolicy));
+        invalidatesSessions = true;
       }
       if (updates.systemPrompt !== undefined) {
         fields.push('system_prompt = ?');
         values.push(updates.systemPrompt);
+        invalidatesSessions = true;
       }
       if (updates.soul !== undefined) {
         fields.push('soul = ?');
         values.push(updates.soul);
+        invalidatesSessions = true;
       }
       if (updates.provider !== undefined) {
         fields.push('provider = ?');
         values.push(updates.provider);
+        invalidatesSessions = true;
       }
       if (updates.model !== undefined) {
         fields.push('model = ?');
         values.push(updates.model);
+        invalidatesSessions = true;
       }
       if (updates.secretKeys !== undefined) {
         fields.push('secret_keys = ?');
@@ -480,6 +487,19 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       values.push(id);
 
       db.prepare(`UPDATE registered_agents SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+
+      if (invalidatesSessions) {
+        const cleared = db.prepare(`
+          UPDATE conversations SET session_id = NULL
+          WHERE agent_folder = ? AND session_id IS NOT NULL
+        `).run(existing.folder);
+        if (cleared.changes > 0) {
+          logger.info(
+            { agentId: id, sessionsCleared: cleared.changes },
+            'Agent config changed — invalidated active sessions',
+          );
+        }
+      }
 
       return this.getById(id)!;
     },

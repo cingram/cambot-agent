@@ -27,7 +27,7 @@ import { GroupQueue } from '../groups/group-queue.js';
 import { logger } from '../logger.js';
 import { toExecutionContext } from '../types.js';
 import type { RegisteredGroup } from '../types.js';
-import { resolveToolList } from '../tools/tool-policy.js';
+import { resolveToolList, resolveDisallowedTools } from '../tools/tool-policy.js';
 import { channelFromJid } from '../utils/channel-from-jid.js';
 import { buildAgentContext, type ContextFileDeps } from '../utils/context-files.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
@@ -115,6 +115,7 @@ export class AgentRunner {
           isMain,
           mcpServers: integrationMgr?.getActiveMcpServers(),
           allowedSdkTools: resolveToolList(group.containerConfig?.toolPolicy),
+          disallowedSdkTools: resolveDisallowedTools(group.containerConfig?.toolPolicy),
           agentContext,
         },
         (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),

@@ -68,6 +68,8 @@ export interface ContainerInput {
   mcpSocketGroup?: string;
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy) */
   allowedSdkTools?: string[];
+  /** SDK tools hard-blocked via the SDK's disallowedTools parameter */
+  disallowedSdkTools?: string[];
   /** MCP tools this agent is allowed to use (resolved from ToolPolicy on host) */
   allowedMcpTools?: string[];
   /** Dynamic context files (identity, soul, tools, etc.) written before spawn.

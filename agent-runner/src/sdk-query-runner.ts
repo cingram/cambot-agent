@@ -26,7 +26,7 @@ const DEFAULT_SDK_TOOLS = [
   'WebSearch', 'WebFetch',
   'Task', 'TaskOutput', 'TaskStop',
   'TeamCreate', 'TeamDelete', 'SendMessage',
-  'TodoWrite', 'ToolSearch', 'Skill',
+  'TodoWrite', 'Skill',
   'NotebookEdit',
 ];
 
@@ -188,6 +188,7 @@ export class SdkQueryRunner {
         ...(input.allowedSdkTools ?? DEFAULT_SDK_TOOLS),
         ...mcpConfig.allowedTools,
       ],
+      disallowedTools: input.disallowedSdkTools,
       env: sdkEnv,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
