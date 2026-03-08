@@ -1,9 +1,11 @@
 /**
- * Tool Policy — resolves per-group/agent SDK tool restrictions.
+ * Tool Policy — resolves per-group/agent SDK + MCP tool restrictions.
  *
  * Policies are stored in the database (never mounted into containers)
  * so agents cannot modify their own tool access.
  */
+
+// ── SDK Tools ───────────────────────────────────────────────────
 
 export const ALL_SDK_TOOLS = [
   'Bash',
@@ -17,7 +19,7 @@ export const ALL_SDK_TOOLS = [
 
 export type SdkTool = (typeof ALL_SDK_TOOLS)[number];
 
-export type ToolPreset = 'full' | 'standard' | 'readonly' | 'minimal' | 'sandboxed';
+export type ToolPreset = 'full' | 'standard' | 'readonly' | 'minimal' | 'sandboxed' | 'gateway';
 
 const TOOL_PRESETS: Record<ToolPreset, readonly string[]> = {
   full: ALL_SDK_TOOLS,
@@ -27,6 +29,7 @@ const TOOL_PRESETS: Record<ToolPreset, readonly string[]> = {
   readonly: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'ToolSearch', 'Skill'],
   minimal: ['Read', 'Glob', 'Grep'],
   sandboxed: ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'TodoWrite', 'ToolSearch', 'Skill'],
+  gateway: ['Read', 'Glob', 'Grep'],
 };
 
 export interface ToolPolicy {
@@ -34,6 +37,201 @@ export interface ToolPolicy {
   allow?: string[];
   deny?: string[];
   add?: string[];
+  mcp?: McpToolPolicy;
+}
+
+// ── MCP Tools ───────────────────────────────────────────────────
+
+/** All cambot-agent MCP tools (short names). */
+export const CAMBOT_MCP_TOOLS = [
+  'send_message',
+  'send_to_agent',
+  'check_email',
+  'read_email',
+  'list_tasks',
+  'schedule_task',
+  'register_group',
+  'create_custom_agent',
+  'list_custom_agents',
+  'invoke_custom_agent',
+  'update_custom_agent',
+  'delete_custom_agent',
+  'list_workflows',
+  'run_workflow',
+  'create_workflow',
+  'update_workflow',
+  'delete_workflow',
+  'memory_query',
+  'memory_confirm',
+  'memory_correct',
+  'memory_fading',
+] as const;
+
+/** Workflow-builder MCP tools (conceptual grouping — subset of CAMBOT_MCP_TOOLS). */
+export const WORKFLOW_MCP_TOOLS = [
+  'create_workflow',
+  'update_workflow',
+  'list_workflows',
+  'run_workflow',
+  'delete_workflow',
+] as const;
+
+/** Google Workspace MCP tools (short names). */
+export const GOOGLE_MCP_TOOLS = [
+  // Gmail (outbound only — read goes through check_email/read_email IPC)
+  'send_gmail_message',
+  'list_gmail_labels',
+  // Calendar
+  'list_calendar_events',
+  'create_calendar_event',
+  'update_calendar_event',
+  // Tasks
+  'list_task_lists',
+  'list_tasks',
+  'create_task',
+  'complete_task',
+  // Drive
+  'search_drive_files',
+  'get_drive_file_content',
+  'list_drive_files',
+  // Docs
+  'get_doc_content',
+  'create_doc',
+  // Sheets
+  'get_spreadsheet',
+  'create_spreadsheet',
+  'update_spreadsheet_values',
+] as const;
+
+/** Read-only subset of Google Workspace tools. */
+const GOOGLE_READONLY_TOOLS = [
+  'list_gmail_labels',
+  'list_calendar_events',
+  'list_task_lists',
+  'list_tasks',
+  'search_drive_files',
+  'get_drive_file_content',
+  'list_drive_files',
+  'get_doc_content',
+  'get_spreadsheet',
+] as const;
+
+/** MCP tool override within a ToolPolicy. */
+export interface McpToolPolicy {
+  /** Explicit allowlist (ignores preset MCP defaults). */
+  allow?: string[];
+  /** Remove specific MCP tools from preset defaults. */
+  deny?: string[];
+  /** Add specific MCP tools on top of preset defaults. */
+  add?: string[];
+}
+
+/** MCP tools granted to each preset by default (deduplicated at definition time). */
+const MCP_PRESETS: Record<ToolPreset, readonly string[]> = {
+  // WORKFLOW_MCP_TOOLS ⊂ CAMBOT_MCP_TOOLS, so only spread cambot + google.
+  // list_tasks appears in both; Set deduplicates.
+  full: [...new Set([...CAMBOT_MCP_TOOLS, ...GOOGLE_MCP_TOOLS])],
+  standard: [...new Set([
+    'send_message',
+    'send_to_agent',
+    'check_email',
+    'read_email',
+    'list_tasks',
+    'schedule_task',
+    'list_workflows',
+    'run_workflow',
+    'memory_query',
+    'memory_confirm',
+    'memory_correct',
+    'memory_fading',
+    ...GOOGLE_MCP_TOOLS,
+  ])],
+  sandboxed: [
+    'send_message',
+    'check_email',
+    'read_email',
+    'list_tasks',
+  ],
+  readonly: [...new Set([
+    'send_message',
+    'check_email',
+    'read_email',
+    'list_tasks',
+    'list_workflows',
+    'list_custom_agents',
+    ...GOOGLE_READONLY_TOOLS,
+  ])],
+  minimal: [
+    'send_message',
+    'list_tasks',
+  ],
+  gateway: [
+    'send_message',
+  ],
+};
+
+// ── Tool-to-Server Mapping ──────────────────────────────────────
+
+/**
+ * Maps MCP short names → server name(s). Derived from canonical tool lists.
+ * A tool can belong to multiple servers (e.g. list_tasks → cambot-agent + google-workspace).
+ */
+const MCP_TOOL_SERVERS: Record<string, string[]> = buildToolServerMap([
+  { server: 'cambot-agent', tools: CAMBOT_MCP_TOOLS },
+  { server: 'google-workspace', tools: GOOGLE_MCP_TOOLS },
+]);
+
+function buildToolServerMap(
+  entries: Array<{ server: string; tools: readonly string[] }>,
+): Record<string, string[]> {
+  const map: Record<string, string[]> = {};
+  for (const { server, tools } of entries) {
+    for (const tool of tools) {
+      (map[tool] ??= []).push(server);
+    }
+  }
+  return map;
+}
+
+// ── Generic Resolution ──────────────────────────────────────────
+
+interface ToolOverrides {
+  allow?: string[];
+  deny?: string[];
+  add?: string[];
+}
+
+/**
+ * Shared resolution logic for both SDK and MCP tools.
+ * Priority: allow → preset base → deny → add.
+ */
+function resolveFromPresets(
+  presets: Record<ToolPreset, readonly string[]>,
+  preset: ToolPreset,
+  overrides?: ToolOverrides,
+): string[] {
+  if (overrides?.allow) return [...overrides.allow];
+
+  const base = presets[preset];
+  if (!base) {
+    throw new Error(`Unknown tool preset: ${preset}`);
+  }
+
+  let tools = [...new Set(base)];
+
+  if (overrides?.deny) {
+    const denySet = new Set(overrides.deny);
+    tools = tools.filter(t => !denySet.has(t));
+  }
+
+  if (overrides?.add) {
+    const existing = new Set(tools);
+    for (const t of overrides.add) {
+      if (!existing.has(t)) tools.push(t);
+    }
+  }
+
+  return tools;
 }
 
 /**
@@ -42,30 +240,94 @@ export interface ToolPolicy {
  */
 export function resolveToolList(policy?: ToolPolicy): string[] {
   if (!policy) return [];
+  return resolveFromPresets(TOOL_PRESETS, policy.preset ?? 'full', policy);
+}
 
-  // Explicit allowlist takes priority
-  if (policy.allow) return [...policy.allow];
+/**
+ * Resolve a ToolPolicy to a flat list of MCP tool short names.
+ * No policy = no MCP tools (least privilege by default).
+ */
+export function resolveMcpToolList(policy?: ToolPolicy): string[] {
+  if (!policy) return [];
+  // If the policy only specifies SDK-level allow/deny/add (no preset, no mcp field),
+  // treat MCP tools as unspecified → least-privilege empty list.
+  if (!policy.preset && !policy.mcp) return [];
+  return resolveFromPresets(MCP_PRESETS, policy.preset ?? 'full', policy.mcp);
+}
 
-  // Start from preset (default: full)
-  const preset = policy.preset ?? 'full';
-  const base = TOOL_PRESETS[preset];
-  if (!base) {
-    throw new Error(`Unknown tool preset: ${preset}`);
+// ── Qualification ───────────────────────────────────────────────
+
+/**
+ * Convert a short MCP tool name to its qualified SDK form.
+ * E.g. qualifyMcpTool('send_message', 'cambot-agent') → 'mcp__cambot-agent__send_message'
+ */
+export function qualifyMcpTool(shortName: string, serverName: string): string {
+  return `mcp__${serverName}__${shortName}`;
+}
+
+/**
+ * Convert a list of MCP short names to qualified SDK names.
+ * Tools on multiple servers (e.g. list_tasks) produce multiple entries.
+ */
+export function qualifyMcpToolList(shortNames: string[]): string[] {
+  const qualified: string[] = [];
+  const unknown: string[] = [];
+  for (const name of shortNames) {
+    const servers = MCP_TOOL_SERVERS[name];
+    if (servers) {
+      for (const server of servers) {
+        qualified.push(qualifyMcpTool(name, server));
+      }
+    } else {
+      unknown.push(name);
+    }
+  }
+  if (unknown.length > 0) {
+    console.warn(
+      `[tool-policy] Unknown MCP tool(s) dropped during qualification: ${unknown.join(', ')}. ` +
+      `These tools are not registered in MCP_TOOL_SERVERS and will not be available to the agent.`,
+    );
+  }
+  return qualified;
+}
+
+// ── Safety Denials ──────────────────────────────────────────────
+
+/** Gmail read tools that must always go through check_email/read_email IPC. */
+const ALWAYS_BLOCKED_MCP_TOOLS = [
+  'search_gmail_messages',
+  'get_gmail_message',
+];
+
+/** Admin tools blocked for non-main agents. */
+const ADMIN_ONLY_MCP_TOOLS = [
+  'register_group',
+  'create_custom_agent',
+  'update_custom_agent',
+  'delete_custom_agent',
+];
+
+export interface SafetyContext {
+  isInterAgentTarget: boolean;
+  isMain: boolean;
+}
+
+/**
+ * Apply non-negotiable safety denials AFTER policy resolution.
+ * These cannot be overridden by any policy configuration.
+ */
+export function applySafetyDenials(mcpTools: string[], ctx: SafetyContext): string[] {
+  const blocked = new Set<string>(ALWAYS_BLOCKED_MCP_TOOLS);
+
+  if (ctx.isInterAgentTarget) {
+    blocked.add('send_to_agent');
   }
 
-  let tools = [...base];
-
-  if (policy.deny) {
-    const denySet = new Set(policy.deny);
-    tools = tools.filter(t => !denySet.has(t));
-  }
-
-  if (policy.add) {
-    const existing = new Set(tools);
-    for (const t of policy.add) {
-      if (!existing.has(t)) tools.push(t);
+  if (!ctx.isMain) {
+    for (const tool of ADMIN_ONLY_MCP_TOOLS) {
+      blocked.add(tool);
     }
   }
 
-  return tools;
+  return mcpTools.filter(t => !blocked.has(t));
 }

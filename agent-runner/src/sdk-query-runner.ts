@@ -175,6 +175,7 @@ export class SdkQueryRunner {
         isInterAgentTarget: input.isInterAgentTarget,
       },
       input.mcpServers,
+      input.allowedMcpTools,
     );
 
     return {

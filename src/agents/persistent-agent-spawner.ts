@@ -15,7 +15,7 @@ import { runContainerAgent } from '../container/runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
 import { OutboundMessage } from '../bus/index.js';
 import { logger } from '../logger.js';
-import { resolveToolList } from '../tools/tool-policy.js';
+import { resolveToolList, resolveMcpToolList, applySafetyDenials, qualifyMcpToolList } from '../tools/tool-policy.js';
 import { channelFromJid } from '../utils/channel-from-jid.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 
@@ -142,6 +142,12 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             mcpServers: scopedServers,
             customAgent,
             allowedSdkTools: isCustomProvider ? undefined : resolveToolList(agent.toolPolicy),
+            allowedMcpTools: isCustomProvider ? undefined : qualifyMcpToolList(
+              applySafetyDenials(
+                resolveMcpToolList(agent.toolPolicy ?? { preset: 'readonly' }),
+                { isInterAgentTarget: isInterAgent, isMain: agent.isMain },
+              ),
+            ),
             agentContext,
           },
           (_proc, containerName) => {
