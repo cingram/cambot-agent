@@ -66,6 +66,8 @@ export interface ContainerInput {
   ipcToken?: string;
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy) */
   allowedSdkTools?: string[];
+  /** MCP tools this agent is allowed to use (resolved from ToolPolicy on host) */
+  allowedMcpTools?: string[];
   /** Dynamic context files (identity, soul, tools, etc.) written before spawn.
    *  When provided, runContainerAgent writes context files automatically. */
   agentContext?: ContextFileDeps;

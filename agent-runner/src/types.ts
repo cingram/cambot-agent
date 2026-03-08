@@ -56,6 +56,8 @@ export interface ClaudeContainerInput extends BaseContainerInput {
   guardrailEnabled?: boolean;
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy on host) */
   allowedSdkTools?: string[];
+  /** MCP tools this agent is allowed to use (resolved from ToolPolicy on host) */
+  allowedMcpTools?: string[];
   customAgent?: undefined;
 }
 
