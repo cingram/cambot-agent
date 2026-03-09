@@ -1,9 +1,18 @@
 import fs from 'fs';
 import path from 'path';
 
-import { resolveGroupIpcPath } from '../groups/group-folder.js';
+import { DATA_DIR } from '../config/config.js';
 import { WorkerDefinition } from '../types.js';
 import type { StoredRawContent } from '../db/raw-content-repository.js';
+
+/**
+ * Resolve the snapshot directory for a group.
+ * Snapshots live under data/sessions/{group}/ and are mounted
+ * into containers at /workspace/snapshots/.
+ */
+function resolveSnapshotDir(groupFolder: string): string {
+  return path.join(DATA_DIR, 'sessions', groupFolder);
+}
 
 export function writeTasksSnapshot(
   groupFolder: string,
@@ -19,16 +28,15 @@ export function writeTasksSnapshot(
     agentId?: string | null;
   }>,
 ): void {
-  // Write filtered tasks to the group's IPC directory
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  fs.mkdirSync(snapshotDir, { recursive: true });
 
   // Main sees all tasks, others only see their own
   const filteredTasks = isMain
     ? tasks
     : tasks.filter((t) => t.groupFolder === groupFolder);
 
-  const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
+  const tasksFile = path.join(snapshotDir, 'current_tasks.json');
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
 }
 
@@ -44,14 +52,14 @@ export function writeArchivedTasksSnapshot(
     status: string;
   }>,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  fs.mkdirSync(snapshotDir, { recursive: true });
 
   const filteredTasks = isMain
     ? tasks
     : tasks.filter((t) => t.groupFolder === groupFolder);
 
-  const archivedFile = path.join(groupIpcDir, 'archived_tasks.json');
+  const archivedFile = path.join(snapshotDir, 'archived_tasks.json');
   fs.writeFileSync(archivedFile, JSON.stringify(filteredTasks, null, 2));
 }
 
@@ -82,9 +90,9 @@ export interface WorkflowSnapshotFull {
  * Write per-workflow snapshot files for the container.
  *
  * Layout:
- *   {ipcDir}/workflows/index.json   — lightweight summary array
- *   {ipcDir}/workflows/{id}.json    — full workflow definition (one per workflow)
- *   {ipcDir}/workflow_runs.json     — recent run history (main only)
+ *   {snapshotDir}/workflows/index.json   — lightweight summary array
+ *   {snapshotDir}/workflows/{id}.json    — full workflow definition (one per workflow)
+ *   {snapshotDir}/workflow_runs.json     — recent run history (main only)
  *
  * Only rewrites individual {id}.json files when the hash has changed.
  * Cleans up stale files for workflows that no longer exist.
@@ -103,8 +111,8 @@ export function writeWorkflowsSnapshot(
     totalCostUsd: number;
   }>,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  const workflowsDir = path.join(groupIpcDir, 'workflows');
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  const workflowsDir = path.join(snapshotDir, 'workflows');
   fs.mkdirSync(workflowsDir, { recursive: true });
 
   // Build summaries for the index
@@ -153,7 +161,7 @@ export function writeWorkflowsSnapshot(
   }
 
   // Only main sees run history (non-main gets empty array)
-  const runsFile = path.join(groupIpcDir, 'workflow_runs.json');
+  const runsFile = path.join(snapshotDir, 'workflow_runs.json');
   fs.writeFileSync(runsFile, JSON.stringify(isMain ? runs : [], null, 2));
 }
 
@@ -164,10 +172,10 @@ export function writeWorkflowSchemaSnapshot(
   groupFolder: string,
   schema: Record<string, unknown>,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  fs.mkdirSync(snapshotDir, { recursive: true });
 
-  const schemaFile = path.join(groupIpcDir, 'workflow_schema.json');
+  const schemaFile = path.join(snapshotDir, 'workflow_schema.json');
   fs.writeFileSync(schemaFile, JSON.stringify(schema, null, 2));
 }
 
@@ -187,14 +195,14 @@ export function writeCustomAgentsSnapshot(
     group_folder: string;
   }>,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  fs.mkdirSync(snapshotDir, { recursive: true });
 
   const filteredAgents = isMain
     ? agents
     : agents.filter((a) => a.group_folder === groupFolder);
 
-  const agentsFile = path.join(groupIpcDir, 'custom_agents.json');
+  const agentsFile = path.join(snapshotDir, 'custom_agents.json');
   fs.writeFileSync(agentsFile, JSON.stringify(filteredAgents, null, 2));
 }
 
@@ -216,13 +224,13 @@ export function writeGroupsSnapshot(
   groups: AvailableGroup[],
   registeredJids: Set<string>,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  fs.mkdirSync(snapshotDir, { recursive: true });
 
   // Main sees all groups; others see nothing (they can't activate groups)
   const visibleGroups = isMain ? groups : [];
 
-  const groupsFile = path.join(groupIpcDir, 'available_groups.json');
+  const groupsFile = path.join(snapshotDir, 'available_groups.json');
   fs.writeFileSync(
     groupsFile,
     JSON.stringify(
@@ -243,10 +251,10 @@ export function writeWorkersSnapshot(
   groupFolder: string,
   workers: WorkerDefinition[],
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  fs.mkdirSync(snapshotDir, { recursive: true });
 
-  const workersFile = path.join(groupIpcDir, 'available_workers.json');
+  const workersFile = path.join(snapshotDir, 'available_workers.json');
   fs.writeFileSync(workersFile, JSON.stringify(workers, null, 2));
 }
 
@@ -264,23 +272,23 @@ export function writePersistentAgentsSnapshot(
     capabilities: string[];
   }>,
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  fs.mkdirSync(snapshotDir, { recursive: true });
 
-  const agentsFile = path.join(groupIpcDir, 'persistent_agents.json');
+  const agentsFile = path.join(snapshotDir, 'persistent_agents.json');
   fs.writeFileSync(agentsFile, JSON.stringify(agents, null, 2));
 }
 
 /**
  * Write raw content snapshots for the container's read_raw_content tool.
- * Each entry becomes {ipcDir}/raw_content/{id}.json.
+ * Each entry becomes {snapshotDir}/raw_content/{id}.json.
  */
 export function writeRawContentSnapshots(
   groupFolder: string,
   entries: StoredRawContent[],
 ): void {
-  const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  const rawDir = path.join(groupIpcDir, 'raw_content');
+  const snapshotDir = resolveSnapshotDir(groupFolder);
+  const rawDir = path.join(snapshotDir, 'raw_content');
   fs.mkdirSync(rawDir, { recursive: true });
 
   // Clean up stale files

@@ -13,9 +13,10 @@ import type { ContextFileDeps } from '../utils/context-files.js';
 import type { LifecycleInterceptor } from '../utils/lifecycle-interceptor.js';
 import { runContainerAgent } from '../container/runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 import { OutboundMessage } from '../bus/index.js';
 import { logger } from '../logger.js';
-import { resolveToolList } from '../tools/tool-policy.js';
+import { resolveToolList, resolveDisallowedTools, resolveMcpToolList, applySafetyDenials, qualifyMcpToolList } from '../tools/tool-policy.js';
 import { channelFromJid } from '../utils/channel-from-jid.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 
@@ -60,6 +61,8 @@ export interface PersistentAgentSpawnerDeps {
   onTelemetry?: (telemetry: ContainerTelemetry, channel: string) => void;
   onContainerError?: (error: string, durationMs: number, channel: string) => void;
   getInterceptor?: () => LifecycleInterceptor | null;
+  /** Lazy getter — socket server may not be available at spawner construction time. */
+  getSocketServer?: () => CambotSocketServer | undefined;
 }
 
 // ── Factory ────────────────────────────────────────────────────
@@ -139,9 +142,17 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             chatJid: callerGroup,
             isMain: agent.isMain,
             isInterAgentTarget: isInterAgent,
+            model: isCustomProvider ? undefined : agent.model,
             mcpServers: scopedServers,
             customAgent,
             allowedSdkTools: isCustomProvider ? undefined : resolveToolList(agent.toolPolicy),
+            disallowedSdkTools: isCustomProvider ? undefined : resolveDisallowedTools(agent.toolPolicy),
+            allowedMcpTools: isCustomProvider ? undefined : qualifyMcpToolList(
+              applySafetyDenials(
+                resolveMcpToolList(agent.toolPolicy ?? { preset: 'readonly' }),
+                { isInterAgentTarget: isInterAgent, isMain: agent.isMain },
+              ),
+            ),
             agentContext,
           },
           (_proc, containerName) => {
@@ -192,6 +203,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             }
           },
           agentOpts,
+          deps.getSocketServer?.(),
         );
 
         if (output.newSessionId) {

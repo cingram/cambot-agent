@@ -1,0 +1,229 @@
+/**
+ * Frame types and payload interfaces for the cambot-socket TCP transport.
+ * Single source of truth for the wire protocol between host and container.
+ */
+
+// ── Core Frame ──────────────────────────────────────────────────────
+
+export interface SocketFrame<T = unknown> {
+  type: string;       // Command discriminator
+  id: string;         // Unique frame ID (crypto.randomUUID)
+  replyTo?: string;   // Correlation ID for request/response
+  payload: T;         // Typed per command
+}
+
+// ── Heartbeat Phases ────────────────────────────────────────────────
+
+export type HeartbeatPhase = 'starting' | 'idle' | 'processing' | 'shutting-down';
+
+// ── Host -> Container Payloads ──────────────────────────────────────
+
+export interface HandshakeAckPayload { ok: true }
+
+export interface HandshakeRejectPayload { error: string }
+
+export interface MessageInputPayload { text: string; chatJid: string }
+
+export interface SessionClosePayload { reason: string }
+
+export interface PingPayload { timestamp: number }
+
+// ── Container -> Host Payloads ──────────────────────────────────────
+
+export interface HandshakePayload { group: string; token: string }
+
+export interface PongPayload { timestamp: number }
+
+export interface HeartbeatPayload {
+  phase: HeartbeatPhase;
+  queryCount: number;
+  uptimeMs: number;
+}
+
+export interface OutputPayload {
+  status: string;
+  result: string | null;
+  newSessionId?: string;
+  telemetry?: unknown;
+}
+
+export interface MessageOutboundPayload { chatJid: string; text: string }
+
+// ── Task Payloads ───────────────────────────────────────────────────
+
+export interface TaskSchedulePayload {
+  prompt: string;
+  scheduleType: 'cron' | 'interval' | 'once';
+  scheduleValue: string;
+  targetJid: string;
+  contextMode?: 'group' | 'isolated';
+  agentId?: string;
+}
+
+export interface TaskPausePayload { taskId: string }
+
+export interface TaskResumePayload { taskId: string }
+
+export interface TaskCancelPayload { taskId: string }
+
+// ── Group Payloads ──────────────────────────────────────────────────
+
+export interface GroupRefreshPayload {}
+
+export interface GroupRegisterPayload {
+  jid: string;
+  name: string;
+  folder: string;
+  trigger?: string;
+  containerConfig?: unknown;
+}
+
+// ── Worker/Agent Payloads ───────────────────────────────────────────
+
+export interface WorkerDelegatePayload {
+  delegationId: string;
+  workerId: string;
+  prompt: string;
+  context?: string;
+}
+
+export interface AgentSendPayload {
+  requestId: string;
+  targetAgent: string;
+  prompt: string;
+}
+
+// ── Workflow Payloads ───────────────────────────────────────────────
+
+export interface WorkflowRunPayload { workflowId: string; chatJid?: string }
+
+export interface WorkflowPausePayload { runId: string }
+
+export interface WorkflowCancelPayload { runId: string }
+
+export interface WorkflowCreatePayload { requestId: string; workflow: unknown }
+
+export interface WorkflowUpdatePayload {
+  requestId: string;
+  workflowId: string;
+  workflow: unknown;
+}
+
+export interface WorkflowDeletePayload { requestId: string; workflowId: string }
+
+export interface WorkflowValidatePayload { requestId: string; workflow: unknown }
+
+export interface WorkflowClonePayload {
+  requestId: string;
+  sourceId: string;
+  newId: string;
+  newName?: string;
+}
+
+export interface WorkflowSchemaPayload { requestId: string }
+
+// ── Integration Payloads ────────────────────────────────────────────
+
+export interface IntegrationListPayload { chatJid: string }
+
+export interface IntegrationEnablePayload { targetId: string }
+
+export interface IntegrationDisablePayload { targetId: string }
+
+export interface McpAddPayload {
+  name: string;
+  transport: string;
+  url?: string;
+  [key: string]: unknown;
+}
+
+export interface McpRemovePayload { targetId: string }
+
+// ── Email Payloads ──────────────────────────────────────────────────
+
+export interface EmailCheckPayload {
+  requestId: string;
+  query?: string;
+  maxResults?: number;
+}
+
+export interface EmailReadPayload {
+  requestId: string;
+  messageId: string;
+  includeRaw?: boolean;
+}
+
+// ── Error Payload ───────────────────────────────────────────────────
+
+export interface ErrorPayload { error: string; details?: unknown }
+
+// ── Frame Type Constants ────────────────────────────────────────────
+
+export const FRAME_TYPES = {
+  // Handshake
+  HANDSHAKE: 'handshake',
+  HANDSHAKE_ACK: 'handshake.ack',
+  HANDSHAKE_REJECT: 'handshake.reject',
+  // Messages
+  MESSAGE_INPUT: 'message.input',
+  MESSAGE_OUTBOUND: 'message.outbound',
+  // Session
+  SESSION_CLOSE: 'session.close',
+  // Heartbeat
+  PING: 'ping',
+  PONG: 'pong',
+  HEARTBEAT: 'heartbeat',
+  // Output
+  OUTPUT: 'output',
+  // Tasks
+  TASK_SCHEDULE: 'task.schedule',
+  TASK_LIST: 'task.list',
+  TASK_PAUSE: 'task.pause',
+  TASK_RESUME: 'task.resume',
+  TASK_CANCEL: 'task.cancel',
+  TASK_SCHEDULED: 'task.scheduled',
+  // Groups
+  GROUP_REFRESH: 'group.refresh',
+  GROUP_REGISTER: 'group.register',
+  GROUP_UPDATE: 'group.update',
+  // Workers
+  WORKER_DELEGATE: 'worker.delegate',
+  WORKER_RESULT: 'worker.result',
+  // Agents
+  AGENT_SEND: 'agent.send',
+  AGENT_RESULT: 'agent.result',
+  AGENT_CREATE: 'agent.create',
+  AGENT_LIST: 'agent.list',
+  AGENT_INVOKE: 'agent.invoke',
+  AGENT_UPDATE: 'agent.update',
+  AGENT_DELETE: 'agent.delete',
+  // Workflows
+  WORKFLOW_RUN: 'workflow.run',
+  WORKFLOW_LIST: 'workflow.list',
+  WORKFLOW_STATUS: 'workflow.status',
+  WORKFLOW_PAUSE: 'workflow.pause',
+  WORKFLOW_CANCEL: 'workflow.cancel',
+  WORKFLOW_CREATE: 'workflow.create',
+  WORKFLOW_UPDATE: 'workflow.update',
+  WORKFLOW_DELETE: 'workflow.delete',
+  WORKFLOW_VALIDATE: 'workflow.validate',
+  WORKFLOW_CLONE: 'workflow.clone',
+  WORKFLOW_SCHEMA: 'workflow.schema',
+  WORKFLOW_RESULT: 'workflow.result',
+  // Integrations
+  INTEGRATION_LIST: 'integration.list',
+  INTEGRATION_ENABLE: 'integration.enable',
+  INTEGRATION_DISABLE: 'integration.disable',
+  MCP_ADD: 'mcp.add',
+  MCP_REMOVE: 'mcp.remove',
+  // Email
+  EMAIL_CHECK: 'email.check',
+  EMAIL_READ: 'email.read',
+  EMAIL_RESULT: 'email.result',
+  // Bus
+  BUS_MESSAGE: 'bus.message',
+  // Error
+  ERROR: 'error',
+} as const;
+
+export type FrameType = typeof FRAME_TYPES[keyof typeof FRAME_TYPES];

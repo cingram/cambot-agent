@@ -2,7 +2,7 @@
   "cambot-agent": {
     "type": "stdio",
     "command": "node",
-    "args": ["${SCRIPT_DIR}/ipc-mcp-stdio.js"],
+    "args": ["${SCRIPT_DIR}/socket-mcp-stdio.js"],
     "env": {
       "CAMBOT_AGENT_CHAT_JID": "${CHAT_JID}",
       "CAMBOT_AGENT_GROUP_FOLDER": "${GROUP_FOLDER}",

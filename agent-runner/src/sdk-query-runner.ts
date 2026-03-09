@@ -1,6 +1,6 @@
 /**
  * Executes a single SDK query and processes the message stream.
- * IPC polling is delegated to IpcQueryBridge.
+ * Message delivery is delegated to SocketQueryBridge.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type {
@@ -8,16 +8,15 @@ import type {
   SDKTaskNotificationMessage,
   SettingSource,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { ClaudeContainerInput, ContainerTelemetry, ContainerPaths } from './types.js';
+import type { ClaudeContainerInput, ContainerTelemetry, ContainerPaths, HeartbeatHandle } from './types.js';
 import type { Logger } from './logger.js';
 import type { OutputWriter } from './output-writer.js';
-import type { IpcChannel } from './ipc-channel.js';
+import type { CambotSocketClient } from './cambot-socket-client.js';
 import type { TelemetryCollector } from './telemetry-collector.js';
 import type { HookFactory } from './hook-factory.js';
 import type { ContextBuilder } from './context-builder.js';
-import type { HeartbeatWriter } from './heartbeat-writer.js';
 import { MessageStream } from './message-stream.js';
-import { IpcQueryBridge } from './ipc-query-bridge.js';
+import { SocketQueryBridge } from './socket-query-bridge.js';
 import { loadMcpConfig } from './mcp-config.js';
 
 /** Fallback when the host doesn't send allowedSdkTools (backwards compat). */
@@ -27,7 +26,7 @@ const DEFAULT_SDK_TOOLS = [
   'WebSearch', 'WebFetch',
   'Task', 'TaskOutput', 'TaskStop',
   'TeamCreate', 'TeamDelete', 'SendMessage',
-  'TodoWrite', 'ToolSearch', 'Skill',
+  'TodoWrite', 'Skill',
   'NotebookEdit',
 ];
 
@@ -44,12 +43,12 @@ export class SdkQueryRunner {
     private readonly paths: ContainerPaths,
     private readonly logger: Logger,
     private readonly outputWriter: OutputWriter,
-    private readonly ipc: IpcChannel,
+    private readonly client: CambotSocketClient,
     private readonly hookFactory: HookFactory,
     private readonly contextBuilder: ContextBuilder,
     private readonly telemetry: TelemetryCollector,
     private readonly scriptDir: string,
-    private readonly heartbeat?: HeartbeatWriter,
+    private readonly heartbeat?: HeartbeatHandle,
   ) {}
 
   async run(
@@ -65,8 +64,8 @@ export class SdkQueryRunner {
     // Reset telemetry for this query
     this.telemetry.reset();
 
-    // Wire IPC polling to stream
-    const bridge = new IpcQueryBridge(this.ipc, stream, this.logger);
+    // Wire socket message delivery to stream
+    const bridge = new SocketQueryBridge(this.client, stream, this.logger);
     const { result: bridgeResult } = bridge.start();
 
     // Build context and SDK options
@@ -85,7 +84,6 @@ export class SdkQueryRunner {
         messageCount++;
         logMessage(this.logger, message, messageCount);
 
-        // SDK discriminated union narrowing — no `as` casts needed
         if (message.type === 'assistant') {
           lastAssistantUuid = message.uuid;
         }
@@ -96,8 +94,6 @@ export class SdkQueryRunner {
         }
 
         if (message.type === 'system' && message.subtype === 'task_notification') {
-          // SDKTaskNotificationMessage shares type:'system' with SDKSystemMessage,
-          // so TypeScript can't narrow on subtype alone — use a targeted cast here.
           const tn = message as SDKTaskNotificationMessage;
           this.logger.log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
         }
@@ -105,7 +101,7 @@ export class SdkQueryRunner {
         if (message.type === 'result') {
           const textResult = message.subtype === 'success' ? message.result : null;
 
-          // Suppress duplicate results (same text emitted twice by SDK/agent-teams)
+          // Suppress duplicate results
           if (textResult && textResult === lastResultText) {
             this.logger.log(`Result: suppressed duplicate of result #${resultCount}`);
             continue;
@@ -175,6 +171,7 @@ export class SdkQueryRunner {
         isInterAgentTarget: input.isInterAgentTarget,
       },
       input.mcpServers,
+      input.allowedMcpTools,
     );
 
     return {
@@ -191,6 +188,8 @@ export class SdkQueryRunner {
         ...(input.allowedSdkTools ?? DEFAULT_SDK_TOOLS),
         ...mcpConfig.allowedTools,
       ],
+      disallowedTools: input.disallowedSdkTools,
+      model: input.model,
       env: sdkEnv,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,

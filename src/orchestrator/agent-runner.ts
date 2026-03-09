@@ -1,7 +1,4 @@
-import fs from 'fs';
-import path from 'path';
-
-import { DATA_DIR, MAIN_GROUP_FOLDER } from '../config/config.js';
+import { MAIN_GROUP_FOLDER } from '../config/config.js';
 import { getLeadAgentId, resolveAgentImage } from '../agents/agents.js';
 import type { IntegrationManager } from '../integrations/index.js';
 import {
@@ -30,13 +27,14 @@ import { GroupQueue } from '../groups/group-queue.js';
 import { logger } from '../logger.js';
 import { toExecutionContext } from '../types.js';
 import type { RegisteredGroup } from '../types.js';
-import { resolveToolList } from '../tools/tool-policy.js';
+import { resolveToolList, resolveDisallowedTools } from '../tools/tool-policy.js';
 import { channelFromJid } from '../utils/channel-from-jid.js';
 import { buildAgentContext, type ContextFileDeps } from '../utils/context-files.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 import type { WorkflowService } from '../workflows/workflow-service.js';
 import type { WorkflowBuilderService } from '../workflows/workflow-builder-service.js';
 import type { RouterState } from './router-state.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 
 export interface AgentRunnerDeps {
   state: RouterState;
@@ -44,6 +42,7 @@ export interface AgentRunnerDeps {
   getWorkflowService: () => WorkflowService | null;
   getWorkflowBuilderService: () => WorkflowBuilderService | null;
   getIntegrationManager: () => IntegrationManager | null;
+  getSocketServer?: () => CambotSocketServer | undefined;
   getRegisteredAgents?: () => Array<{
     id: string;
     name: string;
@@ -65,15 +64,9 @@ export class AgentRunner {
     this.templateRepo = createAgentTemplateRepository(db);
   }
 
-  cleanIpcInputDir(groupFolder: string): void {
-    const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
-    try {
-      for (const f of fs.readdirSync(inputDir)) {
-        if (f.endsWith('.json') || f === '_close') {
-          try { fs.unlinkSync(path.join(inputDir, f)); } catch { /* ignore */ }
-        }
-      }
-    } catch { /* ignore — dir may not exist */ }
+  /** No-op: IPC input directory cleanup is no longer needed with socket transport. */
+  cleanIpcInputDir(_groupFolder: string): void {
+    // Socket-based transport has no file-based input directory to clean.
   }
 
   async run(
@@ -122,11 +115,13 @@ export class AgentRunner {
           isMain,
           mcpServers: integrationMgr?.getActiveMcpServers(),
           allowedSdkTools: resolveToolList(group.containerConfig?.toolPolicy),
+          disallowedSdkTools: resolveDisallowedTools(group.containerConfig?.toolPolicy),
           agentContext,
         },
         (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
         wrappedOnOutput,
         agentOpts,
+        this.deps.getSocketServer?.(),
       );
 
       if (output.newSessionId) {

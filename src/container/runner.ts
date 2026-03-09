@@ -1,36 +1,33 @@
 /**
  * Container Runner for CamBot-Agent
- * Spawns agent execution in containers and handles IPC
+ * Spawns agent execution in containers and communicates via cambot-socket TCP.
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import {
+  CAMBOT_SOCKET_PORT,
   CONTAINER_MAX_OUTPUT_SIZE,
   DATA_DIR,
   GROUPS_DIR,
   STORE_DIR,
   EMAIL_GUARDRAIL_ENABLED,
-  HEARTBEAT_INTERVAL_MS,
   IDLE_TIMEOUT,
   MEMORY_MODE,
   TIMEZONE,
 } from '../config/config.js';
 import type { MemoryMode } from '../config/config.js';
 import { readEnvFile } from '../config/env.js';
-import { resolveGroupFolderPath, resolveGroupIpcPath } from '../groups/group-folder.js';
+import { resolveGroupFolderPath } from '../groups/group-folder.js';
 import { logger } from '../logger.js';
 import { CONTAINER_RUNTIME_BIN, killContainersForGroup, readonlyMountArgs, stopContainer } from './runtime.js';
-import { createHeartbeatMonitor, type HeartbeatMonitor } from './heartbeat-monitor.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { ExecutionContext } from '../types.js';
 import { AgentOptions } from '../agents/agents.js';
 import { writeContextFiles, type ContextFileDeps } from '../utils/context-files.js';
-
-// Sentinel markers for robust output parsing (must match agent-runner)
-const OUTPUT_START_MARKER = '---CAMBOT_AGENT_OUTPUT_START---';
-const OUTPUT_END_MARKER = '---CAMBOT_AGENT_OUTPUT_END---';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
+import { registerOutputCallback, removeOutputCallback } from '../cambot-socket/handlers/output.js';
 
 export interface ContainerInput {
   prompt: string;
@@ -39,6 +36,8 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  /** Claude model override (e.g. 'claude-opus-4-6'). Falls back to SDK default. */
+  model?: string;
   secrets?: Record<string, string>;
   /** Active MCP servers to expose to the container agent */
   mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;
@@ -61,11 +60,20 @@ export interface ContainerInput {
   isInterAgentTarget?: boolean;
   /** Enable inline Haiku guardrail for tool call review */
   guardrailEnabled?: boolean;
-  /** Unique token identifying this container. Used by the agent-runner to
-   *  detect when it has been superseded by a newer container (orphan self-exit). */
-  ipcToken?: string;
+  /** Port of the CambotSocketServer on the host */
+  socketPort?: number;
+  /** One-time token for TCP handshake authentication */
+  socketToken?: string;
+  /** Separate one-time token for the MCP stdio subprocess's TCP connection */
+  mcpSocketToken?: string;
+  /** Group identifier for the MCP stdio subprocess's TCP connection */
+  mcpSocketGroup?: string;
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy) */
   allowedSdkTools?: string[];
+  /** SDK tools hard-blocked via the SDK's disallowedTools parameter */
+  disallowedSdkTools?: string[];
+  /** MCP tools this agent is allowed to use (resolved from ToolPolicy on host) */
+  allowedMcpTools?: string[];
   /** Dynamic context files (identity, soul, tools, etc.) written before spawn.
    *  When provided, runContainerAgent writes context files automatically. */
   agentContext?: ContextFileDeps;
@@ -108,35 +116,24 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
   const groupDir = resolveGroupFolderPath(execution.folder);
 
   if (execution.isMain) {
-    // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
-    // Read-only prevents the agent from modifying host application code
-    // (src/, dist/, package.json, etc.) which would bypass the sandbox
-    // entirely on next restart.
     mounts.push({
       hostPath: projectRoot,
       containerPath: '/workspace/project',
       readonly: true,
     });
 
-    // Main also gets its group folder as the working directory
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
   } else {
-    // Other groups only get their own folder
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
-    // Identity is now injected via 00-IDENTITY.md in the context dir,
-    // so no global mount is needed for non-main agents.
 
-    // All non-main agents get read-only access to the knowledge database
-    // (main already has it via the project root mount)
     if (fs.existsSync(STORE_DIR)) {
       mounts.push({
         hostPath: STORE_DIR,
@@ -147,7 +144,6 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
@@ -159,21 +155,14 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(settingsFile, JSON.stringify({
       env: {
-        // Enable agent swarms (subagent orchestration)
-        // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
         CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-        // Load CLAUDE.md from additional mounted directories
-        // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
         CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-        // Enable Claude's memory feature (persists user preferences between sessions)
-        // https://code.claude.com/docs/en/memory#manage-auto-memory
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
       },
     }, null, 2) + '\n');
   }
 
   // Sync template files into each group's .claude/ directory
-  // These give Claude Code global instructions and MCP config inside the container
   const containerDir = path.join(process.cwd(), 'container');
   const claudeMdSrc = path.join(containerDir, 'CLAUDE.md');
   if (fs.existsSync(claudeMdSrc)) {
@@ -212,29 +201,32 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     readonly: false,
   });
 
-  // Per-group IPC namespace: each group gets its own IPC directory
-  // This prevents cross-group privilege escalation via IPC
-  const groupIpcDir = resolveGroupIpcPath(execution.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'worker-results'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'workflow-results'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'agent-results'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'context'), { recursive: true });
+  // Context directory — context files written before spawn
+  const contextDir = path.join(DATA_DIR, 'sessions', execution.folder, 'context');
+  fs.mkdirSync(contextDir, { recursive: true });
   mounts.push({
-    hostPath: groupIpcDir,
-    containerPath: '/workspace/ipc',
-    readonly: false,
+    hostPath: contextDir,
+    containerPath: '/workspace/context',
+    readonly: true,
   });
 
-  // Sync agent-runner source into a per-group writable location so agents
-  // can customize it (add tools, change behavior) without affecting other
-  // groups. Recompiled on container startup via entrypoint.sh.
-  // Always sync from canonical source to pick up code changes.
+  // Snapshots directory — tasks, agents, workflows, groups, workers, raw_content
+  // Written by snapshot-writers.ts before spawn, read by container MCP tools
+  const snapshotsDir = path.join(DATA_DIR, 'sessions', execution.folder);
+  mounts.push({
+    hostPath: snapshotsDir,
+    containerPath: '/workspace/snapshots',
+    readonly: true,
+  });
+
+  // Sync agent-runner source into a per-group writable location.
+  // Clean first to remove stale files from previous code versions.
   const agentRunnerSrc = path.join(projectRoot, 'agent-runner', 'src');
   const groupAgentRunnerDir = path.join(DATA_DIR, 'sessions', execution.folder, 'agent-runner-src');
   if (fs.existsSync(agentRunnerSrc)) {
+    if (fs.existsSync(groupAgentRunnerDir)) {
+      fs.rmSync(groupAgentRunnerDir, { recursive: true, force: true });
+    }
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, {
       recursive: true,
       filter: (src) => !src.endsWith('.test.ts'),
@@ -246,13 +238,13 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     readonly: false,
   });
 
-  // Sync cambot-llm source so the container always has the latest version.
-  // The container bakes in cambot-llm at image build time, but hot-mounted
-  // agent-runner src may import new exports. This mount + entrypoint rebuild
-  // keeps them in sync without requiring a full image rebuild.
+  // Sync cambot-llm source. Clean first to remove stale files.
   const cambotAgentsSrc = path.resolve(projectRoot, '..', 'cambot-llm', 'src');
   const groupCambotAgentsDir = path.join(DATA_DIR, 'sessions', execution.folder, 'cambot-llm-src');
   if (fs.existsSync(cambotAgentsSrc)) {
+    if (fs.existsSync(groupCambotAgentsDir)) {
+      fs.rmSync(groupCambotAgentsDir, { recursive: true, force: true });
+    }
     fs.cpSync(cambotAgentsSrc, groupCambotAgentsDir, { recursive: true });
   }
   mounts.push({
@@ -261,7 +253,7 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     readonly: false,
   });
 
-  // Additional mounts validated against external allowlist (tamper-proof from containers)
+  // Additional mounts validated against external allowlist
   if (execution.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
       execution.containerConfig.additionalMounts,
@@ -280,8 +272,6 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
  */
 function readSecrets(secretKeys: string[]): Record<string, string> {
   const secrets = readEnvFile(secretKeys);
-  // Alias: cambot-core uses GEMINI_API_KEY, custom agents use GOOGLE_API_KEY.
-  // If GOOGLE_API_KEY is not set but GEMINI_API_KEY is, use GEMINI_API_KEY.
   if (!secrets['GOOGLE_API_KEY']) {
     const gemini = readEnvFile(['GEMINI_API_KEY']);
     if (gemini['GEMINI_API_KEY']) {
@@ -294,17 +284,18 @@ function readSecrets(secretKeys: string[]): Record<string, string> {
 function buildContainerArgs(mounts: VolumeMount[], containerName: string, containerImage: string): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
-  // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Run as host user so bind-mounted files are accessible.
-  // Skip when running as root (uid 0), as the container's node user (uid 1000),
-  // or when getuid is unavailable (native Windows without WSL).
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
   if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
     args.push('--user', `${hostUid}:${hostGid}`);
     args.push('-e', 'HOME=/home/node');
+  }
+
+  // On Linux, add host gateway so containers can reach the socket server
+  if (process.platform === 'linux') {
+    args.push('--add-host=host.docker.internal:host-gateway');
   }
 
   for (const mount of mounts) {
@@ -326,6 +317,7 @@ export async function runContainerAgent(
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput: ((output: ContainerOutput) => Promise<void>) | undefined,
   agentOptions: AgentOptions,
+  socketServer?: CambotSocketServer,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -336,6 +328,29 @@ export async function runContainerAgent(
   const safeName = execution.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `cambot-agent-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName, agentOptions.containerImage);
+
+  // Generate socket tokens: one for the main agent, one for the MCP stdio subprocess.
+  // Tokens are one-time use, so each connection needs its own token.
+  const ts = Date.now();
+  const socketToken = `cambot-socket-${safeName}-${ts}`;
+  const mcpSocketToken = `cambot-socket-mcp-${safeName}-${ts}`;
+  const mcpGroup = `${execution.folder}:mcp`;
+  if (socketServer) {
+    socketServer.registerToken(execution.folder, socketToken);
+    socketServer.registerToken(mcpGroup, mcpSocketToken);
+  }
+
+  // Write dynamic context files (identity, soul, tools, channels, etc.)
+  if (input.agentContext) {
+    const contextDir = path.join(DATA_DIR, 'sessions', execution.folder, 'context');
+    fs.mkdirSync(contextDir, { recursive: true });
+    writeContextFiles(contextDir, execution.isMain, input.agentContext);
+  }
+
+  input.socketToken = socketToken;
+  input.socketPort = CAMBOT_SOCKET_PORT;
+  input.mcpSocketToken = mcpSocketToken;
+  input.mcpSocketGroup = mcpGroup;
 
   logger.debug(
     {
@@ -364,36 +379,59 @@ export async function runContainerAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   // Kill any stale containers for this group before spawning a new one.
-  // Defense-in-depth: even if orphan cleanup missed something, each spawn is clean.
   killContainersForGroup(execution.folder);
 
-  // Write owner token so the agent-runner can detect orphan status.
-  // If a new container is spawned for the same group, the old container
-  // will see the token change and self-exit on its next poll cycle.
-  const groupIpcDir = resolveGroupIpcPath(execution.folder);
-
-  // Write dynamic context files (identity, soul, tools, channels, etc.)
-  if (input.agentContext) {
-    writeContextFiles(groupIpcDir, execution.isMain, input.agentContext);
-  }
-
-  fs.writeFileSync(path.join(groupIpcDir, '_owner'), containerName);
-  input.ipcToken = containerName;
-
-  // Heartbeat file path on the host (mirrors /workspace/ipc/_heartbeat inside container)
-  const heartbeatPath = path.join(groupIpcDir, '_heartbeat');
-
   return new Promise((resolve) => {
+    let newSessionId: string | undefined;
+    let outputChain = Promise.resolve();
+    let hadStreamingOutput = false;
+    let stderr = '';
+    let stderrTruncated = false;
+
+    // Idle timeout — if no output after IDLE_TIMEOUT, stop the container
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        logger.info(
+          { group: execution.name, containerName },
+          'Idle timeout reached, stopping container',
+        );
+        exec(stopContainer(containerName), { timeout: 15_000 }, (err) => {
+          if (err) {
+            logger.warn({ containerName, err }, 'docker stop failed during idle timeout');
+          }
+        });
+      }, IDLE_TIMEOUT);
+    };
+
+    // Register output callback BEFORE spawning so no output frames are lost.
+    // The registry dispatches output frames to this callback immediately
+    // when they arrive, regardless of connection polling timing.
+    if (onOutput) {
+      registerOutputCallback(execution.folder, (payload: ContainerOutput) => {
+        if (payload.newSessionId) {
+          newSessionId = payload.newSessionId;
+        }
+        hadStreamingOutput = true;
+        resetIdleTimer();
+        outputChain = outputChain
+          .then(() => onOutput(payload))
+          .catch((err) => {
+            logger.error(
+              { group: execution.name, error: err },
+              'onOutput callback failed — output dropped but chain preserved',
+            );
+          });
+      });
+    }
+
+    // Spawn the container
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     onProcess(container, containerName);
-
-    let stdout = '';
-    let stderr = '';
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets(agentOptions.secretKeys);
@@ -403,134 +441,16 @@ export async function runContainerAgent(
     container.stdin.end();
     // Remove secrets and ephemeral fields from input so they don't appear in logs
     delete input.secrets;
-    delete input.ipcToken;
+    delete input.socketToken;
+    delete input.mcpSocketToken;
+    delete input.mcpSocketGroup;
     delete input.agentContext;
-
-    // Heartbeat monitor replaces the old setTimeout-based hard timeout.
-    // Escalation: warn(15s) -> close(30s) -> stop(60s) -> kill(90s)
-    const monitor = createHeartbeatMonitor(
-      {
-        heartbeatPath,
-        intervalMs: HEARTBEAT_INTERVAL_MS,
-        warnAfterMissed: 3,
-        closeAfterMissed: 6,
-        stopAfterMissed: 12,
-        killAfterMissed: 18,
-        idleTimeoutMs: IDLE_TIMEOUT,
-        groupName: execution.name,
-        containerName,
-      },
-      {
-        onWarn: (missedCount, groupName) => {
-          logger.warn(
-            { group: groupName, containerName, missedCount },
-            'Container heartbeat missed — possible hang',
-          );
-        },
-        onClose: (groupName) => {
-          logger.info(
-            { group: groupName, containerName },
-            'Heartbeat escalation: writing _close sentinel',
-          );
-          const closePath = path.join(groupIpcDir, 'input', '_close');
-          try { fs.writeFileSync(closePath, ''); } catch { /* best effort */ }
-        },
-        onStop: (name, groupName) => {
-          logger.warn(
-            { group: groupName, containerName: name },
-            'Heartbeat escalation: docker stop',
-          );
-          exec(stopContainer(name), { timeout: 15_000 }, (err) => {
-            if (err) {
-              logger.warn({ containerName: name, err }, 'docker stop failed during heartbeat escalation');
-            }
-          });
-        },
-        onKill: (name, groupName) => {
-          logger.error(
-            { group: groupName, containerName: name },
-            'Heartbeat escalation: SIGKILL',
-          );
-          container.kill('SIGKILL');
-        },
-      },
-    );
-    monitor.start();
-
-    // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
-    let parseBuffer = '';
-    let newSessionId: string | undefined;
-    let outputChain = Promise.resolve();
-    let firstStdout = true;
-    let hadStreamingOutput = false;
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
-
-      if (firstStdout) {
-        firstStdout = false;
-        logger.info(
-          { group: execution.name, elapsedMs: Date.now() - startTime },
-          'Container first stdout received',
-        );
-      }
-
-      // Always accumulate for logging
-      if (!stdoutTruncated) {
-        const remaining = CONTAINER_MAX_OUTPUT_SIZE - stdout.length;
-        if (chunk.length > remaining) {
-          stdout += chunk.slice(0, remaining);
-          stdoutTruncated = true;
-          logger.warn(
-            { group: execution.name, size: stdout.length },
-            'Container stdout truncated due to size limit',
-          );
-        } else {
-          stdout += chunk;
-        }
-      }
-
-      // Stream-parse for output markers
-      if (onOutput) {
-        parseBuffer += chunk;
-        let startIdx: number;
-        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
-          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-          if (endIdx === -1) break; // Incomplete pair, wait for more data
-
-          const jsonStr = parseBuffer
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
-
-          try {
-            const parsed: ContainerOutput = JSON.parse(jsonStr);
-            if (parsed.newSessionId) {
-              newSessionId = parsed.newSessionId;
-            }
-            hadStreamingOutput = true;
-            // Activity detected — reset the heartbeat monitor's missed count
-            monitor.acknowledgeActivity();
-            // Call onOutput for all markers (including null results)
-            // so idle timers start even for "silent" query completions.
-            // CRITICAL: .catch() prevents a single onOutput failure from
-            // permanently breaking the chain (which would cause resolve()
-            // in the close handler to never fire, leaking the container).
-            outputChain = outputChain
-              .then(() => onOutput(parsed))
-              .catch((err) => {
-                logger.error(
-                  { group: execution.name, error: err },
-                  'onOutput callback failed — output dropped but chain preserved',
-                );
-              });
-          } catch (err) {
-            logger.warn(
-              { group: execution.name, error: err },
-              'Failed to parse streamed output chunk',
-            );
-          }
-        }
+      const lines = chunk.trim().split('\n');
+      for (const line of lines) {
+        if (line) logger.debug({ container: execution.folder }, line);
       }
     });
 
@@ -540,8 +460,6 @@ export async function runContainerAgent(
       for (const line of lines) {
         if (line) logger.debug({ container: execution.folder }, line);
       }
-      // Don't acknowledge on stderr — SDK writes debug logs continuously.
-      // Heartbeat monitor reads the heartbeat file directly for liveness.
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
       if (chunk.length > remaining) {
@@ -557,7 +475,15 @@ export async function runContainerAgent(
     });
 
     container.on('close', (code) => {
-      monitor.stop();
+      if (idleTimer) clearTimeout(idleTimer);
+
+      // Clean up output callback and revoke socket tokens on container exit
+      removeOutputCallback(execution.folder);
+      if (socketServer) {
+        socketServer.revokeToken(socketToken);
+        socketServer.revokeToken(mcpSocketToken);
+      }
+
       const duration = Date.now() - startTime;
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -571,7 +497,6 @@ export async function runContainerAgent(
         `IsMain: ${execution.isMain}`,
         `Duration: ${duration}ms`,
         `Exit Code: ${code}`,
-        `Stdout Truncated: ${stdoutTruncated}`,
         `Stderr Truncated: ${stderrTruncated}`,
         ``,
       ];
@@ -596,9 +521,6 @@ export async function runContainerAgent(
           ``,
           `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
           stderr,
-          ``,
-          `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
-          stdout,
         );
       } else {
         logLines.push(
@@ -618,11 +540,11 @@ export async function runContainerAgent(
       logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
-        // Non-zero exit after output = likely heartbeat-triggered shutdown, not failure
+        // Non-zero exit after output = likely idle or heartbeat shutdown
         if (hadStreamingOutput) {
           logger.info(
             { group: execution.name, containerName, duration, code },
-            'Container exited after output (heartbeat or idle shutdown)',
+            'Container exited after output (idle shutdown)',
           );
           outputChain
             .catch((err) => {
@@ -647,7 +569,6 @@ export async function runContainerAgent(
             code,
             duration,
             stderr,
-            stdout,
             logFile,
           },
           'Container exited with error',
@@ -662,7 +583,6 @@ export async function runContainerAgent(
       }
 
       // Streaming mode: wait for output chain to settle, return completion marker.
-      // Use .catch() to ensure resolve() fires even if the chain was rejected.
       if (onOutput) {
         outputChain
           .catch((err) => {
@@ -685,60 +605,25 @@ export async function runContainerAgent(
         return;
       }
 
-      // Legacy mode: parse the last output marker pair from accumulated stdout
-      try {
-        // Extract JSON between sentinel markers for robust parsing
-        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
-        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
-
-        let jsonLine: string;
-        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-        } else {
-          // Fallback: last non-empty line
-          const lines = stdout.trim().split('\n');
-          jsonLine = lines[lines.length - 1];
-        }
-
-        const output: ContainerOutput = JSON.parse(jsonLine);
-
-        logger.info(
-          {
-            group: execution.name,
-            duration,
-            status: output.status,
-            hasResult: !!output.result,
-            cost_usd: output.telemetry?.totalCostUsd,
-            tokens_in: output.telemetry?.usage?.inputTokens,
-            tokens_out: output.telemetry?.usage?.outputTokens,
-          },
-          'Container completed',
-        );
-
-        resolve(output);
-      } catch (err) {
-        logger.error(
-          {
-            group: execution.name,
-            stdout,
-            stderr,
-            error: err,
-          },
-          'Failed to parse container output',
-        );
-
-        resolve({
-          status: 'error',
-          result: null,
-          error: `Failed to parse container output: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+      // No streaming output handler — treat as success with no result
+      logger.info(
+        { group: execution.name, duration },
+        'Container completed',
+      );
+      resolve({
+        status: 'success',
+        result: null,
+        newSessionId,
+      });
     });
 
     container.on('error', (err) => {
-      monitor.stop();
+      if (idleTimer) clearTimeout(idleTimer);
+      removeOutputCallback(execution.folder);
+      if (socketServer) {
+        socketServer.revokeToken(socketToken);
+        socketServer.revokeToken(mcpSocketToken);
+      }
       logger.error({ group: execution.name, containerName, error: err }, 'Container spawn error');
       resolve({
         status: 'error',
@@ -759,6 +644,7 @@ export async function runWorkerAgent(
   delegationId: string,
   prompt: string,
   agentOptions: AgentOptions,
+  socketServer?: CambotSocketServer,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
   const WORKER_TIMEOUT_MS = 300_000; // 5 minutes
@@ -808,30 +694,32 @@ export async function runWorkerAgent(
     });
   }
 
-  // Minimal IPC directory (worker doesn't need full IPC)
-  const workerIpcDir = path.join(workerDir, 'ipc');
-  fs.mkdirSync(path.join(workerIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(workerIpcDir, 'tasks'), { recursive: true });
-  mounts.push({
-    hostPath: workerIpcDir,
-    containerPath: '/workspace/ipc',
-    readonly: false,
-  });
-
   const containerName = `cambot-worker-${delegationId}`;
   const containerArgs = buildContainerArgs(mounts, containerName, agentOptions.containerImage);
 
+  // Workers get a unique group identifier so they don't supersede
+  // the lead group's connection in the socket server.
+  const workerGroup = `${leadGroupFolder}:worker-${delegationId}`;
+
+  // Generate socket token and register with server under the worker group
+  const socketToken = `cambot-socket-worker-${delegationId}`;
+  if (socketServer) {
+    socketServer.registerToken(workerGroup, socketToken);
+  }
+
   logger.info(
-    { delegationId, containerName },
+    { delegationId, containerName, workerGroup },
     'Spawning worker container',
   );
 
   const input: ContainerInput = {
     prompt,
-    groupFolder: leadGroupFolder,
+    groupFolder: workerGroup,
     chatJid: 'worker',
     isMain: false,
     isScheduledTask: true, // Single-turn behavior
+    socketPort: CAMBOT_SOCKET_PORT,
+    socketToken,
   };
 
   return new Promise((resolve) => {
@@ -839,12 +727,13 @@ export async function runWorkerAgent(
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    let parseBuffer = '';
     let stderr = '';
     let resolved = false;
 
     const cleanup = () => {
-      // Clean up temp worker directory
+      if (socketServer) {
+        socketServer.revokeToken(socketToken);
+      }
       try {
         fs.rmSync(workerDir, { recursive: true, force: true });
       } catch {
@@ -859,7 +748,6 @@ export async function runWorkerAgent(
       cleanup();
       resolve(output);
 
-      // Stop the container — worker is done, no need to wait for idle loop
       exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
         if (err) container.kill('SIGKILL');
       });
@@ -872,32 +760,31 @@ export async function runWorkerAgent(
     container.stdin.end();
     delete input.secrets;
 
-    // Stream-parse stdout for output markers as they arrive.
-    // The agent-runner's idle loop keeps the container alive after output,
-    // so we must parse incrementally rather than waiting for close.
+    // Listen for output frames from the socket connection
+    if (socketServer) {
+      const checkConnection = () => {
+        const conn = socketServer.getConnection(workerGroup);
+        if (conn) {
+          conn.onFrame((frame) => {
+            if (frame.type === 'output') {
+              const payload = frame.payload as ContainerOutput;
+              const duration = Date.now() - startTime;
+              logger.info({ delegationId, duration }, 'Worker completed');
+              resolveOnce(payload);
+            }
+          });
+        } else if (!resolved) {
+          setTimeout(checkConnection, 500);
+        }
+      };
+      setTimeout(checkConnection, 1000);
+    }
+
     container.stdout.on('data', (data) => {
-      parseBuffer += data.toString();
-
-      const startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER);
-      if (startIdx === -1) return;
-      const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-      if (endIdx === -1) return; // Incomplete pair, wait for more data
-
-      const jsonStr = parseBuffer
-        .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-        .trim();
-
-      try {
-        const output: ContainerOutput = JSON.parse(jsonStr);
-        const duration = Date.now() - startTime;
-        logger.info({ delegationId, duration }, 'Worker completed');
-        resolveOnce(output);
-      } catch (err) {
-        resolveOnce({
-          status: 'error',
-          result: null,
-          error: `Failed to parse worker output: ${err instanceof Error ? err.message : String(err)}`,
-        });
+      const chunk = data.toString();
+      const lines = chunk.trim().split('\n');
+      for (const line of lines) {
+        if (line) logger.debug({ container: `worker-${delegationId}` }, line);
       }
     });
 
@@ -919,7 +806,6 @@ export async function runWorkerAgent(
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
 
-      // If we already resolved from streaming output, nothing to do
       if (resolved) {
         cleanup();
         return;
@@ -943,7 +829,7 @@ export async function runWorkerAgent(
       resolve({
         status: 'error',
         result: null,
-        error: 'Worker exited without producing output markers',
+        error: 'Worker exited without producing output',
       });
     });
 

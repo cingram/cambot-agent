@@ -66,6 +66,14 @@ async function fireTask(
     );
   } catch (err) {
     logger.error({ taskId: task.id, err }, 'TaskPrompt bus emission failed');
+    logTaskRun({
+      task_id: task.id,
+      run_at: new Date().toISOString(),
+      duration_ms: 0,
+      status: 'error',
+      result: null,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

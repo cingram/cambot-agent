@@ -7,6 +7,7 @@ import { registerMessageRouter, type MessageRouterDeps } from './message-router.
 import type { RouterState } from './router-state.js';
 import type { GroupQueue } from '../groups/group-queue.js';
 import type { Channel } from '../types.js';
+import type { CambotSocketServer } from '../cambot-socket/server.js';
 
 vi.mock('../logger.js', () => ({
   logger: {
@@ -60,9 +61,9 @@ function createMockState(overrides: Partial<RouterState> = {}): RouterState {
 
 function createMockQueue(overrides: Partial<GroupQueue> = {}): GroupQueue {
   return {
-    sendMessage: vi.fn(() => false),
     enqueueMessageCheck: vi.fn(),
     getLastPipedTimestamp: vi.fn(() => null),
+    recordPipedTimestamp: vi.fn(),
     ...overrides,
   } as unknown as GroupQueue;
 }
@@ -76,6 +77,13 @@ function createMockChannel(jid: string): Channel {
   } as unknown as Channel;
 }
 
+function createMockSocketServer(hasConnection = false): CambotSocketServer {
+  return {
+    hasConnection: vi.fn(() => hasConnection),
+    send: vi.fn(),
+  } as unknown as CambotSocketServer;
+}
+
 describe('registerMessageRouter', () => {
   let bus: MessageBus;
 
@@ -84,16 +92,41 @@ describe('registerMessageRouter', () => {
     vi.clearAllMocks();
   });
 
-  it('routes registered group with trigger to enqueueMessageCheck', async () => {
+  it('routes registered group with trigger to socket when connected', async () => {
     const queue = createMockQueue();
     const state = createMockState({
       getRegisteredGroup: vi.fn(() => ({ name: 'Side', folder: 'side', requiresTrigger: true })),
     } as unknown as Partial<RouterState>);
+    const socketServer = createMockSocketServer(true);
+    const msg = makeMessage('Hey @Andy help me');
+    vi.mocked(getMessagesSince).mockReturnValue([msg]);
 
     registerMessageRouter({
       bus, state, queue,
       getChannels: () => [createMockChannel('group@g.us')],
       getInterceptor: () => null,
+      socketServer,
+    });
+
+    await bus.emit(new InboundMessage('whatsapp', 'group@g.us', msg));
+
+    expect(socketServer.send).toHaveBeenCalledWith('side', expect.objectContaining({
+      type: 'message.input',
+    }));
+  });
+
+  it('falls back to enqueue when no socket connection', async () => {
+    const queue = createMockQueue();
+    const state = createMockState({
+      getRegisteredGroup: vi.fn(() => ({ name: 'Side', folder: 'side', requiresTrigger: true })),
+    } as unknown as Partial<RouterState>);
+    const socketServer = createMockSocketServer(false);
+
+    registerMessageRouter({
+      bus, state, queue,
+      getChannels: () => [createMockChannel('group@g.us')],
+      getInterceptor: () => null,
+      socketServer,
     });
 
     await bus.emit(new InboundMessage('whatsapp', 'group@g.us', makeMessage('Hey @Andy help me')));
@@ -116,7 +149,6 @@ describe('registerMessageRouter', () => {
     await bus.emit(new InboundMessage('whatsapp', 'unknown@g.us', makeMessage('hello')));
 
     expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
-    expect(queue.sendMessage).not.toHaveBeenCalled();
   });
 
   it('ignores non-main group without trigger', async () => {
@@ -134,45 +166,6 @@ describe('registerMessageRouter', () => {
     await bus.emit(new InboundMessage('whatsapp', 'group@g.us', makeMessage('hello no trigger')));
 
     expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
-    expect(queue.sendMessage).not.toHaveBeenCalled();
-  });
-
-  it('pipes to active container when sendMessage returns true', async () => {
-    const queue = createMockQueue({
-      sendMessage: vi.fn(() => true),
-    } as unknown as Partial<GroupQueue>);
-    const state = createMockState();
-    const msg = makeMessage('hello', '2024-01-01T00:00:01.000Z');
-
-    vi.mocked(getMessagesSince).mockReturnValue([msg]);
-    vi.mocked(formatMessages).mockReturnValue('formatted-content');
-
-    registerMessageRouter({
-      bus, state, queue,
-      getChannels: () => [createMockChannel('group@g.us')],
-      getInterceptor: () => null,
-    });
-
-    await bus.emit(new InboundMessage('whatsapp', 'group@g.us', msg));
-
-    expect(queue.sendMessage).toHaveBeenCalledWith('group@g.us', 'formatted-content', '2024-01-01T00:00:01.000Z');
-  });
-
-  it('falls back to enqueue when sendMessage returns false', async () => {
-    const queue = createMockQueue({
-      sendMessage: vi.fn(() => false),
-    } as unknown as Partial<GroupQueue>);
-    const state = createMockState();
-
-    registerMessageRouter({
-      bus, state, queue,
-      getChannels: () => [createMockChannel('group@g.us')],
-      getInterceptor: () => null,
-    });
-
-    await bus.emit(new InboundMessage('whatsapp', 'group@g.us', makeMessage('hello')));
-
-    expect(queue.enqueueMessageCheck).toHaveBeenCalledWith('group@g.us');
   });
 
   it('does not route cancelled events', async () => {
@@ -193,14 +186,12 @@ describe('registerMessageRouter', () => {
     await bus.emit(new InboundMessage('whatsapp', 'group@g.us', makeMessage('hello')));
 
     expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
-    expect(queue.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('advances cursor after successful pipe', async () => {
-    const queue = createMockQueue({
-      sendMessage: vi.fn(() => true),
-    } as unknown as Partial<GroupQueue>);
+  it('advances cursor after successful socket pipe', async () => {
+    const queue = createMockQueue();
     const state = createMockState();
+    const socketServer = createMockSocketServer(true);
     const msg = makeMessage('hello', '2024-01-01T00:00:05.000Z');
 
     vi.mocked(getMessagesSince).mockReturnValue([msg]);
@@ -209,39 +200,13 @@ describe('registerMessageRouter', () => {
       bus, state, queue,
       getChannels: () => [createMockChannel('group@g.us')],
       getInterceptor: () => null,
+      socketServer,
     });
 
     await bus.emit(new InboundMessage('whatsapp', 'group@g.us', msg));
 
     expect(state.setAgentTimestamp).toHaveBeenCalledWith('group@g.us', '2024-01-01T00:00:05.000Z');
     expect(state.save).toHaveBeenCalled();
-  });
-
-  it('emits TypingUpdate after successful pipe', async () => {
-    const queue = createMockQueue({
-      sendMessage: vi.fn(() => true),
-    } as unknown as Partial<GroupQueue>);
-    const state = createMockState();
-    const typingHandler = vi.fn();
-
-    registerMessageRouter({
-      bus, state, queue,
-      getChannels: () => [createMockChannel('group@g.us')],
-      getInterceptor: () => null,
-    });
-
-    bus.on(TypingUpdate, typingHandler);
-
-    vi.mocked(getMessagesSince).mockReturnValue([makeMessage('hello')]);
-
-    await bus.emit(new InboundMessage('whatsapp', 'group@g.us', makeMessage('hello')));
-
-    // TypingUpdate is emitted async, give it a tick
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    expect(typingHandler).toHaveBeenCalledOnce();
-    expect(typingHandler.mock.calls[0][0].jid).toBe('group@g.us');
-    expect(typingHandler.mock.calls[0][0].isTyping).toBe(true);
   });
 
   it('returns an unsubscribe function', async () => {
@@ -259,7 +224,6 @@ describe('registerMessageRouter', () => {
     await bus.emit(new InboundMessage('whatsapp', 'group@g.us', makeMessage('hello')));
 
     expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
-    expect(queue.sendMessage).not.toHaveBeenCalled();
   });
 
   it('skips JID not owned by any channel', async () => {
@@ -275,6 +239,5 @@ describe('registerMessageRouter', () => {
     await bus.emit(new InboundMessage('whatsapp', 'group@g.us', makeMessage('hello')));
 
     expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
-    expect(queue.sendMessage).not.toHaveBeenCalled();
   });
 });

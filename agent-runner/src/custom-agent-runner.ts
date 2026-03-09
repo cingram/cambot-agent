@@ -140,7 +140,7 @@ export async function runCustomAgent(
   if (hasMcpTools) {
     try {
       const __dirname = path.dirname(fileURLToPath(import.meta.url));
-      const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+      const mcpServerPath = path.join(__dirname, 'socket-mcp-stdio.js');
       mcpBridge = new McpBridge();
       await mcpBridge.connect('node', [mcpServerPath], {
         CAMBOT_AGENT_CHAT_JID: input.chatJid,

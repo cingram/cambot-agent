@@ -16,8 +16,8 @@ import type {
 import type { TelemetryCollector } from './telemetry-collector.js';
 import type { TranscriptArchiver } from './transcript-archiver.js';
 import type { Logger } from './logger.js';
-import type { HeartbeatWriter } from './heartbeat-writer.js';
 import type { GuardrailReviewer } from './guardrail-reviewer.js';
+import type { HeartbeatHandle } from './types.js';
 
 /** Env vars to strip from Bash subprocess environments. */
 const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY'];
@@ -27,7 +27,7 @@ export class HookFactory {
     private readonly telemetry: TelemetryCollector,
     private readonly archiver: TranscriptArchiver,
     private readonly logger: Logger,
-    private readonly heartbeat?: HeartbeatWriter,
+    private readonly heartbeat?: HeartbeatHandle,
     private readonly guardrail?: GuardrailReviewer,
   ) {}
 

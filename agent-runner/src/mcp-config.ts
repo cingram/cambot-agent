@@ -69,6 +69,7 @@ export function loadMcpConfig(
   templatePath: string,
   vars: McpConfigVars,
   dynamicServers?: McpServerConfig[],
+  hostMcpAllowlist?: string[],
 ): ResolvedMcpConfig {
   const varMap: Record<string, string> = {
     SCRIPT_DIR: vars.scriptDir,
@@ -93,66 +94,24 @@ export function loadMcpConfig(
     }
   }
 
-  // Build allowedTools from server names.
-  // google-workspace uses an explicit allowlist instead of wildcard
-  // to block raw Gmail read tools that would bypass the content pipe.
-  // cambot-agent uses an explicit allowlist for inter-agent targets
-  // to block send_to_agent (prevents infinite loops).
-  const allowedTools: string[] = [];
-  for (const name of Object.keys(servers)) {
-    if (name === 'google-workspace') {
-      allowedTools.push(
-        ...GOOGLE_WORKSPACE_ALLOWED_TOOLS.map((t) => `mcp__google-workspace__${t}`),
-      );
-    } else if (name === 'cambot-agent' && vars.isInterAgentTarget) {
-      allowedTools.push(
-        ...CAMBOT_AGENT_INTERAGENT_TOOLS.map((t) => `mcp__cambot-agent__${t}`),
-      );
-    } else {
-      allowedTools.push(`mcp__${name}__*`);
-    }
-  }
+  // Build allowedTools: host sends pre-qualified names, filter to present servers.
+  // Fallback: grant wildcard access per server (matches SDK fallback of all tools).
+  const allowedTools = hostMcpAllowlist
+    ? filterToPresent(hostMcpAllowlist, Object.keys(servers))
+    : Object.keys(servers).map(name => `mcp__${name}__*`);
 
   return { servers, allowedTools };
 }
 
-// Explicit allowlist of cambot-agent MCP tools for inter-agent targets.
-// send_to_agent is excluded to prevent infinite agent→agent loops.
-// Administrative tools (schedule_task, register_group, agent CRUD) are
-// excluded since target agents shouldn't modify system configuration.
-const CAMBOT_AGENT_INTERAGENT_TOOLS = [
-  'send_message',
-  'list_tasks',
-  'check_email',
-  'read_email',
-];
-
-// Explicit allowlist of google-workspace MCP tools.
-// Gmail read tools (search_gmail_messages, get_gmail_message) are intentionally
-// excluded — the agent uses check_email/read_email IPC tools instead, which
-// route content through the content pipe for injection detection.
-const GOOGLE_WORKSPACE_ALLOWED_TOOLS = [
-  // Gmail (outbound only — safe, no untrusted content ingestion)
-  'send_gmail_message',
-  'list_gmail_labels',
-  // Calendar
-  'list_calendar_events',
-  'create_calendar_event',
-  'update_calendar_event',
-  // Tasks
-  'list_task_lists',
-  'list_tasks',
-  'create_task',
-  'complete_task',
-  // Drive
-  'search_drive_files',
-  'get_drive_file_content',
-  'list_drive_files',
-  // Docs
-  'get_doc_content',
-  'create_doc',
-  // Sheets
-  'get_spreadsheet',
-  'create_spreadsheet',
-  'update_spreadsheet_values',
-];
+/**
+ * Filter pre-qualified tool names (mcp__{server}__{tool}) to only include
+ * tools whose server is actually present in this container's config.
+ */
+function filterToPresent(qualifiedNames: string[], serverNames: string[]): string[] {
+  const serverSet = new Set(serverNames);
+  return qualifiedNames.filter(name => {
+    // Qualified format: mcp__{server}__{tool}
+    const parts = name.split('__');
+    return parts.length >= 3 && serverSet.has(parts[1]);
+  });
+}
