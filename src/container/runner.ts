@@ -336,7 +336,10 @@ export async function runContainerAgent(
   const mcpSocketToken = `cambot-socket-mcp-${safeName}-${ts}`;
   const mcpGroup = `${execution.folder}:mcp`;
   if (socketServer) {
-    socketServer.registerToken(execution.folder, socketToken);
+    // Authorize the container to send messages to its chatJid (needed for
+    // gateway delegation where a non-main agent sends to the caller's JID).
+    const authorizedJids = input.chatJid ? new Set([input.chatJid]) : undefined;
+    socketServer.registerToken(execution.folder, socketToken, authorizedJids);
     socketServer.registerToken(mcpGroup, mcpSocketToken);
   }
 

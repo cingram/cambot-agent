@@ -11,6 +11,7 @@ import {
   renameConversation as dbRenameConversation,
   deleteConversation as dbDeleteConversation,
 } from '../db/index.js';
+import { createAgentMessageRepository } from '../db/agent-message-repository.js';
 import { createAgentRepository } from '../db/agent-repository.js';
 import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
 import { handleAgentRoutes } from '../api/agent-routes.js';
@@ -86,6 +87,7 @@ export class WebChannel implements Channel {
       this.agentRoutesDeps = {
         agentRepo: createAgentRepository(db),
         templateRepo: createAgentTemplateRepository(db),
+        agentMessageRepo: createAgentMessageRepository(db),
         onAgentMutation: this.opts.onAgentMutation,
       };
     }
