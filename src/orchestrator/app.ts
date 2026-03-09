@@ -74,6 +74,7 @@ import type { ContentPipe } from '../pipes/content-pipe.js';
 import { createAgentRepository, type AgentRepository } from '../db/agent-repository.js';
 import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
 import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
+import { createGatewayRouterFromEnv } from '../agents/gateway-router.js';
 import { buildAgentContext } from '../utils/context-files.js';
 import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
 import { provisionAgent } from '../agents/agent-factory.js';
@@ -546,6 +547,14 @@ export class CamBotApp {
       },
       getInterceptor: () => this.interceptor ?? null,
       getSocketServer: () => this.socketServer ?? undefined,
+      gatewayRouter: createGatewayRouterFromEnv(),
+      getAgentRegistry: () => agentRepo.getAll().map(a => ({
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        capabilities: a.capabilities,
+      })),
+      getAgentById: (id) => agentRepo.getById(id),
     });
   }
 

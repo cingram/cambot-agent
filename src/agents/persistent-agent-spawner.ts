@@ -19,6 +19,7 @@ import { logger } from '../logger.js';
 import { resolveToolList, resolveDisallowedTools, resolveMcpToolList, applySafetyDenials, qualifyMcpToolList } from '../tools/tool-policy.js';
 import { channelFromJid } from '../utils/channel-from-jid.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
+import type { GatewayRouter, AgentRegistryEntry } from './gateway-router.js';
 
 // ── Public types ───────────────────────────────────────────────
 
@@ -63,12 +64,19 @@ export interface PersistentAgentSpawnerDeps {
   getInterceptor?: () => LifecycleInterceptor | null;
   /** Lazy getter — socket server may not be available at spawner construction time. */
   getSocketServer?: () => CambotSocketServer | undefined;
+  /** Gateway router for agents with 'gateway' tool preset. */
+  gatewayRouter?: GatewayRouter;
+  /** Get list of agents for gateway routing decisions. */
+  getAgentRegistry?: () => AgentRegistryEntry[];
+  /** Look up a full RegisteredAgent by ID (for gateway delegation). */
+  getAgentById?: (id: string) => RegisteredAgent | undefined;
 }
 
 // ── Factory ────────────────────────────────────────────────────
 
 export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): ContainerSpawner {
-  return {
+  // Store reference for recursive gateway delegation
+  const self: ContainerSpawner = {
     async spawn(
       agent: RegisteredAgent,
       prompt: string,
@@ -77,6 +85,12 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
     ): Promise<AgentExecutionResult> {
       const startTime = Date.now();
       const isInterAgent = callerGroup.startsWith('agent:');
+
+      // Gateway mode: lightweight API routing instead of full container
+      if (agent.toolPolicy?.preset === 'gateway' && deps.gatewayRouter && !isInterAgent) {
+        return spawnViaGateway(self, deps, agent, prompt, callerGroup, startTime);
+      }
+
       logger.debug(
         { agentId: agent.id, folder: agent.folder, callerGroup, isInterAgent, timeoutMs },
         'Starting persistent agent container spawn',
@@ -258,4 +272,73 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
       }
     },
   };
+  return self;
+}
+
+// ── Gateway Mode ─────────────────────────────────────────────
+
+/**
+ * Handle a gateway agent: make a lightweight Haiku API call for routing,
+ * then either respond directly or spawn the target agent.
+ */
+async function spawnViaGateway(
+  spawner: ContainerSpawner,
+  deps: PersistentAgentSpawnerDeps,
+  agent: RegisteredAgent,
+  prompt: string,
+  callerGroup: string,
+  startTime: number,
+): Promise<AgentExecutionResult> {
+  const router = deps.gatewayRouter!;
+  const agents = deps.getAgentRegistry?.() ?? [];
+
+  // Exclude the gateway agent itself from routing targets
+  const routeTargets = agents.filter(a => a.id !== agent.id);
+
+  const decision = await router.route(prompt, routeTargets);
+
+  if (decision.action === 'respond') {
+    // Direct response — emit to bus, no container needed
+    if (decision.response) {
+      await deps.messageBus.emit(
+        new OutboundMessage('persistent-agent', callerGroup, decision.response, {
+          groupFolder: agent.folder,
+          agentId: agent.id,
+        }),
+      );
+    }
+    return {
+      status: 'success',
+      content: decision.response ?? '',
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  // Delegate — look up and spawn the target agent directly
+  if (!decision.targetAgent || !decision.prompt) {
+    return {
+      status: 'error',
+      content: 'Gateway routing failed: no target agent or prompt',
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  const targetAgent = deps.getAgentById?.(decision.targetAgent);
+  if (!targetAgent) {
+    logger.warn({ target: decision.targetAgent }, 'Gateway routed to unknown agent');
+    return {
+      status: 'error',
+      content: `Agent "${decision.targetAgent}" not found`,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  logger.info(
+    { gateway: agent.id, target: decision.targetAgent, callerGroup },
+    `[gateway] Delegating to ${decision.targetAgent}`,
+  );
+
+  // Spawn target agent via the same spawner (recursive).
+  // The target agent won't be a gateway, so it takes the normal container path.
+  return spawner.spawn(targetAgent, decision.prompt, callerGroup, targetAgent.timeoutMs);
 }
