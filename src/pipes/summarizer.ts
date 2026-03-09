@@ -96,7 +96,9 @@ export function createSummarizer(deps: SummarizerDeps) {
           .map((b) => b.text!)
           .join('');
 
-        const parsed = JSON.parse(text) as { summary?: string; intent?: string };
+        // Strip markdown code fences the model sometimes wraps around JSON
+        const cleaned = text.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+        const parsed = JSON.parse(cleaned) as { summary?: string; intent?: string };
 
         const summary = typeof parsed.summary === 'string' && parsed.summary.length > 0
           ? parsed.summary

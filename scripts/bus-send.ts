@@ -60,6 +60,9 @@ async function main(): Promise<void> {
     case 'delete':
       await deleteAgent(args.slice(1));
       break;
+    case 'reset':
+      await resetAgent(args.slice(1));
+      break;
     case 'send':
       await sendMessage(args.slice(1));
       break;
@@ -524,6 +527,72 @@ async function deleteAgent(deleteArgs: string[]): Promise<void> {
   }
 }
 
+// ── Reset agent ──────────────────────────────────────────────
+
+async function resetAgent(resetArgs: string[]): Promise<void> {
+  let all = false;
+  const ids: string[] = [];
+
+  for (const arg of resetArgs) {
+    if (arg === '--all') {
+      all = true;
+    } else if (!arg.startsWith('-')) {
+      ids.push(arg);
+    }
+  }
+
+  if (!all && ids.length === 0) {
+    console.error('Usage: reset <agent-id> [agent-id ...] [--all]');
+    console.error('  reset web-agent              Clear conversations for web-agent');
+    console.error('  reset web-agent email-agent  Clear multiple agents');
+    console.error('  reset --all                  Clear all agent conversations');
+    process.exit(1);
+  }
+
+  const db = await openDb(false);
+  try {
+    const folders = all
+      ? (db.query('SELECT folder FROM registered_agents').all() as { folder: string }[]).map(r => r.folder)
+      : ids; // agent id === folder for persistent agents
+
+    if (folders.length === 0) {
+      console.log('No agents to reset.');
+      return;
+    }
+
+    let totalConversations = 0;
+    let totalSessions = 0;
+
+    for (const folder of folders) {
+      // Deactivate conversations and clear session IDs
+      const convRows = db
+        .query('SELECT id, session_id FROM conversations WHERE agent_folder = ? AND (is_active = 1 OR session_id IS NOT NULL)')
+        .all(folder) as { id: string; session_id: string | null }[];
+
+      if (convRows.length > 0) {
+        db.run(
+          'UPDATE conversations SET is_active = 0, session_id = NULL WHERE agent_folder = ?',
+          [folder],
+        );
+        totalConversations += convRows.length;
+      }
+
+      // Delete Claude SDK session files (forces fresh context on next spawn)
+      const sessionsDir = path.join(PROJECT_ROOT, 'data', 'sessions', folder, '.claude', 'projects');
+      if (fs.existsSync(sessionsDir)) {
+        fs.rmSync(sessionsDir, { recursive: true, force: true });
+        totalSessions++;
+      }
+
+      console.log(`  ${folder}: ${convRows.length} conversation(s) cleared`);
+    }
+
+    console.log(`\nReset complete: ${totalConversations} conversation(s), ${totalSessions} session cache(s) cleared.`);
+  } finally {
+    db.close();
+  }
+}
+
 // ── Option parsing ──────────────────────────────────────────────
 
 interface AgentOptions {
@@ -703,7 +772,8 @@ function printUsage(): void {
   console.log('  bun run scripts/bus-send.ts tools [id]');
   console.log('  bun run scripts/bus-send.ts create <id> --name "Name" [options]');
   console.log('  bun run scripts/bus-send.ts update <id> [options]');
-  console.log('  bun run scripts/bus-send.ts delete <id>\n');
+  console.log('  bun run scripts/bus-send.ts delete <id>');
+  console.log('  bun run scripts/bus-send.ts reset <id> [--all]    Clear conversations & session cache\n');
   console.log('Examples:');
   console.log('  bun run scripts/bus-send.ts list');
   console.log('  bun run scripts/bus-send.ts show email-agent');
@@ -712,5 +782,7 @@ function printUsage(): void {
   console.log('  bun run scripts/bus-send.ts update my-agent --description "Updated desc" --channels web');
   console.log('  bun run scripts/bus-send.ts update my-agent --tool-policy @policy.json');
   console.log('  bun run scripts/bus-send.ts delete my-agent');
+  console.log('  bun run scripts/bus-send.ts reset web-agent');
+  console.log('  bun run scripts/bus-send.ts reset --all');
   console.log('  bun run scripts/bus-send.ts -a email-agent "What\'s in my inbox?"');
 }

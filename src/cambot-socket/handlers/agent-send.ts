@@ -18,6 +18,12 @@ const AgentSendSchema = z.object({
 
 type AgentSendPayload = z.infer<typeof AgentSendSchema>;
 
+/** Truncate a string for log display. */
+function truncate(text: string, maxLen = 200): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen) + '…';
+}
+
 export function registerAgentSend(registry: CommandRegistry): void {
   registry.register(
     FRAME_TYPES.AGENT_SEND,
@@ -40,9 +46,15 @@ export function registerAgentSend(registry: CommandRegistry): void {
         return;
       }
 
+      const startMs = Date.now();
+
       logger.info(
-        { sourceGroup, targetAgent: payload.targetAgent },
-        'Dispatching inter-agent message via socket',
+        {
+          source: sourceGroup,
+          target: payload.targetAgent,
+          prompt: truncate(payload.prompt),
+        },
+        `[agent-bus] ${sourceGroup} → ${payload.targetAgent}: "${truncate(payload.prompt, 80)}"`,
       );
 
       // Spawn the target agent and await result
@@ -54,21 +66,36 @@ export function registerAgentSend(registry: CommandRegistry): void {
           targetAgent.timeoutMs,
         );
 
+        const durationMs = Date.now() - startMs;
+        const resultPreview = result.content ? truncate(result.content) : '(empty)';
+
         connection.reply(frame, FRAME_TYPES.AGENT_SEND, {
           status: result.status,
           result: result.content,
         });
 
         logger.info(
-          { sourceGroup, targetAgent: payload.targetAgent, status: result.status },
-          'Inter-agent message completed',
+          {
+            source: sourceGroup,
+            target: payload.targetAgent,
+            status: result.status,
+            durationMs,
+            result: resultPreview,
+          },
+          `[agent-bus] ${payload.targetAgent} → ${sourceGroup}: (${result.status}, ${(durationMs / 1000).toFixed(1)}s) "${truncate(resultPreview, 80)}"`,
         );
       } catch (err) {
+        const durationMs = Date.now() - startMs;
         const message = err instanceof Error ? err.message : String(err);
         connection.replyError(frame, 'HANDLER_ERROR', message);
         logger.error(
-          { sourceGroup, targetAgent: payload.targetAgent, error: message },
-          'Inter-agent message failed',
+          {
+            source: sourceGroup,
+            target: payload.targetAgent,
+            error: message,
+            durationMs,
+          },
+          `[agent-bus] ${sourceGroup} → ${payload.targetAgent}: FAILED (${(durationMs / 1000).toFixed(1)}s) ${message}`,
         );
       }
     },
