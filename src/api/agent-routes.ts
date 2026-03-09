@@ -14,6 +14,7 @@ import {
   createConversation,
   activateConversation,
   deleteConversation,
+  deleteConversationsByFolder,
   renameConversation,
   getConversationById,
 } from '../db/conversation-repository.js';
@@ -253,6 +254,19 @@ function handleConversationRoutes(
       const agent = agentRepo.getById(listMatch[1]);
       if (!agent) { json(res, 404, { error: 'Agent not found' }); return true; }
       json(res, 200, { conversations: listAgentConversations(agent.folder) });
+    } catch (err) {
+      error(res, 500, err);
+    }
+    return true;
+  }
+
+  if (listMatch && req.method === 'DELETE') {
+    try {
+      const agent = agentRepo.getById(listMatch[1]);
+      if (!agent) { json(res, 404, { error: 'Agent not found' }); return true; }
+      const deleted = deleteConversationsByFolder(agent.folder);
+      logger.info({ agentId: agent.id, deleted }, 'All conversations cleared for agent via API');
+      json(res, 200, { success: true, deleted });
     } catch (err) {
       error(res, 500, err);
     }

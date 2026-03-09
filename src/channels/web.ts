@@ -10,6 +10,7 @@ import {
   upsertConversation,
   renameConversation as dbRenameConversation,
   deleteConversation as dbDeleteConversation,
+  deleteAllConversations as dbDeleteAllConversations,
 } from '../db/index.js';
 import { createAgentMessageRepository } from '../db/agent-message-repository.js';
 import { createAgentRepository } from '../db/agent-repository.js';
@@ -277,6 +278,8 @@ export class WebChannel implements Channel {
       this.handleListConversations(res);
     } else if (req.method === 'POST' && url.pathname === '/conversations') {
       this.handleBody(req, res, (body) => this.handleCreateConversation(body, res));
+    } else if (req.method === 'DELETE' && url.pathname === '/conversations') {
+      this.handleDeleteAllConversations(res);
     } else if (convoMatch && req.method === 'PATCH') {
       this.handleBody(req, res, (body) => this.handleRenameConversation(convoMatch[1], body, res));
     } else if (convoMatch && req.method === 'DELETE') {
@@ -609,6 +612,19 @@ export class WebChannel implements Channel {
       logger.error({ err }, 'Failed to delete conversation');
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Failed to delete conversation' }));
+    }
+  }
+
+  private handleDeleteAllConversations(res: http.ServerResponse): void {
+    try {
+      const deleted = dbDeleteAllConversations();
+      logger.info({ deleted }, 'All conversations deleted via web channel');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, deleted }));
+    } catch (err) {
+      logger.error({ err }, 'Failed to delete all conversations');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to delete all conversations' }));
     }
   }
 }
