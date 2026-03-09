@@ -63,6 +63,9 @@ async function main(): Promise<void> {
     case 'reset':
       await resetAgent(args.slice(1));
       break;
+    case 'convos':
+      await showConversations(args.slice(1));
+      break;
     case 'send':
       await sendMessage(args.slice(1));
       break;
@@ -265,6 +268,7 @@ async function showAgent(showArgs: string[]): Promise<void> {
     if (row.system_prompt) console.log(`  System Prompt: ${(row.system_prompt as string).slice(0, 100)}...`);
     if (row.soul) console.log(`  Soul:          ${(row.soul as string).slice(0, 100)}...`);
     if (row.tool_policy) console.log(`  Tool Policy:   ${row.tool_policy}`);
+    if (row.memory_strategy) console.log(`  Memory:        ${row.memory_strategy}`);
     if (row.secret_keys && row.secret_keys !== '[]') console.log(`  Secret Keys:   ${formatJsonArray(row.secret_keys as string)}`);
     console.log(`  Created:       ${row.created_at}`);
     console.log(`  Updated:       ${row.updated_at}`);
@@ -394,9 +398,9 @@ async function createAgent(createArgs: string[]): Promise<void> {
         (id, name, description, folder, channels, mcp_servers, capabilities,
          concurrency, timeout_ms, is_main, tool_policy,
          system_prompt, soul, provider, model, secret_keys,
-         container_config, tools, temperature, max_tokens, base_url,
+         memory_strategy, container_config, tools, temperature, max_tokens, base_url,
          created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         opts.name,
@@ -414,6 +418,7 @@ async function createAgent(createArgs: string[]): Promise<void> {
         opts.provider ?? 'claude',
         opts.model ?? 'claude-sonnet-4-6',
         JSON.stringify(opts.secretKeys ?? []),
+        buildMemoryStrategy(opts),
         opts.containerConfig ?? null,
         JSON.stringify(opts.tools ?? []),
         opts.temperature ?? null,
@@ -464,6 +469,8 @@ async function updateAgent(updateArgs: string[]): Promise<void> {
   if (opts.baseUrl !== undefined)     { setClauses.push('base_url = ?');      values.push(opts.baseUrl); }
   if (opts.secretKeys !== undefined)  { setClauses.push('secret_keys = ?');   values.push(JSON.stringify(opts.secretKeys)); }
   if (opts.toolPolicy !== undefined)  { setClauses.push('tool_policy = ?');   values.push(opts.toolPolicy); }
+  const memStrategy = buildMemoryStrategy(opts);
+  if (memStrategy !== null)           { setClauses.push('memory_strategy = ?'); values.push(memStrategy); }
 
   if (setClauses.length === 0) {
     console.error('No fields to update. Pass at least one option.');
@@ -497,6 +504,31 @@ async function updateAgent(updateArgs: string[]): Promise<void> {
     }
 
     db.run(`UPDATE registered_agents SET ${setClauses.join(', ')} WHERE id = ?`, values);
+
+    // Session invalidation: when memory_strategy changes, clear sessions + deactivate for ephemeral
+    if (memStrategy !== null) {
+      const agent = db.query('SELECT folder FROM registered_agents WHERE id = ?').get(id) as { folder: string } | null;
+      if (agent) {
+        const cleared = db.run(
+          'UPDATE conversations SET session_id = NULL WHERE agent_folder = ? AND session_id IS NOT NULL',
+          [agent.folder],
+        );
+        if (cleared.changes > 0) {
+          console.log(`  Cleared ${cleared.changes} session(s).`);
+        }
+
+        if (opts.memoryStrategy === 'ephemeral') {
+          const deactivated = db.run(
+            'UPDATE conversations SET is_active = 0 WHERE agent_folder = ? AND is_active = 1',
+            [agent.folder],
+          );
+          if (deactivated.changes > 0) {
+            console.log(`  Deactivated ${deactivated.changes} conversation(s).`);
+          }
+        }
+      }
+    }
+
     console.log(`Updated agent "${id}".`);
   } finally {
     db.close();
@@ -593,6 +625,79 @@ async function resetAgent(resetArgs: string[]): Promise<void> {
   }
 }
 
+// ── Show conversations ───────────────────────────────────────────
+
+async function showConversations(convosArgs: string[]): Promise<void> {
+  let active = false;
+  let count = false;
+  const positionals: string[] = [];
+
+  for (const arg of convosArgs) {
+    if (arg === '--active') active = true;
+    else if (arg === '--count') count = true;
+    else if (!arg.startsWith('-')) positionals.push(arg);
+  }
+
+  const agentId = positionals[0];
+  if (!agentId) {
+    console.error('Usage: convos <agent-id> [--active] [--count]');
+    process.exit(1);
+  }
+
+  const db = await openDb(true);
+  try {
+    // Look up agent folder (agent id = folder for persistent agents)
+    const folder = agentId;
+
+    if (count) {
+      const row = db.query('SELECT COUNT(*) as cnt FROM conversations WHERE agent_folder = ?')
+        .get(folder) as { cnt: number };
+      console.log(row.cnt);
+      return;
+    }
+
+    if (active) {
+      const row = db.query(`
+        SELECT id, title, session_id, is_active, updated_at
+        FROM conversations WHERE agent_folder = ? AND is_active = 1
+        ORDER BY updated_at DESC LIMIT 1
+      `).get(folder) as { id: string; title: string; session_id: string | null; is_active: number; updated_at: string } | null;
+
+      if (!row) {
+        console.log('No active conversation.');
+        return;
+      }
+      console.log(`Active conversation for ${agentId}:\n`);
+      console.log(`  ID:        ${row.id}`);
+      console.log(`  Title:     ${row.title}`);
+      console.log(`  Session:   ${row.session_id ?? '(none)'}`);
+      console.log(`  Updated:   ${row.updated_at}`);
+      return;
+    }
+
+    // List all conversations
+    const rows = db.query(`
+      SELECT id, title, session_id, is_active, updated_at
+      FROM conversations WHERE agent_folder = ?
+      ORDER BY updated_at DESC LIMIT 20
+    `).all(folder) as { id: string; title: string; session_id: string | null; is_active: number; updated_at: string }[];
+
+    if (rows.length === 0) {
+      console.log(`No conversations for ${agentId}.`);
+      return;
+    }
+
+    console.log(`Conversations for ${agentId}:\n`);
+    for (const row of rows) {
+      const status = row.is_active ? '[ACTIVE]' : '';
+      console.log(`  ${row.id}  ${row.title}  ${status}`);
+      console.log(`    Session: ${row.session_id ?? '(none)'}  Updated: ${row.updated_at}`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
 // ── Option parsing ──────────────────────────────────────────────
 
 interface AgentOptions {
@@ -616,6 +721,9 @@ interface AgentOptions {
   baseUrl?: string;
   toolPolicy?: string;
   containerConfig?: string;
+  memoryStrategy?: string;
+  rotationIdle?: number;
+  rotationSize?: number;
 }
 
 function parseAgentOptions(optArgs: string[]): AgentOptions {
@@ -651,6 +759,9 @@ function parseAgentOptions(optArgs: string[]): AgentOptions {
       case '--max-tokens':     opts.maxTokens = parseInt(next(), 10);       break;
       case '--base-url':       opts.baseUrl = next();                       break;
       case '--tool-policy':    opts.toolPolicy = parseJson(arg, readFileOrValue(next())); break;
+      case '--memory-strategy': opts.memoryStrategy = next();                           break;
+      case '--rotation-idle':  opts.rotationIdle = parseInt(next(), 10);                break;
+      case '--rotation-size':  opts.rotationSize = parseInt(next(), 10);                break;
       default:
         console.error(`Unknown option: ${arg}`);
         process.exit(1);
@@ -676,6 +787,15 @@ function parseJson(flag: string, value: string): string {
     process.exit(1);
   }
   return value;
+}
+
+/** Build a memory_strategy JSON string from parsed CLI options. */
+function buildMemoryStrategy(opts: AgentOptions): string | null {
+  if (!opts.memoryStrategy) return null;
+  const strategy: Record<string, unknown> = { mode: opts.memoryStrategy };
+  if (opts.rotationIdle !== undefined) strategy.rotationIdleTimeoutMs = opts.rotationIdle;
+  if (opts.rotationSize !== undefined) strategy.rotationMaxSizeKb = opts.rotationSize;
+  return JSON.stringify(strategy);
 }
 
 /** If value starts with @, read from file; otherwise use as-is. */
@@ -735,6 +855,9 @@ function printAgentOptions(): void {
   console.error('  --temperature <n>          Sampling temperature');
   console.error('  --max-tokens <n>           Max output tokens');
   console.error('  --base-url <url>           Custom API base URL');
+  console.error('  --memory-strategy <mode>   Memory strategy: ephemeral, conversation-scoped, persistent, long-lived');
+  console.error('  --rotation-idle <ms>       Override idle rotation timeout (ms)');
+  console.error('  --rotation-size <kb>       Override max transcript size (KB)');
   console.error('  --tool-policy <json|@file>  Tool policy (JSON or @file). Presets:');
   console.error('                               readonly  — Read,Glob,Grep,WebSearch,WebFetch (default)');
   console.error('                               minimal   — Read,Glob,Grep');
@@ -773,7 +896,8 @@ function printUsage(): void {
   console.log('  bun run scripts/bus-send.ts create <id> --name "Name" [options]');
   console.log('  bun run scripts/bus-send.ts update <id> [options]');
   console.log('  bun run scripts/bus-send.ts delete <id>');
-  console.log('  bun run scripts/bus-send.ts reset <id> [--all]    Clear conversations & session cache\n');
+  console.log('  bun run scripts/bus-send.ts reset <id> [--all]    Clear conversations & session cache');
+  console.log('  bun run scripts/bus-send.ts convos <id> [--active] [--count]\n');
   console.log('Examples:');
   console.log('  bun run scripts/bus-send.ts list');
   console.log('  bun run scripts/bus-send.ts show email-agent');

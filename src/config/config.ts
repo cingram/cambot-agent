@@ -177,6 +177,9 @@ export const CONVERSATION_MAX_SIZE_KB = parseInt(
   10,
 );
 
+// Long-lived agents: very high rotation threshold (50MB) to prevent unbounded growth
+export const LONG_LIVED_DEFAULT_MAX_SIZE_KB = 51200;
+
 // Heartbeat monitoring interval (host polls container heartbeat file at this rate)
 export const HEARTBEAT_INTERVAL_MS = 5000;
 

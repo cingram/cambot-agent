@@ -9,7 +9,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, CONVERSATION_ROTATION_ENABLED, CONVERSATION_IDLE_TIMEOUT_MS, CONVERSATION_MAX_SIZE_KB } from '../config/config.js';
+import { DATA_DIR, CONVERSATION_ROTATION_ENABLED, CONVERSATION_IDLE_TIMEOUT_MS, CONVERSATION_MAX_SIZE_KB, LONG_LIVED_DEFAULT_MAX_SIZE_KB } from '../config/config.js';
+import type { MemoryStrategy } from '../types.js';
 import { getDatabase } from './connection.js';
 
 export interface Conversation {
@@ -23,6 +24,13 @@ export interface Conversation {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ConversationResolution {
+  conversation: Conversation;
+  rotatedFrom?: Conversation;  // set when rotation occurred
+  isNew: boolean;              // true if conversation was just created
+  isTransient: boolean;        // true for ephemeral (not in DB)
 }
 
 interface ConversationRow {
@@ -229,13 +237,38 @@ export function deleteConversationsByFolder(agentFolder: string): void {
 
 /**
  * Check if an active conversation should be rotated (idle timeout or size exceeded).
+ * When a MemoryStrategy is provided, per-agent overrides take precedence over globals.
  */
-function needsRotation(active: Conversation, agentFolder: string): boolean {
+function needsRotation(active: Conversation, agentFolder: string, strategy?: MemoryStrategy): boolean {
   if (!CONVERSATION_ROTATION_ENABLED) return false;
 
-  const idleMs = Date.now() - new Date(active.updatedAt).getTime();
-  if (idleMs > CONVERSATION_IDLE_TIMEOUT_MS) return true;
+  const mode = strategy?.mode ?? 'persistent';
 
+  // Resolve thresholds based on strategy
+  let idleTimeoutMs: number | null;
+  let maxSizeKb: number;
+
+  switch (mode) {
+    case 'long-lived':
+      // No idle timeout; size threshold is very high
+      idleTimeoutMs = null;
+      maxSizeKb = strategy?.rotationMaxSizeKb ?? LONG_LIVED_DEFAULT_MAX_SIZE_KB;
+      break;
+    case 'conversation-scoped':
+    case 'persistent':
+    default:
+      idleTimeoutMs = strategy?.rotationIdleTimeoutMs ?? CONVERSATION_IDLE_TIMEOUT_MS;
+      maxSizeKb = strategy?.rotationMaxSizeKb ?? CONVERSATION_MAX_SIZE_KB;
+      break;
+  }
+
+  // Check idle timeout
+  if (idleTimeoutMs !== null) {
+    const idleMs = Date.now() - new Date(active.updatedAt).getTime();
+    if (idleMs > idleTimeoutMs) return true;
+  }
+
+  // Check transcript size
   if (active.sessionId) {
     const transcriptPath = path.join(
       DATA_DIR, 'sessions', agentFolder, '.claude', 'projects',
@@ -243,7 +276,7 @@ function needsRotation(active: Conversation, agentFolder: string): boolean {
     );
     try {
       const stat = fs.statSync(transcriptPath);
-      if (stat.size > CONVERSATION_MAX_SIZE_KB * 1024) return true;
+      if (stat.size > maxSizeKb * 1024) return true;
     } catch {
       // File doesn't exist yet — no rotation needed
     }
@@ -252,20 +285,64 @@ function needsRotation(active: Conversation, agentFolder: string): boolean {
   return false;
 }
 
+/** Create a transient (in-memory only) conversation for ephemeral agents. */
+function createTransientConversation(agentFolder: string, channel: string, chatJid?: string): Conversation {
+  return {
+    id: randomUUID(),
+    title: 'Ephemeral',
+    preview: '',
+    agentFolder,
+    sessionId: null,
+    channel,
+    chatJid: chatJid ?? null,
+    isActive: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 /**
  * Get or create the active conversation for an agent+channel, auto-rotating if needed.
  * This is the main entry point for all pipelines.
+ *
+ * Returns a ConversationResolution when a memoryStrategy is provided,
+ * or a plain Conversation for backward compatibility when called without one.
  */
-export function resolveActiveConversation(agentFolder: string, channel: string, chatJid?: string): Conversation {
+export function resolveActiveConversation(agentFolder: string, channel: string, chatJid?: string, memoryStrategy?: MemoryStrategy): ConversationResolution {
+  const mode = memoryStrategy?.mode ?? 'persistent';
+
+  // Ephemeral: no DB row, transient in-memory conversation
+  if (mode === 'ephemeral') {
+    return {
+      conversation: createTransientConversation(agentFolder, channel, chatJid),
+      isNew: true,
+      isTransient: true,
+    };
+  }
+
   const active = getActiveConversation(agentFolder, channel);
 
   if (active) {
-    if (needsRotation(active, agentFolder)) {
-      return createConversation(agentFolder, channel, chatJid);
+    if (needsRotation(active, agentFolder, memoryStrategy)) {
+      const newConv = createConversation(agentFolder, channel, chatJid);
+      return {
+        conversation: newConv,
+        rotatedFrom: active,
+        isNew: true,
+        isTransient: false,
+      };
     }
     touchConversation(active.id);
-    return active;
+    return {
+      conversation: active,
+      isNew: false,
+      isTransient: false,
+    };
   }
 
-  return createConversation(agentFolder, channel, chatJid);
+  return {
+    conversation: createConversation(agentFolder, channel, chatJid),
+    isNew: true,
+    isTransient: false,
+  };
 }

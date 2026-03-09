@@ -31,6 +31,7 @@ import { resolveToolList, resolveDisallowedTools } from '../tools/tool-policy.js
 import { channelFromJid } from '../utils/channel-from-jid.js';
 import { buildAgentContext, type ContextFileDeps } from '../utils/context-files.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
+import { cleanupSdkMemory } from '../utils/memory-cleanup.js';
 import type { WorkflowService } from '../workflows/workflow-service.js';
 import type { WorkflowBuilderService } from '../workflows/workflow-builder-service.js';
 import type { RouterState } from './router-state.js';
@@ -78,10 +79,22 @@ export class AgentRunner {
     const { queue } = this.deps;
     const isMain = group.folder === MAIN_GROUP_FOLDER;
 
+    // Look up agent by folder (may be undefined for main group / unregistered groups)
+    const agent = this.agentRepo.getByFolder(group.folder);
+    const memoryStrategy = agent?.memoryStrategy;
+
     // Resolve active conversation — handles auto-rotation (idle + size)
     const channel = channelFromJid(chatJid);
-    const conversation = resolveActiveConversation(group.folder, channel, chatJid);
-    const sessionId = conversation.sessionId ?? undefined;
+    const resolution = resolveActiveConversation(group.folder, channel, chatJid, memoryStrategy);
+    const conversation = resolution.conversation;
+
+    // Conversation-scoped: wipe SDK memory on rotation
+    if (memoryStrategy?.mode === 'conversation-scoped' && resolution.rotatedFrom) {
+      cleanupSdkMemory(group.folder);
+    }
+
+    // Ephemeral agents skip session resumption
+    const sessionId = resolution.isTransient ? undefined : (conversation.sessionId ?? undefined);
 
     const snapshot = this.fetchSnapshot(group.folder);
     const agentContext = this.buildContext(snapshot, isMain, chatJid);
@@ -90,11 +103,13 @@ export class AgentRunner {
     // Wrap onOutput to track session ID from streamed results
     const wrappedOnOutput = onOutput
       ? async (output: ContainerOutput) => {
-          if (output.newSessionId) {
-            setConversationSession(conversation.id, output.newSessionId);
-          }
-          if (output.result) {
-            updatePreview(conversation.id, output.result);
+          if (!resolution.isTransient) {
+            if (output.newSessionId) {
+              setConversationSession(conversation.id, output.newSessionId);
+            }
+            if (output.result) {
+              updatePreview(conversation.id, output.result);
+            }
           }
           await onOutput(output);
         }
@@ -114,6 +129,8 @@ export class AgentRunner {
           chatJid,
           isMain,
           mcpServers: integrationMgr?.getActiveMcpServers(),
+          memoryStrategy,
+          conversationId: resolution.isTransient ? undefined : conversation.id,
           allowedSdkTools: resolveToolList(group.containerConfig?.toolPolicy),
           disallowedSdkTools: resolveDisallowedTools(group.containerConfig?.toolPolicy),
           agentContext,
@@ -124,7 +141,7 @@ export class AgentRunner {
         this.deps.getSocketServer?.(),
       );
 
-      if (output.newSessionId) {
+      if (output.newSessionId && !resolution.isTransient) {
         setConversationSession(conversation.id, output.newSessionId);
       }
 

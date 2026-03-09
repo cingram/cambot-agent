@@ -56,6 +56,10 @@ export interface ClaudeContainerInput extends BaseContainerInput {
   model?: string;
   mcpServers?: McpServerConfig[];
   memoryMode?: 'markdown' | 'database' | 'both';
+  /** Per-agent memory strategy (mode only; host handles rotation/cleanup). */
+  memoryStrategy?: { mode: 'ephemeral' | 'conversation-scoped' | 'persistent' | 'long-lived' };
+  /** Active conversation ID (omitted for ephemeral). */
+  conversationId?: string;
   /** Enable inline Haiku guardrail for tool call review. Default: true */
   guardrailEnabled?: boolean;
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy on host) */
