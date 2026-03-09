@@ -523,7 +523,9 @@ export class CamBotApp {
           agentIdentity: identityOverride,
           agentSoul: soulOverride,
           agents: agentRepo.getAll().map(a => ({
-            id: a.id, name: a.name, description: a.description, provider: a.provider, model: a.model,
+            id: a.id, name: a.name, description: a.description,
+            provider: a.provider, model: a.model,
+            capabilities: a.capabilities, mcpServers: a.mcpServers, channels: a.channels,
           })),
           tasks: getAllTasks().map(t => ({
             id: t.id, prompt: t.prompt, schedule_type: t.schedule_type,

@@ -28,6 +28,9 @@ interface AgentSummaryRow {
   description: string;
   provider: string;
   model: string;
+  capabilities: string[];
+  mcpServers: string[];
+  channels: string[];
 }
 
 interface ScheduledTaskRow {
@@ -122,19 +125,33 @@ function generateToolsMd(deps: ContextFileDeps): string {
 
 function generateAgentsMd(agents: AgentSummaryRow[]): string {
   if (agents.length === 0) {
-    return '## Agents\n\nNo agents registered.\n';
+    return '## Agent Registry\n\nNo agents registered.\n';
   }
 
-  const lines: string[] = ['## Agents\n'];
-  lines.push('| Name | Provider | Model | Description |');
-  lines.push('|------|----------|-------|-------------|');
+  const lines: string[] = [
+    '## Agent Registry',
+    '',
+    'Use `send_to_agent` to delegate work to any agent below.',
+    '',
+  ];
 
   for (const agent of agents) {
-    const desc = agent.description || '—';
-    lines.push(`| ${agent.name} | ${agent.provider} | ${agent.model} | ${desc} |`);
+    lines.push(`### ${agent.id}`);
+    lines.push(`**${agent.name}** — ${agent.description || 'No description'}`);
+    lines.push(`- **Provider:** ${agent.provider} (${agent.model})`);
+
+    if (agent.capabilities.length > 0) {
+      lines.push(`- **Capabilities:** ${agent.capabilities.join(', ')}`);
+    }
+    if (agent.mcpServers.length > 0) {
+      lines.push(`- **MCP Servers:** ${agent.mcpServers.join(', ')}`);
+    }
+    if (agent.channels.length > 0) {
+      lines.push(`- **Channels:** ${agent.channels.join(', ')}`);
+    }
+    lines.push('');
   }
 
-  lines.push('');
   return lines.join('\n');
 }
 
@@ -277,11 +294,10 @@ export function buildAgentContext(sources: AgentContextSources): ContextFileDeps
 // ── Public API ───────────────────────────────────────────────────────
 
 export function writeContextFiles(
-  groupIpcDir: string,
+  contextDir: string,
   isMain: boolean,
   deps: ContextFileDeps,
 ): void {
-  const contextDir = path.join(groupIpcDir, 'context');
   fs.mkdirSync(contextDir, { recursive: true });
 
   try {
@@ -322,6 +338,6 @@ export function writeContextFiles(
       );
     }
   } catch (err) {
-    logger.warn({ err, groupIpcDir }, 'Failed to write context files');
+    logger.warn({ err, contextDir }, 'Failed to write context files');
   }
 }
