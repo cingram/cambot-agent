@@ -189,6 +189,7 @@ export class SdkQueryRunner {
         ...mcpConfig.allowedTools,
       ],
       disallowedTools: input.disallowedSdkTools,
+      model: input.model,
       env: sdkEnv,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,

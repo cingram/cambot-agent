@@ -70,6 +70,10 @@ export function handleAgentRoutes(
           json(res, 400, { error: 'id, name, and folder are required' });
           return;
         }
+        // Default to readonly if no tool policy specified
+        if (!input.toolPolicy) {
+          input.toolPolicy = { preset: 'readonly' };
+        }
         const agent = agentRepo.create(input);
         logger.info({ agentId: agent.id }, 'Agent created via API');
         deps.onAgentMutation?.();

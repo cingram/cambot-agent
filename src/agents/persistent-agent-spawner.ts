@@ -142,6 +142,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             chatJid: callerGroup,
             isMain: agent.isMain,
             isInterAgentTarget: isInterAgent,
+            model: isCustomProvider ? undefined : agent.model,
             mcpServers: scopedServers,
             customAgent,
             allowedSdkTools: isCustomProvider ? undefined : resolveToolList(agent.toolPolicy),

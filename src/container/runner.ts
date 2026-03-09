@@ -36,6 +36,8 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  /** Claude model override (e.g. 'claude-opus-4-6'). Falls back to SDK default. */
+  model?: string;
   secrets?: Record<string, string>;
   /** Active MCP servers to expose to the container agent */
   mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;

@@ -52,6 +52,8 @@ interface BaseContainerInput {
 
 export interface ClaudeContainerInput extends BaseContainerInput {
   kind: 'claude';
+  /** Claude model to use (e.g. 'claude-opus-4-6'). Falls back to SDK default. */
+  model?: string;
   mcpServers?: McpServerConfig[];
   memoryMode?: 'markdown' | 'database' | 'both';
   /** Enable inline Haiku guardrail for tool call review. Default: true */
