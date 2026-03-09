@@ -69,6 +69,7 @@ import { createInputSanitizer, createInjectionDetector } from 'cambot-core';
 import { createSummarizer } from '../pipes/summarizer.js';
 import { createEmailPipe } from '../pipes/email-pipe.js';
 import { registerContentPipeHandler } from '../pipes/content-pipe-handler.js';
+import { createAgentMessageRepository } from '../db/agent-message-repository.js';
 import { createRawContentRepository, type RawContentRepository } from '../db/raw-content-repository.js';
 import type { ContentPipe } from '../pipes/content-pipe.js';
 import { createAgentRepository, type AgentRepository } from '../db/agent-repository.js';
@@ -614,6 +615,7 @@ export class CamBotApp {
       workspaceMcpUrl: `http://localhost:${WORKSPACE_MCP_PORT}/mcp`,
       agentSpawner: this.agentSpawner ?? undefined,
       agentRepo: this.agentRepo ?? undefined,
+      agentMessageRepo: createAgentMessageRepository(getDatabase()),
       // socketServer assigned below after CambotSocketServer creation
     };
 

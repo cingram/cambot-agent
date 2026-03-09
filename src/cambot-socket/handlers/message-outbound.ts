@@ -28,8 +28,11 @@ export function registerMessageOutbound(registry: CommandRegistry): void {
       const registeredGroups = deps.registeredGroups();
 
       // Authorization: non-main groups can only send to their own JID
+      // or to JIDs explicitly authorized at spawn time (e.g. gateway delegation).
       const targetGroup = registeredGroups[payload.chatJid];
-      if (!isMain && (!targetGroup || targetGroup.folder !== group)) {
+      const ownsTarget = targetGroup && targetGroup.folder === group;
+      const spawnAuthorized = connection.identity.authorizedJids?.has(payload.chatJid);
+      if (!isMain && !ownsTarget && !spawnAuthorized) {
         logger.warn(
           { chatJid: payload.chatJid, group },
           'Unauthorized message.outbound attempt blocked',

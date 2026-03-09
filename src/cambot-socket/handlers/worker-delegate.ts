@@ -56,23 +56,53 @@ export function registerWorkerDelegate(registry: CommandRegistry): void {
 
       logger.info({ delegationId, workerId, sourceGroup }, 'Delegating to worker via socket');
 
+      const startMs = Date.now();
+
       // Run worker (async — reply when complete)
       try {
         const output = await runWorkerAgent(sourceGroup, delegationId, fullPrompt, agentOpts);
+        const durationMs = Date.now() - startMs;
         connection.reply(frame, FRAME_TYPES.WORKER_DELEGATE, {
           delegationId,
           status: output.status,
           result: output.result,
           error: output.error,
         });
+
+        deps.agentMessageRepo?.insert({
+          source: sourceGroup,
+          target: workerId,
+          type: 'worker.delegate',
+          prompt: fullPrompt,
+          result: output.result,
+          status: (output.status as 'success' | 'error' | 'timeout') ?? 'success',
+          error: output.error ?? null,
+          durationMs,
+          frameId: delegationId,
+        });
+
         logger.info(
-          { delegationId, workerId, status: output.status },
+          { delegationId, workerId, status: output.status, durationMs },
           'Worker delegation completed',
         );
       } catch (err) {
+        const durationMs = Date.now() - startMs;
         const message = err instanceof Error ? err.message : String(err);
         connection.replyError(frame, 'HANDLER_ERROR', message, { delegationId });
-        logger.error({ delegationId, workerId, error: message }, 'Worker delegation failed');
+
+        deps.agentMessageRepo?.insert({
+          source: sourceGroup,
+          target: workerId,
+          type: 'worker.delegate',
+          prompt: fullPrompt,
+          result: null,
+          status: 'error',
+          error: message,
+          durationMs,
+          frameId: delegationId,
+        });
+
+        logger.error({ delegationId, workerId, error: message, durationMs }, 'Worker delegation failed');
       }
     },
   );

@@ -74,6 +74,18 @@ export function registerAgentSend(registry: CommandRegistry): void {
           result: result.content,
         });
 
+        deps.agentMessageRepo?.insert({
+          source: sourceGroup,
+          target: payload.targetAgent,
+          type: 'agent.send',
+          prompt: payload.prompt,
+          result: result.content,
+          status: result.status as 'success' | 'error' | 'timeout',
+          error: null,
+          durationMs,
+          frameId: frame.id,
+        });
+
         logger.info(
           {
             source: sourceGroup,
@@ -88,6 +100,19 @@ export function registerAgentSend(registry: CommandRegistry): void {
         const durationMs = Date.now() - startMs;
         const message = err instanceof Error ? err.message : String(err);
         connection.replyError(frame, 'HANDLER_ERROR', message);
+
+        deps.agentMessageRepo?.insert({
+          source: sourceGroup,
+          target: payload.targetAgent,
+          type: 'agent.send',
+          prompt: payload.prompt,
+          result: null,
+          status: 'error',
+          error: message,
+          durationMs,
+          frameId: frame.id,
+        });
+
         logger.error(
           {
             source: sourceGroup,

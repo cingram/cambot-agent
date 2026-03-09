@@ -21,6 +21,8 @@ export interface PendingRequest {
 export interface ConnectionIdentity {
   group: string;
   isMain: boolean;
+  /** JIDs this connection is authorized to send messages to (beyond its own folder). */
+  authorizedJids?: Set<string>;
 }
 
 const MAX_PENDING_REQUESTS = 100;

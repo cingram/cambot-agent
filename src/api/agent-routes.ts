@@ -5,6 +5,7 @@
  */
 import type http from 'http';
 
+import type { AgentMessageRepository } from '../db/agent-message-repository.js';
 import type { AgentRepository, CreateAgentInput, UpdateAgentInput } from '../db/agent-repository.js';
 import type { AgentTemplateRepository } from '../db/agent-template-repository.js';
 import { provisionAgent, type ProvisionInput } from '../agents/agent-factory.js';
@@ -21,6 +22,8 @@ import { logger } from '../logger.js';
 export interface AgentRoutesDeps {
   agentRepo: AgentRepository;
   templateRepo: AgentTemplateRepository;
+  /** Agent message repository for inter-agent communication tracking (optional). */
+  agentMessageRepo?: AgentMessageRepository;
   /** Called after agent create/update/delete to refresh routing tables.
    *  On delete, passes the deleted agent's folder for disk cleanup. */
   onAgentMutation?: (deletedFolder?: string) => void;
@@ -130,6 +133,62 @@ export function handleAgentRoutes(
       logger.info({ agentId: agentMatch[1] }, 'Agent deleted via API');
       deps.onAgentMutation?.(agent.folder);
       json(res, 200, { success: true });
+    } catch (err) {
+      error(res, 500, err);
+    }
+    return true;
+  }
+
+  // --- Agent message routes ---
+
+  if (url.pathname === '/api/agent-messages' && req.method === 'GET') {
+    if (!deps.agentMessageRepo) {
+      json(res, 503, { error: 'Agent message tracking not available' });
+      return true;
+    }
+    try {
+      const messages = deps.agentMessageRepo.query({
+        source: url.searchParams.get('source') ?? undefined,
+        target: url.searchParams.get('target') ?? undefined,
+        type: (url.searchParams.get('type') as 'agent.send' | 'worker.delegate') ?? undefined,
+        since: url.searchParams.get('since') ?? undefined,
+        until: url.searchParams.get('until') ?? undefined,
+        limit: url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined,
+        offset: url.searchParams.get('offset') ? parseInt(url.searchParams.get('offset')!, 10) : undefined,
+      });
+      json(res, 200, { messages });
+    } catch (err) {
+      error(res, 500, err);
+    }
+    return true;
+  }
+
+  const agentMsgAgentMatch = url.pathname.match(/^\/api\/agent-messages\/agent\/([^/]+)$/);
+  if (agentMsgAgentMatch && req.method === 'GET') {
+    if (!deps.agentMessageRepo) {
+      json(res, 503, { error: 'Agent message tracking not available' });
+      return true;
+    }
+    try {
+      const limit = url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined;
+      const messages = deps.agentMessageRepo.getByAgent(agentMsgAgentMatch[1], limit);
+      json(res, 200, { messages });
+    } catch (err) {
+      error(res, 500, err);
+    }
+    return true;
+  }
+
+  const agentMsgBetweenMatch = url.pathname.match(/^\/api\/agent-messages\/between\/([^/]+)\/([^/]+)$/);
+  if (agentMsgBetweenMatch && req.method === 'GET') {
+    if (!deps.agentMessageRepo) {
+      json(res, 503, { error: 'Agent message tracking not available' });
+      return true;
+    }
+    try {
+      const limit = url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined;
+      const messages = deps.agentMessageRepo.getBetween(agentMsgBetweenMatch[1], agentMsgBetweenMatch[2], limit);
+      json(res, 200, { messages });
     } catch (err) {
       error(res, 500, err);
     }

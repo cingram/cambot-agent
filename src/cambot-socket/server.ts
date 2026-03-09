@@ -43,7 +43,7 @@ const TOKEN_TTL_MS = 60_000;
 export class CambotSocketServer {
   private server: Server | null = null;
   private connections = new Map<string, CambotSocketConnection>();
-  private pendingTokens = new Map<string, string>(); // token -> group
+  private pendingTokens = new Map<string, { group: string; authorizedJids?: Set<string> }>();
   private tokenTimers = new Map<string, ReturnType<typeof setTimeout>>(); // token -> TTL timer
   private readonly port: number;
   private readonly registry: CommandRegistry;
@@ -75,8 +75,8 @@ export class CambotSocketServer {
    * Register a one-time token that a container will present during handshake.
    * Must be called before spawning the container.
    */
-  registerToken(group: string, token: string): void {
-    this.pendingTokens.set(token, group);
+  registerToken(group: string, token: string, authorizedJids?: Set<string>): void {
+    this.pendingTokens.set(token, { group, authorizedJids });
 
     // Auto-revoke after TTL to prevent unbounded growth
     const timer = setTimeout(() => {
@@ -226,9 +226,10 @@ export class CambotSocketServer {
     const isBusToken = token === BUS_STATIC_TOKEN && group === '_bus';
 
     // Validate the one-time token (or static bus token)
+    let tokenData: { group: string; authorizedJids?: Set<string> } | undefined;
     if (!isBusToken) {
-      const expectedGroup = this.pendingTokens.get(token);
-      if (!expectedGroup || expectedGroup !== group) {
+      tokenData = this.pendingTokens.get(token);
+      if (!tokenData || tokenData.group !== group) {
         logger.warn({ group, token: token.slice(0, 8) + '...' }, 'Invalid handshake token');
         const rejectFrame: SocketFrame = {
           id: randomUUID(),
@@ -259,6 +260,7 @@ export class CambotSocketServer {
     const identity: ConnectionIdentity = {
       group,
       isMain: group === MAIN_GROUP_FOLDER,
+      authorizedJids: tokenData?.authorizedJids,
     };
 
     const connection = new CambotSocketConnection(socket, identity);
