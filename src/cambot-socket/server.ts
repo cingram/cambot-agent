@@ -6,9 +6,10 @@
  * token registered before spawn.
  */
 
+import { randomUUID } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'net';
 
-import { FrameDecoder } from './protocol/codec.js';
+import { encodeFrame, FrameDecoder } from './protocol/codec.js';
 import type { SocketFrame, HandshakePayload } from './protocol/types.js';
 import {
   HANDSHAKE_TIMEOUT_MS,
@@ -29,6 +30,12 @@ export interface CambotSocketServerDeps {
  * Set via BUS_TOKEN env var, or falls back to a deterministic default.
  */
 const BUS_STATIC_TOKEN = process.env.BUS_TOKEN || 'cambot-bus-cli';
+
+if (!process.env.BUS_TOKEN) {
+  logger.warn(
+    'BUS_TOKEN is not set — using well-known default. Set BUS_TOKEN in .env for production.',
+  );
+}
 
 /** TTL for pending handshake tokens (ms). */
 const TOKEN_TTL_MS = 60_000;
@@ -56,7 +63,8 @@ export class CambotSocketServer {
         reject(err);
       });
 
-      this.server.listen(this.port, '0.0.0.0', () => {
+      const host = process.env.CAMBOT_SOCKET_HOST || '127.0.0.1';
+      this.server.listen(this.port, host, () => {
         logger.info({ port: this.port }, 'CambotSocketServer listening');
         resolve();
       });
@@ -222,7 +230,13 @@ export class CambotSocketServer {
       const expectedGroup = this.pendingTokens.get(token);
       if (!expectedGroup || expectedGroup !== group) {
         logger.warn({ group, token: token.slice(0, 8) + '...' }, 'Invalid handshake token');
-        socket.destroy();
+        const rejectFrame: SocketFrame = {
+          id: randomUUID(),
+          type: FRAME_TYPES.HANDSHAKE_REJECT,
+          replyTo: frame.id,
+          payload: { error: 'Invalid or expired handshake token' },
+        };
+        socket.write(encodeFrame(rejectFrame), () => socket.destroy());
         return;
       }
 

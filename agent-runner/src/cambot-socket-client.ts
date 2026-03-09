@@ -307,14 +307,9 @@ export class CambotSocketClient {
   // ── Helpers ────────────────────────────────────────────────────
 
   private rejectAllPending(reason: string): void {
-    for (const [id, pending] of this.pendingReplies) {
+    for (const [, pending] of this.pendingReplies) {
       clearTimeout(pending.timer);
-      pending.resolve({
-        type: FRAME_TYPES.ERROR,
-        id: '',
-        replyTo: id,
-        payload: { error: reason },
-      });
+      pending.reject(new Error(reason));
     }
     this.pendingReplies.clear();
   }

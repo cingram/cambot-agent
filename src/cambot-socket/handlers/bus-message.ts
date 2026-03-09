@@ -97,11 +97,7 @@ export function registerBusMessage(registry: CommandRegistry): void {
         timestamp: new Date().toISOString(),
       };
 
-      await bus.emit(
-        new InboundMessage('bus', targetJid, msg, { channel: 'bus' }),
-      );
-
-      // Listen for the outbound response
+      // Register outbound listener BEFORE emitting inbound to avoid race condition
       const responsePromise = new Promise<{ text: string; durationMs: number }>((resolve) => {
         const timeout = setTimeout(() => {
           cleanup();
@@ -122,6 +118,10 @@ export function registerBusMessage(registry: CommandRegistry): void {
           }
         }, { id: `bus-response-${frame.id}`, priority: 200, source: 'bus-message-handler' });
       });
+
+      await bus.emit(
+        new InboundMessage('bus', targetJid, msg, { channel: 'bus' }),
+      );
 
       const response = await responsePromise;
       connection.reply(frame, FRAME_TYPES.BUS_MESSAGE, {

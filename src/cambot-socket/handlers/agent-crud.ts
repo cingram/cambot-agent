@@ -67,9 +67,11 @@ export function registerAgentCrud(registry: CommandRegistry): void {
             ? [agentData.api_key_env_var as string]
             : [],
           systemPrompt: (agentData.system_prompt as string) ?? null,
-          tools: agentData.tools
-            ? JSON.parse(agentData.tools as string)
-            : [],
+          tools: Array.isArray(agentData.tools)
+            ? (agentData.tools as string[])
+            : agentData.tools
+              ? JSON.parse(agentData.tools as string)
+              : [],
           temperature: (agentData.temperature as number) ?? null,
           maxTokens: (agentData.max_tokens as number) ?? null,
           baseUrl: (agentData.base_url as string) ?? null,
@@ -190,9 +192,11 @@ export function registerAgentCrud(registry: CommandRegistry): void {
           provider: updates.provider as string | undefined,
           model: updates.model as string | undefined,
           systemPrompt: updates.system_prompt as string | undefined,
-          tools: updates.tools
-            ? JSON.parse(updates.tools as string)
-            : undefined,
+          tools: Array.isArray(updates.tools)
+            ? (updates.tools as string[])
+            : updates.tools
+              ? JSON.parse(updates.tools as string)
+              : undefined,
           temperature: updates.temperature as number | undefined,
           maxTokens: updates.max_tokens as number | undefined,
           baseUrl: updates.base_url as string | undefined,

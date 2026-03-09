@@ -5,6 +5,8 @@
  * so agents cannot modify their own tool access.
  */
 
+import { logger } from '../logger.js';
+
 // ── SDK Tools ───────────────────────────────────────────────────
 
 export const ALL_SDK_TOOLS = [
@@ -259,6 +261,9 @@ export function resolveDisallowedTools(policy?: ToolPolicy): string[] {
  */
 export function resolveMcpToolList(policy?: ToolPolicy): string[] {
   if (!policy) return [];
+  // If the policy only specifies SDK-level allow/deny/add (no preset, no mcp field),
+  // treat MCP tools as unspecified → least-privilege empty list.
+  if (!policy.preset && !policy.mcp) return [];
   return resolveFromPresets(MCP_PRESETS, policy.preset ?? 'full', policy.mcp);
 }
 
@@ -284,6 +289,8 @@ export function qualifyMcpToolList(shortNames: string[]): string[] {
       for (const server of servers) {
         qualified.push(qualifyMcpTool(name, server));
       }
+    } else {
+      logger.warn({ tool: name }, 'Unknown MCP tool name — not mapped to any server, skipping');
     }
   }
   return qualified;
