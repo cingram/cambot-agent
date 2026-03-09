@@ -5,6 +5,7 @@ import {
   storeChatMetadata,
   storeMessage,
 } from './index.js';
+import type { MemoryStrategy } from '../types.js';
 import {
   upsertConversation,
   listConversations,
@@ -247,25 +248,146 @@ describe('updatePreview', () => {
 
 describe('resolveActiveConversation', () => {
   it('creates new conversation when none exists', () => {
-    const conv = resolveActiveConversation('web-agent', 'web');
-    expect(conv.isActive).toBe(true);
-    expect(conv.agentFolder).toBe('web-agent');
+    const result = resolveActiveConversation('web-agent', 'web');
+    expect(result.conversation.isActive).toBe(true);
+    expect(result.conversation.agentFolder).toBe('web-agent');
   });
 
   it('returns existing active conversation', () => {
     const first = resolveActiveConversation('web-agent', 'web');
     const second = resolveActiveConversation('web-agent', 'web');
-    expect(first.id).toBe(second.id);
+    expect(first.conversation.id).toBe(second.conversation.id);
   });
 
   it('maintains separate active conversations per channel', () => {
     const web = resolveActiveConversation('my-agent', 'web');
     const wa = resolveActiveConversation('my-agent', 'whatsapp');
-    expect(web.id).not.toBe(wa.id);
-    expect(web.channel).toBe('web');
-    expect(wa.channel).toBe('whatsapp');
+    expect(web.conversation.id).not.toBe(wa.conversation.id);
+    expect(web.conversation.channel).toBe('web');
+    expect(wa.conversation.channel).toBe('whatsapp');
     // Both should be active
-    expect(getConversationById(web.id)!.isActive).toBe(true);
-    expect(getConversationById(wa.id)!.isActive).toBe(true);
+    expect(getConversationById(web.conversation.id)!.isActive).toBe(true);
+    expect(getConversationById(wa.conversation.id)!.isActive).toBe(true);
+  });
+});
+
+describe('resolveActiveConversation with memoryStrategy', () => {
+  it('ephemeral: returns transient conversation, no DB row', () => {
+    const strategy: MemoryStrategy = { mode: 'ephemeral' };
+    const result = resolveActiveConversation('eph-agent', 'web', undefined, strategy);
+    expect(result.isTransient).toBe(true);
+    expect(result.conversation.agentFolder).toBe('eph-agent');
+    expect(result.conversation.channel).toBe('web');
+    // No DB row
+    const db = getDatabase();
+    const rows = db.prepare('SELECT id FROM conversations WHERE agent_folder = ?').all('eph-agent');
+    expect(rows).toHaveLength(0);
+  });
+
+  it('ephemeral: returns different conversation each call', () => {
+    const strategy: MemoryStrategy = { mode: 'ephemeral' };
+    const r1 = resolveActiveConversation('eph-agent2', 'web', undefined, strategy);
+    const r2 = resolveActiveConversation('eph-agent2', 'web', undefined, strategy);
+    expect(r1.conversation.id).not.toBe(r2.conversation.id);
+  });
+
+  it('ephemeral: transient conversation has isTransient=true', () => {
+    const strategy: MemoryStrategy = { mode: 'ephemeral' };
+    const result = resolveActiveConversation('eph3', 'web', undefined, strategy);
+    expect(result.isTransient).toBe(true);
+    expect(result.isNew).toBe(true);
+  });
+
+  it('persistent: uses per-agent rotation override when set', () => {
+    // Create a conversation, manually set its updatedAt to be old
+    const conv = createConversation('persist-agent', 'web');
+    const db = getDatabase();
+    // Set updatedAt to 10 seconds ago
+    const oldTime = new Date(Date.now() - 10_000).toISOString();
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(oldTime, conv.id);
+
+    // Strategy with 5-second idle timeout (override)
+    const strategy: MemoryStrategy = { mode: 'persistent', rotationIdleTimeoutMs: 5000 };
+    const result = resolveActiveConversation('persist-agent', 'web', undefined, strategy);
+    // Should have rotated due to per-agent idle override (5s < 10s idle)
+    expect(result.conversation.id).not.toBe(conv.id);
+    expect(result.rotatedFrom).toBeDefined();
+    expect(result.rotatedFrom!.id).toBe(conv.id);
+  });
+
+  it('persistent: falls back to global when no override', () => {
+    // Create a conversation, set updatedAt to 1 second ago (within global timeout)
+    const conv = createConversation('persist-nooverride', 'web');
+    const db = getDatabase();
+    const recentTime = new Date(Date.now() - 1000).toISOString();
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(recentTime, conv.id);
+
+    // Strategy with no overrides — should use global (4 hours)
+    const strategy: MemoryStrategy = { mode: 'persistent' };
+    const result = resolveActiveConversation('persist-nooverride', 'web', undefined, strategy);
+    // Should NOT rotate (1s idle << 4h global timeout)
+    expect(result.conversation.id).toBe(conv.id);
+    expect(result.rotatedFrom).toBeUndefined();
+  });
+
+  it('conversation-scoped: uses per-agent rotation override', () => {
+    const conv = createConversation('scoped-agent', 'web');
+    const db = getDatabase();
+    const oldTime = new Date(Date.now() - 10_000).toISOString();
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(oldTime, conv.id);
+
+    const strategy: MemoryStrategy = { mode: 'conversation-scoped', rotationIdleTimeoutMs: 5000 };
+    const result = resolveActiveConversation('scoped-agent', 'web', undefined, strategy);
+    expect(result.conversation.id).not.toBe(conv.id);
+    expect(result.rotatedFrom).toBeDefined();
+  });
+
+  it('long-lived: disables idle timeout', () => {
+    const conv = createConversation('longlived-agent', 'web');
+    const db = getDatabase();
+    // Set updatedAt to 24 hours ago — would trigger any normal timeout
+    const oldTime = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(oldTime, conv.id);
+
+    const strategy: MemoryStrategy = { mode: 'long-lived' };
+    const result = resolveActiveConversation('longlived-agent', 'web', undefined, strategy);
+    // Should NOT rotate — long-lived disables idle timeout
+    expect(result.conversation.id).toBe(conv.id);
+    expect(result.rotatedFrom).toBeUndefined();
+  });
+
+  it('returns rotatedFrom when rotation occurs', () => {
+    const conv = createConversation('rot-agent', 'web');
+    const db = getDatabase();
+    const oldTime = new Date(Date.now() - 10_000).toISOString();
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(oldTime, conv.id);
+
+    const strategy: MemoryStrategy = { mode: 'persistent', rotationIdleTimeoutMs: 5000 };
+    const result = resolveActiveConversation('rot-agent', 'web', undefined, strategy);
+    expect(result.rotatedFrom).toBeDefined();
+    expect(result.rotatedFrom!.id).toBe(conv.id);
+    expect(result.isNew).toBe(true);
+  });
+
+  it('returns isNew=true on first conversation', () => {
+    const strategy: MemoryStrategy = { mode: 'persistent' };
+    const result = resolveActiveConversation('fresh-agent', 'web', undefined, strategy);
+    expect(result.isNew).toBe(true);
+    expect(result.rotatedFrom).toBeUndefined();
+  });
+
+  it('returns isNew=false on existing conversation', () => {
+    createConversation('existing-agent', 'web');
+    const strategy: MemoryStrategy = { mode: 'persistent' };
+    const result = resolveActiveConversation('existing-agent', 'web', undefined, strategy);
+    expect(result.isNew).toBe(false);
+  });
+
+  it('undefined strategy defaults to persistent behavior', () => {
+    const conv = createConversation('default-agent', 'web');
+    // No strategy passed — should behave like persistent (current behavior)
+    const result = resolveActiveConversation('default-agent', 'web');
+    expect(result.conversation.id).toBe(conv.id);
+    expect(result.isTransient).toBe(false);
   });
 });

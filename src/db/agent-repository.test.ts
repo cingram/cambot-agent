@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 
 import { createAgentRepository, type AgentRepository, type CreateAgentInput } from './agent-repository.js';
+import type { MemoryStrategy } from '../types.js';
 
 let db: Database.Database;
 let repo: AgentRepository;
@@ -362,5 +363,107 @@ describe('buildRoutingTable', () => {
   it('returns empty map when no agents exist', () => {
     const table = repo.buildRoutingTable();
     expect(table.size).toBe(0);
+  });
+});
+
+// ── memoryStrategy ──────────────────────────────────────────────
+
+describe('memoryStrategy', () => {
+  it('stores and retrieves memoryStrategy', () => {
+    const strategy: MemoryStrategy = { mode: 'ephemeral' };
+    const agent = repo.create(makeInput({ id: 'mem-1', folder: 'mem-1', memoryStrategy: strategy }));
+    expect(agent.memoryStrategy).toEqual(strategy);
+
+    const fetched = repo.getById('mem-1');
+    expect(fetched!.memoryStrategy).toEqual(strategy);
+  });
+
+  it('defaults memoryStrategy to undefined when not set', () => {
+    const agent = repo.create(makeInput({ id: 'no-mem', folder: 'no-mem' }));
+    expect(agent.memoryStrategy).toBeUndefined();
+  });
+
+  it('roundtrips all strategy modes', () => {
+    const modes: MemoryStrategy[] = [
+      { mode: 'ephemeral' },
+      { mode: 'conversation-scoped', rotationIdleTimeoutMs: 5000 },
+      { mode: 'persistent', rotationMaxSizeKb: 1024 },
+      { mode: 'long-lived', rotationIdleTimeoutMs: 0, rotationMaxSizeKb: 102400 },
+    ];
+    for (const [i, strategy] of modes.entries()) {
+      const id = `mode-${i}`;
+      const agent = repo.create(makeInput({ id, folder: id, memoryStrategy: strategy }));
+      expect(agent.memoryStrategy).toEqual(strategy);
+    }
+  });
+
+  it('invalidates sessions when memoryStrategy changes', () => {
+    // Create conversations table for session invalidation
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        preview TEXT NOT NULL DEFAULT '',
+        agent_folder TEXT NOT NULL,
+        session_id TEXT,
+        channel TEXT NOT NULL DEFAULT 'web',
+        chat_jid TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      )
+    `);
+    const agent = repo.create(makeInput({ id: 'inv', folder: 'inv' }));
+
+    // Insert a conversation with a session
+    db.prepare(`
+      INSERT INTO conversations (id, title, agent_folder, session_id, channel) VALUES (?, ?, ?, ?, ?)
+    `).run('conv-1', 'Test', 'inv', 'session-abc', 'web');
+
+    // Update memoryStrategy — should invalidate sessions
+    repo.update('inv', { memoryStrategy: { mode: 'ephemeral' } });
+
+    const row = db.prepare('SELECT session_id FROM conversations WHERE id = ?').get('conv-1') as { session_id: string | null };
+    expect(row.session_id).toBeNull();
+  });
+
+  it('deactivates conversations when switching to ephemeral', () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        preview TEXT NOT NULL DEFAULT '',
+        agent_folder TEXT NOT NULL,
+        session_id TEXT,
+        channel TEXT NOT NULL DEFAULT 'web',
+        chat_jid TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      )
+    `);
+    repo.create(makeInput({ id: 'eph', folder: 'eph', memoryStrategy: { mode: 'persistent' } }));
+
+    // Insert active conversations
+    db.prepare(`INSERT INTO conversations (id, title, agent_folder, session_id, channel, is_active) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('conv-a', 'A', 'eph', 'sess-1', 'web', 1);
+    db.prepare(`INSERT INTO conversations (id, title, agent_folder, session_id, channel, is_active) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('conv-b', 'B', 'eph', 'sess-2', 'whatsapp', 1);
+
+    // Switch to ephemeral
+    repo.update('eph', { memoryStrategy: { mode: 'ephemeral' } });
+
+    const rows = db.prepare('SELECT id, is_active, session_id FROM conversations WHERE agent_folder = ?')
+      .all('eph') as { id: string; is_active: number; session_id: string | null }[];
+    for (const row of rows) {
+      expect(row.is_active).toBe(0);
+      expect(row.session_id).toBeNull();
+    }
+  });
+
+  it('updates memoryStrategy via update()', () => {
+    repo.create(makeInput({ id: 'upd-mem', folder: 'upd-mem' }));
+    const updated = repo.update('upd-mem', { memoryStrategy: { mode: 'long-lived', rotationMaxSizeKb: 102400 } });
+    expect(updated.memoryStrategy).toEqual({ mode: 'long-lived', rotationMaxSizeKb: 102400 });
   });
 });

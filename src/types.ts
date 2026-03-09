@@ -29,6 +29,17 @@ export interface AllowedRoot {
 
 import type { ToolPolicy } from './tools/tool-policy.js';
 
+// ── Memory Strategy ─────────────────────────────────────────────
+export type MemoryStrategyMode = 'ephemeral' | 'conversation-scoped' | 'persistent' | 'long-lived';
+
+export interface MemoryStrategy {
+  mode: MemoryStrategyMode;
+  /** Override idle timeout (ms). For persistent/conversation-scoped. */
+  rotationIdleTimeoutMs?: number;
+  /** Override max transcript size (KB). For persistent/conversation-scoped/long-lived. */
+  rotationMaxSizeKb?: number;
+}
+
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
@@ -189,6 +200,7 @@ export interface RegisteredAgent {
   temperature: number | null;
   maxTokens: number | null;
   baseUrl: string | null;
+  memoryStrategy?: MemoryStrategy;
   containerConfig?: ContainerConfig;
   createdAt: string;
   updatedAt: string;

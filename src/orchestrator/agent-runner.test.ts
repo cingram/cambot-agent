@@ -89,11 +89,11 @@ let convCounter = 0;
 const mockResolveActiveConversation = vi.fn(
   (folder: string, _channel: string, _chatJid?: string) => {
     const existing = [...mockConversations.values()].find(c => c.agentFolder === folder);
-    if (existing) return existing;
+    if (existing) return { conversation: existing, isNew: false, isTransient: false };
     const id = `conv-${++convCounter}`;
     const conv = { id, sessionId: null, agentFolder: folder, isActive: true };
     mockConversations.set(id, conv);
-    return conv;
+    return { conversation: conv, isNew: true, isTransient: false };
   },
 );
 const mockSetConversationSession = vi.fn((convId: string, sessionId: string) => {
@@ -157,7 +157,7 @@ describe('AgentRunner conversation management', () => {
 
   it('resolves active conversation for the group folder', async () => {
     await runner.run(webGroup, 'hello', 'web:ui:conv1');
-    expect(mockResolveActiveConversation).toHaveBeenCalledWith('main', 'web', 'web:ui:conv1');
+    expect(mockResolveActiveConversation).toHaveBeenCalledWith('main', 'web', 'web:ui:conv1', undefined);
   });
 
   it('persists session via conversation repository', async () => {
@@ -200,6 +200,6 @@ describe('AgentRunner conversation management', () => {
 
     await runner.run(whatsappGroup, 'hey', '12345@g.us');
 
-    expect(mockResolveActiveConversation).toHaveBeenCalledWith('friends-group', 'whatsapp', '12345@g.us');
+    expect(mockResolveActiveConversation).toHaveBeenCalledWith('friends-group', 'whatsapp', '12345@g.us', undefined);
   });
 });

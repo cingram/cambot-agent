@@ -7,7 +7,7 @@
  */
 import type Database from 'better-sqlite3';
 
-import type { ContainerConfig, RegisteredAgent } from '../types.js';
+import type { ContainerConfig, MemoryStrategy, RegisteredAgent } from '../types.js';
 import type { ToolPolicy } from '../tools/tool-policy.js';
 import { logger } from '../logger.js';
 
@@ -30,6 +30,7 @@ interface AgentRow {
   model: string;
   secret_keys: string;
   container_config: string | null;
+  memory_strategy: string | null;
   tools: string;
   temperature: number | null;
   max_tokens: number | null;
@@ -56,6 +57,7 @@ export interface CreateAgentInput {
   provider?: string;
   model?: string;
   secretKeys?: string[];
+  memoryStrategy?: MemoryStrategy;
   containerConfig?: ContainerConfig;
   tools?: string[];
   temperature?: number | null;
@@ -78,6 +80,7 @@ export interface UpdateAgentInput {
   provider?: string;
   model?: string;
   secretKeys?: string[];
+  memoryStrategy?: MemoryStrategy;
   containerConfig?: ContainerConfig;
   tools?: string[];
   temperature?: number | null;
@@ -158,6 +161,7 @@ function rowToAgent(row: AgentRow): RegisteredAgent {
     provider: row.provider,
     model: row.model,
     secretKeys: JSON.parse(row.secret_keys),
+    memoryStrategy: row.memory_strategy ? JSON.parse(row.memory_strategy) : undefined,
     containerConfig: row.container_config ? JSON.parse(row.container_config) : undefined,
     tools: JSON.parse(row.tools),
     temperature: row.temperature,
@@ -309,6 +313,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       addColumnIfMissing(db, 'model', "TEXT NOT NULL DEFAULT 'claude-sonnet-4-6'");
       addColumnIfMissing(db, 'secret_keys', "TEXT NOT NULL DEFAULT '[]'");
       addColumnIfMissing(db, 'container_config', 'TEXT');
+      addColumnIfMissing(db, 'memory_strategy', 'TEXT');
       addColumnIfMissing(db, 'tools', "TEXT NOT NULL DEFAULT '[]'");
       addColumnIfMissing(db, 'temperature', 'REAL');
       addColumnIfMissing(db, 'max_tokens', 'INTEGER');
@@ -352,9 +357,9 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
           (id, name, description, folder, channels, mcp_servers, capabilities,
            concurrency, timeout_ms, is_main, tool_policy,
            system_prompt, soul, provider, model, secret_keys,
-           container_config, tools, temperature, max_tokens, base_url,
+           memory_strategy, container_config, tools, temperature, max_tokens, base_url,
            created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.id,
         input.name,
@@ -372,6 +377,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         input.provider ?? 'claude',
         input.model ?? 'claude-sonnet-4-6',
         JSON.stringify(input.secretKeys ?? []),
+        input.memoryStrategy ? JSON.stringify(input.memoryStrategy) : null,
         input.containerConfig ? JSON.stringify(input.containerConfig) : null,
         JSON.stringify(input.tools ?? []),
         input.temperature ?? null,
@@ -459,6 +465,11 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         fields.push('secret_keys = ?');
         values.push(JSON.stringify(updates.secretKeys));
       }
+      if (updates.memoryStrategy !== undefined) {
+        fields.push('memory_strategy = ?');
+        values.push(updates.memoryStrategy ? JSON.stringify(updates.memoryStrategy) : null);
+        invalidatesSessions = true;
+      }
       if (updates.containerConfig !== undefined) {
         fields.push('container_config = ?');
         values.push(updates.containerConfig ? JSON.stringify(updates.containerConfig) : null);
@@ -489,15 +500,27 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       db.prepare(`UPDATE registered_agents SET ${fields.join(', ')} WHERE id = ?`).run(...values);
 
       if (invalidatesSessions) {
-        const cleared = db.prepare(`
-          UPDATE conversations SET session_id = NULL
-          WHERE agent_folder = ? AND session_id IS NOT NULL
-        `).run(existing.folder);
-        if (cleared.changes > 0) {
-          logger.info(
-            { agentId: id, sessionsCleared: cleared.changes },
-            'Agent config changed — invalidated active sessions',
-          );
+        try {
+          const cleared = db.prepare(`
+            UPDATE conversations SET session_id = NULL
+            WHERE agent_folder = ? AND session_id IS NOT NULL
+          `).run(existing.folder);
+          if (cleared.changes > 0) {
+            logger.info(
+              { agentId: id, sessionsCleared: cleared.changes },
+              'Agent config changed — invalidated active sessions',
+            );
+          }
+
+          // Switching to ephemeral: deactivate all conversations for this agent
+          if (updates.memoryStrategy?.mode === 'ephemeral') {
+            db.prepare(`
+              UPDATE conversations SET is_active = 0
+              WHERE agent_folder = ? AND is_active = 1
+            `).run(existing.folder);
+          }
+        } catch {
+          // conversations table may not exist yet (e.g. during migration)
         }
       }
 

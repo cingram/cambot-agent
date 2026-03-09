@@ -1,4 +1,5 @@
 type MemoryMode = 'markdown' | 'database' | 'both';
+type MemoryStrategyMode = 'ephemeral' | 'conversation-scoped' | 'persistent' | 'long-lived';
 
 const DATABASE_INSTRUCTIONS = `
 ## Knowledge Database (Read-Only)
@@ -55,7 +56,44 @@ Use \`conversations/\` for conversation history.
 Create topic-specific files for structured data and split large files to stay organized.
 `;
 
-export function getMemoryInstructions(mode: MemoryMode): string | null {
+const EPHEMERAL_INSTRUCTIONS = `
+## Memory
+
+No persistent memory. Each conversation starts fresh. Do not save notes or reference past conversations.
+`;
+
+const CONVERSATION_SCOPED_INSTRUCTIONS = `
+## Memory
+
+Memory is scoped to this conversation. Use \`memory.md\` in your working directory for notes within this conversation. It will be cleared when the conversation ends.
+`;
+
+const LONG_LIVED_INSTRUCTIONS = `
+## Memory
+
+Long-term persistent memory. Your conversations rarely rotate. Reference the \`conversations/\` directory for archived conversation history when you need context from past interactions.
+
+Use \`memory.md\` in your working directory for persistent notes and preferences.
+`;
+
+/**
+ * Get memory system instructions based on mode and optional strategy.
+ * When a strategyMode is provided, it overrides the default behavior.
+ */
+export function getMemoryInstructions(mode: MemoryMode, strategyMode?: MemoryStrategyMode): string | null {
+  // Strategy-specific instructions take precedence
+  if (strategyMode && strategyMode !== 'persistent') {
+    switch (strategyMode) {
+      case 'ephemeral':
+        return EPHEMERAL_INSTRUCTIONS.trim();
+      case 'conversation-scoped':
+        return CONVERSATION_SCOPED_INSTRUCTIONS.trim();
+      case 'long-lived':
+        return LONG_LIVED_INSTRUCTIONS.trim();
+    }
+  }
+
+  // Default: use memoryMode-based instructions (persistent behavior)
   switch (mode) {
     case 'database':
       return DATABASE_INSTRUCTIONS.trim();

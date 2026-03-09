@@ -35,7 +35,7 @@ vi.mock('../container/runner.js', () => ({
 
 // Mock conversation repository
 vi.mock('../db/conversation-repository.js', () => ({
-  resolveActiveConversation: vi.fn(() => ({ id: 'conv-1', sessionId: null })),
+  resolveActiveConversation: vi.fn(() => ({ conversation: { id: 'conv-1', sessionId: null }, isNew: true, isTransient: false })),
   setConversationSession: vi.fn(),
 }));
 

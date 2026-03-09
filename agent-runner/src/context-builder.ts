@@ -26,7 +26,10 @@ export class ContextBuilder {
   build(input: ClaudeContainerInput): ContextResult {
     // Identity is now injected as 00-IDENTITY.md in the context dir,
     // so no separate globalClaudeMdPath read is needed.
-    const memoryInstructions = getMemoryInstructions(input.memoryMode ?? 'both');
+    const memoryInstructions = getMemoryInstructions(
+      input.memoryMode ?? 'both',
+      input.memoryStrategy?.mode,
+    );
 
     const systemPrompt = buildCambotContext({
       memoryInstructions: memoryInstructions ?? undefined,

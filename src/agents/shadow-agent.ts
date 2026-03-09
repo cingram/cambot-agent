@@ -102,7 +102,8 @@ async function spawnShadowContainer(
   agentOpts: AgentOptions,
   socketServer?: CambotSocketServer,
 ): Promise<void> {
-  const conversation = resolveActiveConversation(SHADOW_FOLDER, 'admin', sourceChatJid);
+  const resolution = resolveActiveConversation(SHADOW_FOLDER, 'admin', sourceChatJid);
+  const conversation = resolution.conversation;
   const sessionId = conversation.sessionId ?? undefined;
   const wrappedPrompt = `<admin_context source_chat="${sourceChatJid}" />\n\n${prompt}`;
 

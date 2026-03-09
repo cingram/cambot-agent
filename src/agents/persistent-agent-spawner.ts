@@ -18,6 +18,7 @@ import { OutboundMessage } from '../bus/index.js';
 import { logger } from '../logger.js';
 import { resolveToolList, resolveDisallowedTools, resolveMcpToolList, applySafetyDenials, qualifyMcpToolList } from '../tools/tool-policy.js';
 import { channelFromJid } from '../utils/channel-from-jid.js';
+import { cleanupSdkMemory } from '../utils/memory-cleanup.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 import type { GatewayRouter, AgentRegistryEntry } from './gateway-router.js';
 
@@ -112,8 +113,15 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
 
       // Resolve active conversation — handles auto-rotation (idle timeout + size)
       const channel = channelFromJid(callerGroup);
-      const conversation = resolveActiveConversation(agent.folder, channel, callerGroup);
-      const sessionId = conversation.sessionId ?? undefined;
+      const resolution = resolveActiveConversation(agent.folder, channel, callerGroup, agent.memoryStrategy);
+      const conversation = resolution.conversation;
+
+      // Conversation-scoped: wipe SDK memory on rotation
+      if (agent.memoryStrategy?.mode === 'conversation-scoped' && resolution.rotatedFrom) {
+        cleanupSdkMemory(agent.folder);
+      }
+
+      const sessionId = resolution.isTransient ? undefined : (conversation.sessionId ?? undefined);
       const isCustomProvider = agent.provider !== 'claude';
 
       // Resolve container image: custom providers use resolveAgentImage, Claude uses default
@@ -157,6 +165,8 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             isMain: agent.isMain,
             isInterAgentTarget: isInterAgent,
             model: isCustomProvider ? undefined : agent.model,
+            memoryStrategy: agent.memoryStrategy,
+            conversationId: resolution.isTransient ? undefined : conversation.id,
             mcpServers: scopedServers,
             customAgent,
             allowedSdkTools: isCustomProvider ? undefined : resolveToolList(agent.toolPolicy),
@@ -177,7 +187,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             );
           },
           async (result) => {
-            if (result.newSessionId) {
+            if (!resolution.isTransient && result.newSessionId) {
               setConversationSession(conversation.id, result.newSessionId);
             }
             if (result.telemetry && deps.onTelemetry) {
@@ -186,7 +196,9 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             if (result.result) {
               finalResult = result.result;
               // Update conversation preview with first 200 chars of response
-              updatePreview(conversation.id, result.result);
+              if (!resolution.isTransient) {
+                updatePreview(conversation.id, result.result);
+              }
               // Suppress OutboundMessage for inter-agent calls — the result
               // goes back via the IPC result file, not through a channel.
               if (!isInterAgent) {
@@ -220,7 +232,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
           deps.getSocketServer?.(),
         );
 
-        if (output.newSessionId) {
+        if (output.newSessionId && !resolution.isTransient) {
           setConversationSession(conversation.id, output.newSessionId);
         }
 

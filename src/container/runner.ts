@@ -18,6 +18,8 @@ import {
   TIMEZONE,
 } from '../config/config.js';
 import type { MemoryMode } from '../config/config.js';
+import type { MemoryStrategy } from '../types.js';
+import { cleanupSdkMemory } from '../utils/memory-cleanup.js';
 import { readEnvFile } from '../config/env.js';
 import { resolveGroupFolderPath } from '../groups/group-folder.js';
 import { logger } from '../logger.js';
@@ -43,6 +45,10 @@ export interface ContainerInput {
   mcpServers?: Array<{ name: string; transport: 'http' | 'sse'; url: string }>;
   /** Which memory system the agent should use */
   memoryMode?: MemoryMode;
+  /** Per-agent memory strategy (overrides global memoryMode when set) */
+  memoryStrategy?: MemoryStrategy;
+  /** Active conversation ID (omitted for ephemeral) */
+  conversationId?: string;
   customAgent?: {
     agentId: string;
     provider: 'openai' | 'xai' | 'anthropic' | 'google';
@@ -436,9 +442,15 @@ export async function runContainerAgent(
 
     onProcess(container, containerName);
 
+    // Ephemeral strategy: wipe SDK memory before every spawn
+    if (input.memoryStrategy?.mode === 'ephemeral') {
+      cleanupSdkMemory(execution.folder);
+    }
+
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets(agentOptions.secretKeys);
-    input.memoryMode = MEMORY_MODE;
+    // Derive memoryMode from strategy when set; ephemeral forces markdown-only
+    input.memoryMode = input.memoryStrategy?.mode === 'ephemeral' ? 'markdown' : MEMORY_MODE;
     input.guardrailEnabled = EMAIL_GUARDRAIL_ENABLED;
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
