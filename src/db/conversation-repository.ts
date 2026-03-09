@@ -216,23 +216,39 @@ export function deleteConversation(id: string): void {
   })();
 }
 
-/** Delete all conversations (and associated messages/chats) for a given agent folder. */
-export function deleteConversationsByFolder(agentFolder: string): void {
+/**
+ * Bulk-delete conversations and their associated messages/chats.
+ * Uses SQL subqueries to avoid N+1 per-row deletes.
+ * @param whereClause  SQL fragment appended after `FROM conversations` (e.g. `WHERE agent_folder = ?`), or empty for all.
+ * @param params       Bind parameters for the WHERE clause.
+ */
+function bulkDeleteConversations(whereClause: string, params: unknown[]): number {
   const db = getDatabase();
-  const convos = db.prepare(
-    'SELECT id, chat_jid FROM conversations WHERE agent_folder = ?',
-  ).all(agentFolder) as Array<{ id: string; chat_jid: string | null }>;
+  const count = (db.prepare(`SELECT COUNT(*) as n FROM conversations ${whereClause}`).get(...params) as { n: number }).n;
+  if (count === 0) return 0;
 
-  if (convos.length === 0) return;
+  // Subquery that resolves each conversation's JID (chat_jid or fallback web:ui:<id>)
+  const jidSubquery = `
+    SELECT COALESCE(chat_jid, 'web:ui:' || id) AS jid
+    FROM conversations ${whereClause}
+  `;
 
   db.transaction(() => {
-    for (const c of convos) {
-      const jid = c.chat_jid ?? `web:ui:${c.id}`;
-      db.prepare('DELETE FROM messages WHERE chat_jid = ?').run(jid);
-      db.prepare('DELETE FROM chats WHERE jid = ?').run(jid);
-    }
-    db.prepare('DELETE FROM conversations WHERE agent_folder = ?').run(agentFolder);
+    db.prepare(`DELETE FROM messages WHERE chat_jid IN (${jidSubquery})`).run(...params);
+    db.prepare(`DELETE FROM chats WHERE jid IN (${jidSubquery})`).run(...params);
+    db.prepare(`DELETE FROM conversations ${whereClause}`).run(...params);
   })();
+  return count;
+}
+
+/** Delete all conversations (and associated messages/chats) for a given agent folder. */
+export function deleteConversationsByFolder(agentFolder: string): number {
+  return bulkDeleteConversations('WHERE agent_folder = ?', [agentFolder]);
+}
+
+/** Delete ALL conversations (and associated messages/chats) across all agents. */
+export function deleteAllConversations(): number {
+  return bulkDeleteConversations('', []);
 }
 
 /**
