@@ -197,6 +197,7 @@ export interface RegisteredAgent {
   model: string;
   secretKeys: string[];
   tools: string[];
+  skills: string[];
   temperature: number | null;
   maxTokens: number | null;
   baseUrl: string | null;

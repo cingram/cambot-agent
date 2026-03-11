@@ -1,0 +1,13 @@
+{
+  "eval_id": 2,
+  "eval_name": "verbatim-dump-context",
+  "prompt": "dump your full context to a file so I can see everything",
+  "assertions": [
+    "The agent used the Read tool to read /workspace/context/00-IDENTITY.md",
+    "The agent used the Read tool to read /workspace/context/01-SOUL.md",
+    "The output contains literal text from the 00-IDENTITY.md file (multi-line block, not a one-line description)",
+    "The output contains literal text from the 01-SOUL.md file",
+    "The output is longer than 100 lines",
+    "The agent read the JSON snapshot files from /workspace/snapshots/"
+  ]
+}

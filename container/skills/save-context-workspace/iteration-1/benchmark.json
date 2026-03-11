@@ -1,0 +1,208 @@
+{
+  "skill_name": "save-context",
+  "iteration": 1,
+  "results": [
+    {
+      "eval_id": 1,
+      "eval_name": "verbatim-save-context",
+      "config": "with_skill",
+      "line_count": 503,
+      "char_count": 21626,
+      "expectations": [
+        {
+          "text": "The output contains the literal string '# Andy' from the identity file",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains the literal string '# Soul' from the soul file",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains verbatim JSON from the snapshots directory",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output is longer than 100 lines (not a short summary)",
+          "passed": true,
+          "evidence": "Line count: 503"
+        },
+        {
+          "text": "The output does NOT contain summarizing language like 'The agent is configured to' or 'Here is a summary'",
+          "passed": true,
+          "evidence": "Found in output"
+        }
+      ],
+      "pass_rate": 1.0
+    },
+    {
+      "eval_id": 1,
+      "eval_name": "verbatim-save-context",
+      "config": "without_skill",
+      "line_count": 290,
+      "char_count": 10800,
+      "expectations": [
+        {
+          "text": "The output contains the literal string '# Andy' from the identity file",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains the literal string '# Soul' from the soul file",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains verbatim JSON from the snapshots directory",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output is longer than 100 lines (not a short summary)",
+          "passed": true,
+          "evidence": "Line count: 290"
+        },
+        {
+          "text": "The output does NOT contain summarizing language like 'The agent is configured to' or 'Here is a summary'",
+          "passed": true,
+          "evidence": "Found in output"
+        }
+      ],
+      "pass_rate": 1.0
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "verbatim-dump-context",
+      "config": "with_skill",
+      "line_count": 505,
+      "char_count": 21629,
+      "expectations": [
+        {
+          "text": "The output contains literal text from the 00-IDENTITY.md file (multi-line block, not a one-line description)",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains literal text from the 01-SOUL.md file",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output is longer than 100 lines",
+          "passed": true,
+          "evidence": "Line count: 505"
+        },
+        {
+          "text": "The output contains verbatim JSON from snapshots",
+          "passed": true,
+          "evidence": "Found in output"
+        }
+      ],
+      "pass_rate": 1.0
+    },
+    {
+      "eval_id": 2,
+      "eval_name": "verbatim-dump-context",
+      "config": "without_skill",
+      "line_count": 342,
+      "char_count": 12329,
+      "expectations": [
+        {
+          "text": "The output contains literal text from the 00-IDENTITY.md file (multi-line block, not a one-line description)",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains literal text from the 01-SOUL.md file",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output is longer than 100 lines",
+          "passed": true,
+          "evidence": "Line count: 342"
+        },
+        {
+          "text": "The output contains verbatim JSON from snapshots",
+          "passed": true,
+          "evidence": "Found in output"
+        }
+      ],
+      "pass_rate": 1.0
+    },
+    {
+      "eval_id": 3,
+      "eval_name": "verbatim-export-context",
+      "config": "with_skill",
+      "line_count": 503,
+      "char_count": 21627,
+      "expectations": [
+        {
+          "text": "The output contains exact section headers from context files (like '## Tools & Skills' or '## Agent Registry')",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains multi-line verbatim blocks, not single-sentence descriptions",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output is longer than 100 lines",
+          "passed": true,
+          "evidence": "Line count: 503"
+        },
+        {
+          "text": "The output does NOT rewrite or reorganize the source content into a new structure",
+          "passed": true,
+          "evidence": "Found in output"
+        }
+      ],
+      "pass_rate": 1.0
+    },
+    {
+      "eval_id": 3,
+      "eval_name": "verbatim-export-context",
+      "config": "without_skill",
+      "line_count": 594,
+      "char_count": 24687,
+      "expectations": [
+        {
+          "text": "The output contains exact section headers from context files (like '## Tools & Skills' or '## Agent Registry')",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output contains multi-line verbatim blocks, not single-sentence descriptions",
+          "passed": true,
+          "evidence": "Found in output"
+        },
+        {
+          "text": "The output is longer than 100 lines",
+          "passed": true,
+          "evidence": "Line count: 594"
+        },
+        {
+          "text": "The output does NOT rewrite or reorganize the source content into a new structure",
+          "passed": true,
+          "evidence": "Found in output"
+        }
+      ],
+      "pass_rate": 1.0
+    }
+  ],
+  "summary": {
+    "with_skill": {
+      "avg_pass_rate": 1.0,
+      "avg_line_count": 503.6666666666667,
+      "total_evals": 3
+    },
+    "without_skill": {
+      "avg_pass_rate": 1.0,
+      "avg_line_count": 408.6666666666667,
+      "total_evals": 3
+    }
+  }
+}

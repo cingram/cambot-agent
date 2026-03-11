@@ -76,7 +76,7 @@ import { createAgentRepository, type AgentRepository } from '../db/agent-reposit
 import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
 import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
 import { createGatewayRouterFromEnv } from '../agents/gateway-router.js';
-import { buildAgentContext } from '../utils/context-files.js';
+import { assembleContextString } from '../utils/context-files.js';
 import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
 import { provisionAgent } from '../agents/agent-factory.js';
 import { createWorkflowTriggerHandler } from '../workflows/workflow-trigger-handler.js';
@@ -519,8 +519,8 @@ export class CamBotApp {
       getAgentOptions: () => resolveAgentImage(getLeadAgentId()),
       messageBus: this.bus,
       getTemplateValue: (key) => templateRepo.get(key),
-      buildAgentContext: (folder, isMain, chatJid, identityOverride, soulOverride) =>
-        buildAgentContext({
+      assembleContext: (folder, isMain, chatJid, identityOverride, soulOverride, skillsWhitelist) =>
+        assembleContextString({
           mcpServers: this.integrationMgr?.getActiveMcpServers() ?? [],
           agentIdentity: identityOverride,
           agentSoul: soulOverride,
@@ -538,6 +538,7 @@ export class CamBotApp {
             : [],
           chatJid,
           getChats: () => getAllChats(),
+          skillsWhitelist,
         }),
       resolveAgentImage: (provider, secretKeys) => resolveAgentImage(provider, secretKeys),
       onTelemetry: (telemetry, channel) => {

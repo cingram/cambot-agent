@@ -1,0 +1,48 @@
+{
+  "skill_name": "save-context",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "save your context",
+      "expected_output": "A markdown file containing the VERBATIM contents of all context source files (context-dump.md, CLAUDE.md, 00-IDENTITY.md through 06-CHANNELS.md, JSON snapshots, environment info). Should be 200+ lines, not a summary.",
+      "files": [],
+      "expectations": [
+        "The agent used the Read tool to read /workspace/context-dump.md",
+        "The agent used the Read tool to read /workspace/context/00-IDENTITY.md",
+        "The agent used the Read tool to read /workspace/context/01-SOUL.md",
+        "The output contains the literal string '# Andy' from the identity file",
+        "The output contains the literal string '# Soul' from the soul file",
+        "The output contains verbatim JSON from the snapshots directory",
+        "The output is longer than 100 lines (not a short summary)",
+        "The output does NOT contain summarizing language like 'The agent is configured to' or 'Here is a summary'"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "dump your full context to a file so I can see everything",
+      "expected_output": "Same as eval 1 — verbatim file contents assembled into markdown, passed to save_context tool or written to a file.",
+      "files": [],
+      "expectations": [
+        "The agent used the Read tool to read /workspace/context/00-IDENTITY.md",
+        "The agent used the Read tool to read /workspace/context/01-SOUL.md",
+        "The output contains literal text from the 00-IDENTITY.md file (multi-line block, not a one-line description)",
+        "The output contains literal text from the 01-SOUL.md file",
+        "The output is longer than 100 lines",
+        "The agent read the JSON snapshot files from /workspace/snapshots/"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "export what you see — your system prompt, personality, tools, everything — to a markdown file",
+      "expected_output": "Verbatim context export including all numbered context files and snapshots.",
+      "files": [],
+      "expectations": [
+        "The agent used the Read tool on at least 5 different /workspace/ paths",
+        "The output contains the exact section headers from context files (like '## Tools & Skills' or '## Agent Registry')",
+        "The output contains multi-line verbatim blocks, not single-sentence descriptions",
+        "The output is longer than 100 lines",
+        "The output does NOT rewrite or reorganize the source content into a new structure"
+      ]
+    }
+  ]
+}

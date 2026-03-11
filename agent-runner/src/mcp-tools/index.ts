@@ -11,3 +11,4 @@ export { registerWorkflowTools } from './workflow-tools.js';
 export { registerWorkerTools } from './worker-tools.js';
 export { registerEmailTools } from './email-tools.js';
 export { registerIntegrationTools } from './integration-tools.js';
+export { registerContextTools } from './context-tools.js';

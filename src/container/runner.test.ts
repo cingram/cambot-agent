@@ -9,6 +9,7 @@ vi.mock('../config/config.js', () => ({
   DATA_DIR: '/tmp/cambot-agent-test-data',
   GROUPS_DIR: '/tmp/cambot-agent-test-groups',
   STORE_DIR: '/tmp/cambot-agent-test-store',
+  SKILLS_DIR: '/tmp/cambot-agent-test-skills',
   IDLE_TIMEOUT: 1800000, // 30min
   TIMEZONE: 'America/Los_Angeles',
   MEMORY_MODE: 'both',
@@ -72,10 +73,7 @@ vi.mock('../config/env.js', () => ({
   readEnvFile: vi.fn(() => ({})),
 }));
 
-// Mock context-files
-vi.mock('../utils/context-files.js', () => ({
-  writeContextFiles: vi.fn(),
-}));
+// runner.ts no longer imports context-files — no mock needed
 
 // Create a controllable fake ChildProcess
 function createFakeProcess() {

@@ -31,6 +31,7 @@ function makeAgent(overrides: Partial<RegisteredAgent> = {}): RegisteredAgent {
     model: 'claude-sonnet-4-6',
     secretKeys: [],
     tools: [],
+    skills: [],
     temperature: null,
     maxTokens: null,
     baseUrl: null,

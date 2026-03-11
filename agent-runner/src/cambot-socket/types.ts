@@ -222,6 +222,8 @@ export const FRAME_TYPES = {
   EMAIL_RESULT: 'email.result',
   // Bus
   BUS_MESSAGE: 'bus.message',
+  // Context
+  CONTEXT_SAVE: 'context.save',
   // Error
   ERROR: 'error',
 } as const;

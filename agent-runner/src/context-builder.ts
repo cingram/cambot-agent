@@ -1,16 +1,17 @@
 /**
- * Assembles the system prompt from all context sources:
- * - Global CLAUDE.md (for non-main groups)
+ * Assembles the system prompt from:
+ * - Pre-assembled context string from host (identity, soul, tools, agents, etc.)
  * - Memory instructions (based on memoryMode)
- * - Dynamic context files in /workspace/context/
  * - Extra directories mounted at /workspace/extra/*
+ *
+ * The host builds the raw context; the container wraps it in <cambot-context>
+ * and adds memory instructions.
  */
 import fs from 'fs';
 import path from 'path';
 import type { ContainerPaths, ClaudeContainerInput } from './types.js';
 import type { Logger } from './logger.js';
 import { getMemoryInstructions } from './memory-instructions.js';
-import { buildCambotContext } from './context-assembler.js';
 
 export interface ContextResult {
   systemPrompt: string | undefined;
@@ -24,19 +25,17 @@ export class ContextBuilder {
   ) {}
 
   build(input: ClaudeContainerInput): ContextResult {
-    // Identity is now injected as 00-IDENTITY.md in the context dir,
-    // so no separate globalClaudeMdPath read is needed.
     const memoryInstructions = getMemoryInstructions(
       input.memoryMode ?? 'both',
       input.memoryStrategy?.mode,
     );
 
-    const systemPrompt = buildCambotContext({
-      memoryInstructions: memoryInstructions ?? undefined,
-      contextDir: this.paths.contextDir,
-    });
+    const systemPrompt = this.assembleFinalPrompt(
+      input.assembledContext,
+      memoryInstructions ?? undefined,
+    );
 
-    // Write context dump for debugging (host reads from IPC dir)
+    // Write context dump for debugging and save-context skill
     if (systemPrompt) {
       try {
         fs.writeFileSync(this.paths.contextDumpFile, systemPrompt);
@@ -51,6 +50,26 @@ export class ContextBuilder {
     }
 
     return { systemPrompt, additionalDirectories };
+  }
+
+  private assembleFinalPrompt(
+    assembledContext: string | undefined,
+    memoryInstructions: string | undefined,
+  ): string | undefined {
+    if (!assembledContext && !memoryInstructions) return undefined;
+
+    const sections: string[] = ['<cambot-context>', '# CamBot System Context\n'];
+
+    if (memoryInstructions) {
+      sections.push('\n## Memory\n', memoryInstructions);
+    }
+
+    if (assembledContext) {
+      sections.push('\n' + assembledContext);
+    }
+
+    sections.push('\n</cambot-context>');
+    return sections.join('\n');
   }
 
   private discoverExtraDirectories(): string[] {

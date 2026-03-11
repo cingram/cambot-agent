@@ -1,18 +1,15 @@
 /**
- * Dynamic Context File Generator
+ * Dynamic Context Generator
  *
- * Generates numbered .md files into data/sessions/{group}/context/ before each
- * container spawn. These files are read by the agent-runner's context-assembler
- * and injected into the system prompt alongside CLAUDE.md.
- *
- * Files are numbered to control injection order:
- *   01-SOUL.md, 02-USER.md, 03-TOOLS.md, 04-AGENTS.md, 05-HEARTBEAT.md, 06-CHANNELS.md
+ * Assembles agent context (identity, soul, tools, agents, heartbeat, channels)
+ * into a single string on the host. The string is passed to the container via
+ * stdin as `assembledContext`, where the container wraps it in <cambot-context>
+ * and adds memory instructions.
  */
 import fs from 'fs';
 import path from 'path';
 
 import { SKILLS_DIR } from '../config/config.js';
-import { logger } from '../logger.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -55,7 +52,7 @@ interface ChatInfo {
   is_group: number;
 }
 
-export interface ContextFileDeps {
+interface ContextFileDeps {
   mcpServers: McpServerInfo[];
   agents: AgentSummaryRow[];
   tasks: ScheduledTaskRow[];
@@ -64,6 +61,9 @@ export interface ContextFileDeps {
   agentSoul?: string;
   chatJid?: string;
   getChats?: () => ChatInfo[];
+  /** When set, only list these skill directory names in 03-TOOLS.md.
+   *  undefined = all skills (backwards-compatible default). */
+  skillsWhitelist?: string[];
 }
 
 // ── Generators ───────────────────────────────────────────────────────
@@ -84,6 +84,7 @@ function generateToolsMd(deps: ContextFileDeps): string {
   lines.push('| list_workflows / workflow_status | Query workflows |');
   lines.push('| run_workflow / pause_workflow / cancel_workflow | Workflow lifecycle |');
   lines.push('| delegate_to_worker | Delegate sub-task to a worker agent |');
+  lines.push('| save_context | Save full context snapshot to host filesystem |');
   lines.push('');
 
   // Workflow builder MCP tools
@@ -108,8 +109,11 @@ function generateToolsMd(deps: ContextFileDeps): string {
     }
   }
 
-  // Skills
-  const skills = scanSkills(SKILLS_DIR);
+  // Skills — filter to agent's whitelist when set
+  const allSkills = scanSkills(SKILLS_DIR);
+  const skills = deps.skillsWhitelist
+    ? allSkills.filter(s => deps.skillsWhitelist!.includes(s.id))
+    : allSkills;
   if (skills.length > 0) {
     lines.push('### Skills');
     lines.push('| Skill | Description |');
@@ -195,22 +199,27 @@ function generateHeartbeatMd(tasks: ScheduledTaskRow[], workflows: WorkflowSumma
 
 // ── Skill scanner ────────────────────────────────────────────────────
 
-interface SkillInfo {
+export interface SkillInfo {
+  /** Directory name — used as the skill identifier */
+  id: string;
   name: string;
   description: string;
 }
 
-function scanSkills(skillsDir: string): SkillInfo[] {
+export function scanSkills(skillsDir: string): SkillInfo[] {
   const skills: SkillInfo[] = [];
 
-  if (!fs.existsSync(skillsDir)) return skills;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(skillsDir);
+  } catch {
+    return skills;
+  }
 
-  for (const dir of fs.readdirSync(skillsDir)) {
+  for (const dir of entries) {
     const skillMd = path.join(skillsDir, dir, 'SKILL.md');
-    if (!fs.existsSync(skillMd)) continue;
-
     try {
-      const content = fs.readFileSync(skillMd, 'utf-8');
+      const content = fs.readFileSync(skillMd, 'utf-8').replace(/\r\n/g, '\n');
       // Parse YAML frontmatter
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
       if (!fmMatch) continue;
@@ -221,12 +230,13 @@ function scanSkills(skillsDir: string): SkillInfo[] {
 
       if (nameMatch) {
         skills.push({
+          id: dir,
           name: nameMatch[1].trim(),
           description: descMatch?.[1]?.trim() || '',
         });
       }
     } catch {
-      // Skip malformed skill files
+      // Skip missing or malformed skill files
     }
   }
 
@@ -263,81 +273,24 @@ function generateChannelsMd(deps: ContextFileDeps): string {
   return lines.join('\n');
 }
 
-// ── Context builder ──────────────────────────────────────────────────
-
-export interface AgentContextSources {
-  agentIdentity?: string;
-  agentSoul?: string;
-  mcpServers: McpServerInfo[];
-  agents: AgentSummaryRow[];
-  tasks: ScheduledTaskRow[];
-  workflows: WorkflowSummary[];
-  chatJid: string;
-  getChats: () => ChatInfo[];
-}
-
-/** Build a ContextFileDeps from shared data sources.
- *  Used by both the default pipeline (AgentRunner) and persistent agent spawner. */
-export function buildAgentContext(sources: AgentContextSources): ContextFileDeps {
-  return {
-    mcpServers: sources.mcpServers,
-    agentIdentity: sources.agentIdentity,
-    agentSoul: sources.agentSoul,
-    agents: sources.agents,
-    tasks: sources.tasks,
-    workflows: sources.workflows,
-    chatJid: sources.chatJid,
-    getChats: sources.getChats,
-  };
-}
-
 // ── Public API ───────────────────────────────────────────────────────
 
-export function writeContextFiles(
-  contextDir: string,
-  isMain: boolean,
-  deps: ContextFileDeps,
-): void {
-  fs.mkdirSync(contextDir, { recursive: true });
+/**
+ * Assemble all context sections into a single string.
+ * This replaces the old writeContextFiles() + container-side assembly pipeline.
+ * The host builds the string; the container wraps it in <cambot-context> and
+ * adds memory instructions.
+ */
+export function assembleContextString(deps: ContextFileDeps): string {
+  const sections: string[] = [];
 
-  try {
-    // 00-IDENTITY.md — agent's system prompt (from DB or global template)
-    fs.writeFileSync(
-      path.join(contextDir, '00-IDENTITY.md'),
-      deps.agentIdentity ?? '',
-    );
+  if (deps.agentIdentity) sections.push(deps.agentIdentity);
+  if (deps.agentSoul) sections.push(deps.agentSoul);
+  // 02-USER is intentionally omitted — agent queries the DB on demand
+  sections.push(generateToolsMd(deps));
+  sections.push(generateAgentsMd(deps.agents));
+  sections.push(generateHeartbeatMd(deps.tasks, deps.workflows));
+  if (deps.chatJid) sections.push(generateChannelsMd(deps));
 
-    // 01-SOUL.md — agent's personality (from DB or global template)
-    fs.writeFileSync(
-      path.join(contextDir, '01-SOUL.md'),
-      deps.agentSoul ?? '',
-    );
-
-    // 02-USER.md is intentionally empty — agent queries the DB on demand
-    fs.writeFileSync(path.join(contextDir, '02-USER.md'), '');
-
-    fs.writeFileSync(
-      path.join(contextDir, '03-TOOLS.md'),
-      generateToolsMd(deps),
-    );
-
-    fs.writeFileSync(
-      path.join(contextDir, '04-AGENTS.md'),
-      generateAgentsMd(deps.agents),
-    );
-
-    fs.writeFileSync(
-      path.join(contextDir, '05-HEARTBEAT.md'),
-      generateHeartbeatMd(deps.tasks, deps.workflows),
-    );
-
-    if (deps.chatJid) {
-      fs.writeFileSync(
-        path.join(contextDir, '06-CHANNELS.md'),
-        generateChannelsMd(deps),
-      );
-    }
-  } catch (err) {
-    logger.warn({ err, contextDir }, 'Failed to write context files');
-  }
+  return sections.filter(s => s.trim()).join('\n\n');
 }

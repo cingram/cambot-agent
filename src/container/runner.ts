@@ -15,6 +15,7 @@ import {
   EMAIL_GUARDRAIL_ENABLED,
   IDLE_TIMEOUT,
   MEMORY_MODE,
+  SKILLS_DIR,
   TIMEZONE,
 } from '../config/config.js';
 import type { MemoryMode } from '../config/config.js';
@@ -27,7 +28,6 @@ import { CONTAINER_RUNTIME_BIN, killContainersForGroup, readonlyMountArgs, stopC
 import { validateAdditionalMounts } from './mount-security.js';
 import { ExecutionContext } from '../types.js';
 import { AgentOptions } from '../agents/agents.js';
-import { writeContextFiles, type ContextFileDeps } from '../utils/context-files.js';
 import type { CambotSocketServer } from '../cambot-socket/server.js';
 import { registerOutputCallback, removeOutputCallback } from '../cambot-socket/handlers/output.js';
 
@@ -74,15 +74,17 @@ export interface ContainerInput {
   mcpSocketToken?: string;
   /** Group identifier for the MCP stdio subprocess's TCP connection */
   mcpSocketGroup?: string;
+  /** Skill directories to mount (by name). Empty array = no skills. Undefined = all skills. */
+  skills?: string[];
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy) */
   allowedSdkTools?: string[];
   /** SDK tools hard-blocked via the SDK's disallowedTools parameter */
   disallowedSdkTools?: string[];
   /** MCP tools this agent is allowed to use (resolved from ToolPolicy on host) */
   allowedMcpTools?: string[];
-  /** Dynamic context files (identity, soul, tools, etc.) written before spawn.
-   *  When provided, runContainerAgent writes context files automatically. */
-  agentContext?: ContextFileDeps;
+  /** Pre-assembled context string (identity + soul + tools + agents + heartbeat + channels).
+   *  Passed to container via stdin; container wraps in <cambot-context> and adds memory. */
+  assembledContext?: string;
 }
 
 export interface ContainerTelemetry {
@@ -116,7 +118,7 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
+function buildVolumeMounts(execution: ExecutionContext, skills?: string[]): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(execution.folder);
@@ -191,12 +193,16 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  // Clear first to remove stale skills from previous runs, then copy allowed ones.
   const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
+  if (fs.existsSync(skillsDst)) {
+    fs.rmSync(skillsDst, { recursive: true });
+  }
+  if (fs.existsSync(SKILLS_DIR)) {
+    for (const skillDir of fs.readdirSync(SKILLS_DIR)) {
+      const srcDir = path.join(SKILLS_DIR, skillDir);
       if (!fs.statSync(srcDir).isDirectory()) continue;
+      if (skills && !skills.includes(skillDir)) continue;
       const dstDir = path.join(skillsDst, skillDir);
       fs.cpSync(srcDir, dstDir, { recursive: true });
     }
@@ -205,15 +211,6 @@ function buildVolumeMounts(execution: ExecutionContext): VolumeMount[] {
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
     readonly: false,
-  });
-
-  // Context directory — context files written before spawn
-  const contextDir = path.join(DATA_DIR, 'sessions', execution.folder, 'context');
-  fs.mkdirSync(contextDir, { recursive: true });
-  mounts.push({
-    hostPath: contextDir,
-    containerPath: '/workspace/context',
-    readonly: true,
   });
 
   // Snapshots directory — tasks, agents, workflows, groups, workers, raw_content
@@ -330,7 +327,7 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(execution.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(execution);
+  const mounts = buildVolumeMounts(execution, input.skills);
   const safeName = execution.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `cambot-agent-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName, agentOptions.containerImage);
@@ -347,13 +344,6 @@ export async function runContainerAgent(
     const authorizedJids = input.chatJid ? new Set([input.chatJid]) : undefined;
     socketServer.registerToken(execution.folder, socketToken, authorizedJids);
     socketServer.registerToken(mcpGroup, mcpSocketToken);
-  }
-
-  // Write dynamic context files (identity, soul, tools, channels, etc.)
-  if (input.agentContext) {
-    const contextDir = path.join(DATA_DIR, 'sessions', execution.folder, 'context');
-    fs.mkdirSync(contextDir, { recursive: true });
-    writeContextFiles(contextDir, execution.isMain, input.agentContext);
   }
 
   input.socketToken = socketToken;
@@ -459,7 +449,7 @@ export async function runContainerAgent(
     delete input.socketToken;
     delete input.mcpSocketToken;
     delete input.mcpSocketGroup;
-    delete input.agentContext;
+    delete input.assembledContext;
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();

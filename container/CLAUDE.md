@@ -6,7 +6,7 @@ You are running inside a sandboxed container. Follow these rules.
 
 - Working directory: `/workspace/group/` (persistent, per-group)
 - Snapshots directory: `/workspace/snapshots/` (discovery files, read-only)
-- Context directory: `/workspace/context/` (dynamic context files, read-only)
+- Context dump: `/workspace/context-dump.md` (full assembled system context, read-only)
 - Extra mounts: `/workspace/extra/` (additional host directories, if configured)
 - Home: `/home/node/`
 

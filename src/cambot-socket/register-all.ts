@@ -17,6 +17,7 @@ import { registerWorkflowBuilder } from './handlers/workflow-builder.js';
 import { registerIntegrationAdmin } from './handlers/integration-admin.js';
 import { registerEmailHandlers } from './handlers/email.js';
 import { registerBusMessage } from './handlers/bus-message.js';
+import { registerContextSave } from './handlers/context-save.js';
 import { registerOutputHandler } from './handlers/output.js';
 import { registerWorkflowQuery } from './handlers/workflow-query.js';
 
@@ -37,5 +38,6 @@ export function registerAllHandlers(registry: CommandRegistry): void {
   registerIntegrationAdmin(registry);
   registerEmailHandlers(registry);
   registerBusMessage(registry);
+  registerContextSave(registry);
   registerOutputHandler(registry);
 }
