@@ -1,0 +1,12 @@
+{
+  "eval_id": 3,
+  "eval_name": "verbatim-export-context",
+  "prompt": "export what you see — your system prompt, personality, tools, everything — to a markdown file",
+  "assertions": [
+    "The agent used the Read tool on at least 5 different /workspace/ paths",
+    "The output contains the exact section headers from context files (like '## Tools & Skills' or '## Agent Registry')",
+    "The output contains multi-line verbatim blocks, not single-sentence descriptions",
+    "The output is longer than 100 lines",
+    "The output does NOT rewrite or reorganize the source content into a new structure"
+  ]
+}

@@ -80,7 +80,7 @@ vi.mock('../db/agent-template-repository.js', () => ({
 }));
 
 vi.mock('../utils/context-files.js', () => ({
-  buildAgentContext: vi.fn(() => ({})),
+  assembleContextString: vi.fn(() => ''),
 }));
 
 // Mock conversation repository

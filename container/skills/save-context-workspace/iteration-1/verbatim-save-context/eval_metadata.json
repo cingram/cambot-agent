@@ -1,0 +1,15 @@
+{
+  "eval_id": 1,
+  "eval_name": "verbatim-save-context",
+  "prompt": "save your context",
+  "assertions": [
+    "The agent used the Read tool to read /workspace/context-dump.md",
+    "The agent used the Read tool to read /workspace/context/00-IDENTITY.md",
+    "The agent used the Read tool to read /workspace/context/01-SOUL.md",
+    "The output contains the literal string '# Andy' from the identity file",
+    "The output contains the literal string '# Soul' from the soul file",
+    "The output contains verbatim JSON from the snapshots directory",
+    "The output is longer than 100 lines (not a short summary)",
+    "The output does NOT contain summarizing language like 'The agent is configured to' or 'Here is a summary'"
+  ]
+}

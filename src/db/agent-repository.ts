@@ -32,6 +32,7 @@ interface AgentRow {
   container_config: string | null;
   memory_strategy: string | null;
   tools: string;
+  skills: string;
   temperature: number | null;
   max_tokens: number | null;
   base_url: string | null;
@@ -60,6 +61,7 @@ export interface CreateAgentInput {
   memoryStrategy?: MemoryStrategy;
   containerConfig?: ContainerConfig;
   tools?: string[];
+  skills?: string[];
   temperature?: number | null;
   maxTokens?: number | null;
   baseUrl?: string | null;
@@ -83,6 +85,7 @@ export interface UpdateAgentInput {
   memoryStrategy?: MemoryStrategy;
   containerConfig?: ContainerConfig;
   tools?: string[];
+  skills?: string[];
   temperature?: number | null;
   maxTokens?: number | null;
   baseUrl?: string | null;
@@ -164,6 +167,7 @@ function rowToAgent(row: AgentRow): RegisteredAgent {
     memoryStrategy: row.memory_strategy ? JSON.parse(row.memory_strategy) : undefined,
     containerConfig: row.container_config ? JSON.parse(row.container_config) : undefined,
     tools: JSON.parse(row.tools),
+    skills: JSON.parse(row.skills),
     temperature: row.temperature,
     maxTokens: row.max_tokens,
     baseUrl: row.base_url,
@@ -297,6 +301,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
           secret_keys   TEXT NOT NULL DEFAULT '[]',
           container_config TEXT,
           tools         TEXT NOT NULL DEFAULT '[]',
+          skills        TEXT NOT NULL DEFAULT '[]',
           temperature   REAL,
           max_tokens    INTEGER,
           base_url      TEXT,
@@ -315,6 +320,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       addColumnIfMissing(db, 'container_config', 'TEXT');
       addColumnIfMissing(db, 'memory_strategy', 'TEXT');
       addColumnIfMissing(db, 'tools', "TEXT NOT NULL DEFAULT '[]'");
+      addColumnIfMissing(db, 'skills', "TEXT NOT NULL DEFAULT '[]'");
       addColumnIfMissing(db, 'temperature', 'REAL');
       addColumnIfMissing(db, 'max_tokens', 'INTEGER');
       addColumnIfMissing(db, 'base_url', 'TEXT');
@@ -357,9 +363,9 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
           (id, name, description, folder, channels, mcp_servers, capabilities,
            concurrency, timeout_ms, is_main, tool_policy,
            system_prompt, soul, provider, model, secret_keys,
-           memory_strategy, container_config, tools, temperature, max_tokens, base_url,
+           memory_strategy, container_config, tools, skills, temperature, max_tokens, base_url,
            created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.id,
         input.name,
@@ -380,6 +386,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         input.memoryStrategy ? JSON.stringify(input.memoryStrategy) : null,
         input.containerConfig ? JSON.stringify(input.containerConfig) : null,
         JSON.stringify(input.tools ?? []),
+        JSON.stringify(input.skills ?? []),
         input.temperature ?? null,
         input.maxTokens ?? null,
         input.baseUrl ?? null,
@@ -477,6 +484,10 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       if (updates.tools !== undefined) {
         fields.push('tools = ?');
         values.push(JSON.stringify(updates.tools));
+      }
+      if (updates.skills !== undefined) {
+        fields.push('skills = ?');
+        values.push(JSON.stringify(updates.skills));
       }
       if (updates.temperature !== undefined) {
         fields.push('temperature = ?');

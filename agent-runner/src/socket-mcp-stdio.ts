@@ -21,6 +21,7 @@ import { registerWorkflowTools } from './mcp-tools/workflow-tools.js';
 import { registerWorkerTools } from './mcp-tools/worker-tools.js';
 import { registerEmailTools } from './mcp-tools/email-tools.js';
 import { registerIntegrationTools } from './mcp-tools/integration-tools.js';
+import { registerContextTools } from './mcp-tools/context-tools.js';
 
 // ── Environment Context ─────────────────────────────────────────────
 
@@ -70,6 +71,7 @@ registerWorkflowTools(ctx);
 registerWorkerTools(ctx);
 registerEmailTools(ctx);
 registerIntegrationTools(ctx);
+registerContextTools(ctx);
 
 // ── Start Transport ─────────────────────────────────────────────────
 

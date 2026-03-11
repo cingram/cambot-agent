@@ -18,6 +18,10 @@ import {
   renameConversation,
   getConversationById,
 } from '../db/conversation-repository.js';
+import { getAllMcpServers } from '../db/mcp-repository.js';
+import { ALL_SDK_TOOLS, CAMBOT_MCP_TOOLS, GOOGLE_MCP_TOOLS } from '../tools/tool-policy.js';
+import { SKILLS_DIR } from '../config/config.js';
+import { scanSkills, type SkillInfo } from '../utils/context-files.js';
 import { logger } from '../logger.js';
 
 export interface AgentRoutesDeps {
@@ -202,6 +206,46 @@ export function handleAgentRoutes(
     return handleConversationRoutes(req, res, url, agentRepo);
   }
 
+  // --- Skills routes ---
+
+  if (url.pathname === '/api/skills' && req.method === 'GET') {
+    try {
+      json(res, 200, { skills: getCachedSkills() });
+    } catch (err) {
+      error(res, 500, err);
+    }
+    return true;
+  }
+
+  // --- Tools route ---
+
+  if (url.pathname === '/api/tools' && req.method === 'GET') {
+    try {
+      json(res, 200, {
+        sdkTools: [...ALL_SDK_TOOLS],
+        mcpTools: {
+          'cambot-agent': [...CAMBOT_MCP_TOOLS],
+          'google-workspace': [...GOOGLE_MCP_TOOLS],
+        },
+      });
+    } catch (err) {
+      error(res, 500, err);
+    }
+    return true;
+  }
+
+  // --- MCP Servers route ---
+
+  if (url.pathname === '/api/mcp-servers' && req.method === 'GET') {
+    try {
+      const servers = getAllMcpServers();
+      json(res, 200, { mcpServers: servers });
+    } catch (err) {
+      error(res, 500, err);
+    }
+    return true;
+  }
+
   // --- Template routes ---
 
   if (url.pathname === '/api/templates' && req.method === 'GET') {
@@ -366,4 +410,15 @@ function readBody(
       json(res, 400, { error: 'Invalid JSON' });
     }
   });
+}
+
+// ── Skills cache (static on disk, scanned once) ──
+
+let skillsCache: SkillInfo[] | null = null;
+
+function getCachedSkills(): SkillInfo[] {
+  if (!skillsCache) {
+    skillsCache = scanSkills(SKILLS_DIR);
+  }
+  return skillsCache;
 }

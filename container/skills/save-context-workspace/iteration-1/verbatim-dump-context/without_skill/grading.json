@@ -1,0 +1,30 @@
+{
+  "eval_id": 2,
+  "eval_name": "verbatim-dump-context",
+  "config": "without_skill",
+  "line_count": 342,
+  "char_count": 12329,
+  "expectations": [
+    {
+      "text": "The output contains literal text from the 00-IDENTITY.md file (multi-line block, not a one-line description)",
+      "passed": true,
+      "evidence": "Found in output"
+    },
+    {
+      "text": "The output contains literal text from the 01-SOUL.md file",
+      "passed": true,
+      "evidence": "Found in output"
+    },
+    {
+      "text": "The output is longer than 100 lines",
+      "passed": true,
+      "evidence": "Line count: 342"
+    },
+    {
+      "text": "The output contains verbatim JSON from snapshots",
+      "passed": true,
+      "evidence": "Found in output"
+    }
+  ],
+  "pass_rate": 1.0
+}

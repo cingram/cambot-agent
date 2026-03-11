@@ -67,6 +67,7 @@ export const CAMBOT_MCP_TOOLS = [
   'memory_confirm',
   'memory_correct',
   'memory_fading',
+  'save_context',
 ] as const;
 
 /** Workflow-builder MCP tools (conceptual grouping — subset of CAMBOT_MCP_TOOLS). */

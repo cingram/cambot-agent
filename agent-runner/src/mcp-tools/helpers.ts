@@ -2,6 +2,7 @@
  * Shared helpers for MCP tool handlers.
  */
 import crypto from 'crypto';
+import fs from 'fs';
 import type { SocketFrame } from '../cambot-socket/types.js';
 import { FRAME_TYPES } from '../cambot-socket/types.js';
 import type { CambotSocketClient } from '../cambot-socket-client.js';
@@ -22,6 +23,15 @@ export function mcpText(text: string) {
 
 export function mcpError(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
+}
+
+/** Read a file as UTF-8 or return a fallback string on any error. */
+export function readFileOr(filePath: string, fallback: string): string {
+  try {
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return fallback;
+  }
 }
 
 export async function requestWithTimeout(

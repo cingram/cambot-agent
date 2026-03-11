@@ -9,7 +9,6 @@ import { execFile } from 'child_process';
 import type { AgentOptions } from './agents.js';
 import type { ContainerTelemetry } from '../container/runner.js';
 import type { ExecutionContext, MessageBus, RegisteredAgent } from '../types.js';
-import type { ContextFileDeps } from '../utils/context-files.js';
 import type { LifecycleInterceptor } from '../utils/lifecycle-interceptor.js';
 import { runContainerAgent } from '../container/runner.js';
 import { CONTAINER_RUNTIME_BIN } from '../container/runtime.js';
@@ -56,8 +55,8 @@ export interface PersistentAgentSpawnerDeps {
   /** Resolve a global template value (e.g. 'identity', 'soul'). Used as fallback
    *  when a persistent agent doesn't define its own systemPrompt/soul. */
   getTemplateValue: (key: string) => string | undefined;
-  /** Build full agent context (tasks, workflows, agents list, chats, etc.). */
-  buildAgentContext: (folder: string, isMain: boolean, chatJid: string, identityOverride?: string, soulOverride?: string) => ContextFileDeps;
+  /** Build pre-assembled context string (identity + soul + tools + agents + heartbeat + channels). */
+  assembleContext: (folder: string, isMain: boolean, chatJid: string, identityOverride?: string, soulOverride?: string, skillsWhitelist?: string[]) => string;
   /** Resolve container image + secret keys for a non-Claude provider. */
   resolveAgentImage?: (provider: string, secretKeys: string[]) => AgentOptions;
   onTelemetry?: (telemetry: ContainerTelemetry, channel: string) => void;
@@ -133,9 +132,10 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
       // custom providers skip it (they use their own prompt path)
       const agentIdentity = isCustomProvider ? undefined : (agent.systemPrompt ?? deps.getTemplateValue('identity'));
       const agentSoul = isCustomProvider ? undefined : (agent.soul ?? deps.getTemplateValue('soul'));
-      const agentContext = isCustomProvider
+      const skillsWhitelist = agent.skills?.length ? agent.skills : undefined;
+      const assembledContext = isCustomProvider
         ? undefined
-        : deps.buildAgentContext(agent.folder, agent.isMain, callerGroup, agentIdentity, agentSoul);
+        : deps.assembleContext(agent.folder, agent.isMain, callerGroup, agentIdentity, agentSoul, skillsWhitelist);
 
       // Build customAgent payload for non-Claude providers
       const customAgent = isCustomProvider ? {
@@ -169,6 +169,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             conversationId: resolution.isTransient ? undefined : conversation.id,
             mcpServers: scopedServers,
             customAgent,
+            skills: agent.skills,
             allowedSdkTools: isCustomProvider ? undefined : resolveToolList(agent.toolPolicy),
             disallowedSdkTools: isCustomProvider ? undefined : resolveDisallowedTools(agent.toolPolicy),
             allowedMcpTools: isCustomProvider ? undefined : qualifyMcpToolList(
@@ -177,7 +178,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
                 { isInterAgentTarget: isInterAgent, isMain: agent.isMain },
               ),
             ),
-            agentContext,
+            assembledContext,
           },
           (_proc, containerName) => {
             spawnedContainerName = containerName;

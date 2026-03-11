@@ -116,6 +116,7 @@ export const WORKSPACE_MCP_PORT = parseInt(
   10,
 );
 
+
 // Memory mode: which memory system the agent uses
 export type MemoryMode = 'markdown' | 'database' | 'both';
 const rawMemoryMode = process.env.MEMORY_MODE || envConfig.MEMORY_MODE || 'both';

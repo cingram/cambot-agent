@@ -71,8 +71,8 @@ Enable only what you need -- each adds OAuth scopes that the consent screen show
    - User support email: your email
    - Authorized domains: leave empty for desktop app
    - Developer contact: your email
-4. Application type: **Web application** (workspace-mcp uses a redirect-based flow)
-5. Add **Authorized redirect URI**: `http://localhost:8000/oauth/callback`
+4. Application type: **Web application** (workspace-mcp uses a redirect-based flow with PKCE)
+5. Add **Authorized redirect URI**: `http://localhost:8000/oauth2callback`
 6. Click **Create**
 7. Copy the **Client ID** and **Client Secret**
 
@@ -291,6 +291,67 @@ If the agent can access Gmail but not Calendar, the token may have been authoriz
 4. Restart cambot-agent
 
 The `google-workspace` entry in `mcp-servers.json` is harmless when the service isn't running -- the SDK will fail to connect and the agent simply won't have those tools.
+
+---
+
+## Switching Google Accounts
+
+Each Google account gets its own credential file at `~/.google_workspace_mcp/credentials/<email>.json`. The active account is controlled by `USER_GOOGLE_EMAIL` in `.env`.
+
+### Adding a new account
+
+1. Update `.env`:
+   ```env
+   USER_GOOGLE_EMAIL=new-account@gmail.com
+   ```
+2. Restart cambot-agent. workspace-mcp will detect no credential file for the new account and open a browser for OAuth consent.
+3. **Important:** When the browser opens, make sure you select the correct Google account. If multiple accounts are signed into Chrome, the account chooser appears — pick the one matching `USER_GOOGLE_EMAIL`. Selecting the wrong account will save tokens for the wrong account.
+4. Grant all requested permissions. The token is saved to `~/.google_workspace_mcp/credentials/new-account@gmail.com.json`.
+
+### Switching between existing accounts
+
+```bash
+# Edit .env
+USER_GOOGLE_EMAIL=desired-account@gmail.com
+
+# Restart the server
+# workspace-mcp reads the credential file matching the configured email
+```
+
+Both credential files can coexist in `~/.google_workspace_mcp/credentials/`. workspace-mcp only loads the one matching `USER_GOOGLE_EMAIL`.
+
+### Manual OAuth script
+
+If workspace-mcp's auto-open browser flow doesn't work (e.g., it picks the wrong Chrome profile), use the manual auth script:
+
+```bash
+# Stop cambot-agent first (frees port 8000)
+uv run --with google-auth scripts/google-auth.py
+```
+
+This opens a browser on a separate port with `login_hint` set to the target email, then saves the token in workspace-mcp's expected format.
+
+### Common pitfalls
+
+- **Never copy one account's credential file to another.** Each account needs its own OAuth flow to get a unique refresh token. A copied file will authenticate as the original account.
+- **Wrong account selected during OAuth.** If Chrome auto-selects the wrong account, click "Use another account" on the account chooser. The `ensureGoogleAuth` startup check does not include `login_hint`, so Google may default to the first signed-in account.
+- **Old credential file interference.** If OAuth keeps failing, check that there isn't a stale credential file with the wrong account's refresh token. Delete it and re-authorize:
+  ```bash
+  rm ~/.google_workspace_mcp/credentials/<email>.json
+  # Restart server to trigger fresh OAuth
+  ```
+- **Verify token ownership.** To confirm which account a token belongs to:
+  ```bash
+  python3 -c "
+  import json, pathlib, urllib.request, urllib.parse
+  p = pathlib.Path.home() / '.google_workspace_mcp' / 'credentials' / '<email>.json'
+  d = json.loads(p.read_text())
+  data = urllib.parse.urlencode({'client_id': d['client_id'], 'client_secret': d['client_secret'], 'refresh_token': d['refresh_token'], 'grant_type': 'refresh_token'}).encode()
+  resp = json.loads(urllib.request.urlopen(urllib.request.Request('https://oauth2.googleapis.com/token', data=data, method='POST')).read())
+  info = json.loads(urllib.request.urlopen(urllib.request.Request('https://www.googleapis.com/oauth2/v3/userinfo', headers={'Authorization': f'Bearer {resp[\"access_token\"]}'})).read())
+  print(f'Token belongs to: {info[\"email\"]}')
+  "
+  ```
 
 ---
 

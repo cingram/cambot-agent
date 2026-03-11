@@ -68,6 +68,9 @@ export interface ClaudeContainerInput extends BaseContainerInput {
   disallowedSdkTools?: string[];
   /** MCP tools this agent is allowed to use (resolved from ToolPolicy on host) */
   allowedMcpTools?: string[];
+  /** Pre-assembled context string from host (identity + soul + tools + agents + heartbeat + channels).
+   *  Container wraps this in <cambot-context> and adds memory instructions. */
+  assembledContext?: string;
   customAgent?: undefined;
 }
 
@@ -144,7 +147,6 @@ export interface SessionsIndex {
 export interface ContainerPaths {
   groupDir: string;
   extraMountsDir: string;
-  contextDir: string;
   contextDumpFile: string;
   conversationsDir: string;
   tempInputFile: string;
@@ -155,7 +157,6 @@ export function createDefaultContainerPaths(): ContainerPaths {
   return {
     groupDir: '/workspace/group',
     extraMountsDir: '/workspace/extra',
-    contextDir: '/workspace/context',
     contextDumpFile: '/workspace/context-dump.md',
     conversationsDir: '/workspace/group/conversations',
     tempInputFile: '/tmp/input.json',

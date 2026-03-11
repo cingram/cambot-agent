@@ -1,0 +1,35 @@
+{
+  "eval_id": 1,
+  "eval_name": "verbatim-save-context",
+  "config": "with_skill",
+  "line_count": 503,
+  "char_count": 21626,
+  "expectations": [
+    {
+      "text": "The output contains the literal string '# Andy' from the identity file",
+      "passed": true,
+      "evidence": "Found in output"
+    },
+    {
+      "text": "The output contains the literal string '# Soul' from the soul file",
+      "passed": true,
+      "evidence": "Found in output"
+    },
+    {
+      "text": "The output contains verbatim JSON from the snapshots directory",
+      "passed": true,
+      "evidence": "Found in output"
+    },
+    {
+      "text": "The output is longer than 100 lines (not a short summary)",
+      "passed": true,
+      "evidence": "Line count: 503"
+    },
+    {
+      "text": "The output does NOT contain summarizing language like 'The agent is configured to' or 'Here is a summary'",
+      "passed": true,
+      "evidence": "Found in output"
+    }
+  ],
+  "pass_rate": 1.0
+}

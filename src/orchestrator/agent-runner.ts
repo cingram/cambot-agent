@@ -29,7 +29,7 @@ import { toExecutionContext } from '../types.js';
 import type { RegisteredGroup } from '../types.js';
 import { resolveToolList, resolveDisallowedTools } from '../tools/tool-policy.js';
 import { channelFromJid } from '../utils/channel-from-jid.js';
-import { buildAgentContext, type ContextFileDeps } from '../utils/context-files.js';
+import { assembleContextString } from '../utils/context-files.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 import { cleanupSdkMemory } from '../utils/memory-cleanup.js';
 import type { WorkflowService } from '../workflows/workflow-service.js';
@@ -96,8 +96,8 @@ export class AgentRunner {
     // Ephemeral agents skip session resumption
     const sessionId = resolution.isTransient ? undefined : (conversation.sessionId ?? undefined);
 
-    const snapshot = this.fetchSnapshot(group.folder);
-    const agentContext = this.buildContext(snapshot, isMain, chatJid);
+    const snapshot = this.fetchSnapshot(group.folder, agent);
+    const assembledContext = this.buildContext(snapshot, isMain, chatJid);
     this.writeSnapshots(group, isMain, snapshot);
 
     // Wrap onOutput to track session ID from streamed results
@@ -133,7 +133,7 @@ export class AgentRunner {
           conversationId: resolution.isTransient ? undefined : conversation.id,
           allowedSdkTools: resolveToolList(group.containerConfig?.toolPolicy),
           disallowedSdkTools: resolveDisallowedTools(group.containerConfig?.toolPolicy),
-          agentContext,
+          assembledContext,
         },
         (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
         wrappedOnOutput,
@@ -161,10 +161,9 @@ export class AgentRunner {
   }
 
   /** Fetch all data needed by both context files and snapshots — single pass. */
-  private fetchSnapshot(folder: string) {
+  private fetchSnapshot(folder: string, agent?: { systemPrompt?: string | null; soul?: string | null; skills?: string[] | null }) {
     const workflowService = this.deps.getWorkflowService();
     const integrationMgr = this.deps.getIntegrationManager();
-    const agent = this.agentRepo.getByFolder(folder);
 
     return {
       tasks: getAllTasks(),
@@ -173,16 +172,17 @@ export class AgentRunner {
       mcpServers: integrationMgr?.getActiveMcpServers() ?? [],
       agentIdentity: agent?.systemPrompt ?? this.templateRepo.get('identity'),
       agentSoul: agent?.soul ?? this.templateRepo.get('soul'),
+      skillsWhitelist: agent?.skills?.length ? agent.skills : undefined,
     };
   }
 
-  /** Build the agent context for injection into ContainerInput. */
+  /** Build the assembled context string for injection into ContainerInput. */
   private buildContext(
     snapshot: ReturnType<AgentRunner['fetchSnapshot']>,
     isMain: boolean,
     chatJid: string,
-  ): ContextFileDeps {
-    return buildAgentContext({
+  ): string {
+    return assembleContextString({
       mcpServers: snapshot.mcpServers,
       agentIdentity: snapshot.agentIdentity,
       agentSoul: snapshot.agentSoul,
@@ -200,6 +200,7 @@ export class AgentRunner {
       })),
       chatJid,
       getChats: () => getAllChats(),
+      skillsWhitelist: snapshot.skillsWhitelist,
     });
   }
 

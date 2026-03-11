@@ -1,0 +1,30 @@
+{
+  "eval_id": 3,
+  "eval_name": "verbatim-export-context",
+  "config": "without_skill",
+  "line_count": 594,
+  "char_count": 24687,
+  "expectations": [
+    {
+      "text": "The output contains exact section headers from context files (like '## Tools & Skills' or '## Agent Registry')",
+      "passed": true,
+      "evidence": "Found in output"
+    },
+    {
+      "text": "The output contains multi-line verbatim blocks, not single-sentence descriptions",
+      "passed": true,
+      "evidence": "Found in output"
+    },
+    {
+      "text": "The output is longer than 100 lines",
+      "passed": true,
+      "evidence": "Line count: 594"
+    },
+    {
+      "text": "The output does NOT rewrite or reorganize the source content into a new structure",
+      "passed": true,
+      "evidence": "Found in output"
+    }
+  ],
+  "pass_rate": 1.0
+}
