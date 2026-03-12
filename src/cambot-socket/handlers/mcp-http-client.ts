@@ -132,9 +132,17 @@ function getMcpClient(url: string): McpHttpClient {
   return client;
 }
 
+function isRetryable(err: Error): boolean {
+  const msg = err.message.toLowerCase();
+  return msg.includes('session') ||
+    msg.includes('econnrefused') ||
+    msg.includes('econnreset') ||
+    msg.includes('fetch failed');
+}
+
 /**
  * Call a workspace-mcp tool with automatic session retry.
- * On session-related errors, resets the client and retries once.
+ * Retries on session errors and transient connection failures (ECONNREFUSED, ECONNRESET).
  */
 export async function callWorkspaceMcp(
   url: string,
@@ -142,13 +150,17 @@ export async function callWorkspaceMcp(
   args: Record<string, unknown>,
 ): Promise<unknown> {
   const client = getMcpClient(url);
-  try {
-    return await client.callTool(tool, args);
-  } catch (err) {
-    if (err instanceof Error && (err.message.includes('session') || err.message.includes('Session'))) {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await client.callTool(tool, args);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (!isRetryable(lastError) || attempt === 2) throw lastError;
       client.reset();
-      return client.callTool(tool, args);
+      // Back off before retry: 2s, then 4s
+      await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
     }
-    throw err;
   }
+  throw lastError!;
 }

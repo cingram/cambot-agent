@@ -156,6 +156,25 @@ export interface EmailReadPayload {
   includeRaw?: boolean;
 }
 
+// ── Notification Payloads ────────────────────────────────────────────
+
+export interface NotificationSubmitPayload {
+  category: string;
+  priority?: 'critical' | 'high' | 'normal' | 'low' | 'info';
+  summary: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface NotificationGetPayload {
+  category?: string;
+  priority?: 'critical' | 'high' | 'normal' | 'low' | 'info';
+  limit?: number;
+}
+
+export interface NotificationAckPayload {
+  ids: string[];
+}
+
 // ── Context Payloads ────────────────────────────────────────────────
 
 export interface ContextSavePayload {
@@ -251,6 +270,11 @@ export const FRAME_TYPES = {
   EMAIL_RESULT: 'email.result',
   // Bus
   BUS_MESSAGE: 'bus.message',
+  // Notifications
+  NOTIFICATION_SUBMIT: 'notification.submit',
+  NOTIFICATION_GET: 'notification.get',
+  NOTIFICATION_ACK: 'notification.ack',
+  NOTIFICATION_RESULT: 'notification.result',
   // Context
   CONTEXT_SAVE: 'context.save',
   // Log

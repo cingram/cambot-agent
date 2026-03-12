@@ -11,3 +11,4 @@ export * from './conversation-repository.js';
 export * from './agent-repository.js';
 export * from './agent-template-repository.js';
 export * from './agent-message-repository.js';
+export * from './notification-repository.js';

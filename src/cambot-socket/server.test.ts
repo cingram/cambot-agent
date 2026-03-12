@@ -34,7 +34,10 @@ function createMockSocket(): Socket & EventEmitter {
   (socket as any).remoteAddress = '127.0.0.1';
   (socket as any).remotePort = 12345;
   (socket as any).destroyed = false;
-  (socket as any).write = vi.fn().mockReturnValue(true);
+  (socket as any).write = vi.fn().mockImplementation((_data: unknown, cb?: () => void) => {
+    if (typeof cb === 'function') cb();
+    return true;
+  });
   (socket as any).destroy = vi.fn(() => {
     (socket as any).destroyed = true;
     socket.emit('close');

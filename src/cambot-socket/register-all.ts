@@ -21,6 +21,7 @@ import { registerContextSave } from './handlers/context-save.js';
 import { registerOutputHandler } from './handlers/output.js';
 import { registerLogHandler } from './handlers/log.js';
 import { registerWorkflowQuery } from './handlers/workflow-query.js';
+import { registerNotificationHandlers } from './handlers/notification.js';
 
 /** Register all cambot-socket command handlers with the given registry. */
 export function registerAllHandlers(registry: CommandRegistry): void {
@@ -42,4 +43,5 @@ export function registerAllHandlers(registry: CommandRegistry): void {
   registerContextSave(registry);
   registerOutputHandler(registry);
   registerLogHandler(registry);
+  registerNotificationHandlers(registry);
 }

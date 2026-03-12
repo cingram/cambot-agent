@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import { migrateJsonState } from './migration.js';
 import { createAgentRepository } from './agent-repository.js';
 import { createAgentTemplateRepository } from './agent-template-repository.js';
+import { createNotificationRepository } from './notification-repository.js';
 
 let db: Database.Database;
 
@@ -77,6 +78,9 @@ export function _initTestDatabase(): void {
 
   const templateRepo = createAgentTemplateRepository(db);
   templateRepo.ensureTable();
+
+  const notificationRepo = createNotificationRepository(db);
+  notificationRepo.ensureTable();
 }
 
 /** Expose the database instance for subsystems that need direct access. */

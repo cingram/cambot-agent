@@ -22,6 +22,7 @@ import { registerWorkerTools } from './mcp-tools/worker-tools.js';
 import { registerEmailTools } from './mcp-tools/email-tools.js';
 import { registerIntegrationTools } from './mcp-tools/integration-tools.js';
 import { registerContextTools } from './mcp-tools/context-tools.js';
+import { registerNotificationTools } from './mcp-tools/notification-tools.js';
 
 // ── Environment Context ─────────────────────────────────────────────
 
@@ -72,6 +73,7 @@ registerWorkerTools(ctx);
 registerEmailTools(ctx);
 registerIntegrationTools(ctx);
 registerContextTools(ctx);
+registerNotificationTools(ctx);
 
 // ── Start Transport ─────────────────────────────────────────────────
 

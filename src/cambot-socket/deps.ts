@@ -10,6 +10,7 @@ import type { ContainerSpawner } from '../agents/persistent-agent-spawner.js';
 import type { AvailableGroup } from '../container/snapshot-writers.js';
 import type { AgentMessageRepository } from '../db/agent-message-repository.js';
 import type { AgentRepository } from '../db/agent-repository.js';
+import type { NotificationRepository } from '../db/notification-repository.js';
 import type { RawContentRepository } from '../db/raw-content-repository.js';
 import type { IntegrationManager } from '../integrations/types.js';
 import type { ContentPipe } from '../pipes/content-pipe.js';
@@ -77,6 +78,9 @@ export interface SocketDeps {
 
   /** Agent message repository for persisting inter-agent communication (optional). */
   agentMessageRepo?: AgentMessageRepository;
+
+  /** Notification repository for admin inbox (optional). */
+  notificationRepo?: NotificationRepository;
 
   /** Reference to the socket server for cross-group sends (optional — set after server creation). */
   socketServer?: CambotSocketServer;

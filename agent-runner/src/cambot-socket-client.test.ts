@@ -507,7 +507,7 @@ describe('CambotSocketClient', () => {
 
   // ── Connection close resolves pending with error frames ───────
 
-  it('socket close resolves pending requests with error frames', async () => {
+  it('socket close rejects pending requests', async () => {
     const client = await connectClient();
     const sock = latestSocket();
     sock.write.mockClear();
@@ -519,9 +519,7 @@ describe('CambotSocketClient', () => {
 
     sock.emit('close');
 
-    const result = await reqPromise;
-    expect(result.type).toBe('error');
-    expect(result.replyTo).toBe('pending-1');
+    await expect(reqPromise).rejects.toThrow('Connection closed');
   });
 
   // ── isConnected() ─────────────────────────────────────────────

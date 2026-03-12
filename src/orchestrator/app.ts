@@ -77,6 +77,7 @@ import { createAgentTemplateRepository } from '../db/agent-template-repository.j
 import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
 import { createGatewayRouterFromEnv } from '../agents/gateway-router.js';
 import { createHandoffRepository, type HandoffRepository } from '../db/handoff-repository.js';
+import { createNotificationRepository } from '../db/notification-repository.js';
 import { assembleContextString } from '../utils/context-files.js';
 import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
 import { provisionAgent } from '../agents/agent-factory.js';
@@ -110,6 +111,7 @@ export class CamBotApp {
   private agentSpawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner | null = null;
   private agentRepo: AgentRepository | null = null;
   private handoffRepo: HandoffRepository | null = null;
+  private notificationRepo: import('../db/notification-repository.js').NotificationRepository | null = null;
   private socketServer: CambotSocketServer | null = null;
   private cleanupTimers: ReturnType<typeof setInterval>[] = [];
 
@@ -117,6 +119,8 @@ export class CamBotApp {
     this.installProcessHandlers();
     this.initInfra();
     this.initDatabase();
+    this.notificationRepo = createNotificationRepository(getDatabase());
+    this.notificationRepo.ensureTable();
     this.state.load();
     loadAgentsConfig();
     this.initLifecycleInterceptor();
@@ -713,6 +717,7 @@ export class CamBotApp {
       agentSpawner: this.agentSpawner ?? undefined,
       agentRepo: this.agentRepo ?? undefined,
       agentMessageRepo: createAgentMessageRepository(getDatabase()),
+      notificationRepo: this.notificationRepo ?? undefined,
       onAgentMutation: () => this.handleAgentMutation(),
       // socketServer assigned below after CambotSocketServer creation
     };
@@ -902,6 +907,20 @@ export class CamBotApp {
       const repo = this.handoffRepo;
       this.cleanupTimers.push(
         setInterval(() => { try { repo.clearExpired(); } catch { /* non-critical */ } }, 60_000),
+      );
+    }
+
+    // Purge expired admin inbox notifications on startup + hourly
+    if (this.notificationRepo) {
+      const repo = this.notificationRepo;
+      try { repo.purgeExpired(); } catch { /* non-critical */ }
+      this.cleanupTimers.push(
+        setInterval(() => {
+          try {
+            const purged = repo.purgeExpired();
+            if (purged > 0) logger.info({ purged }, 'Purged expired notifications');
+          } catch { /* non-critical */ }
+        }, 3_600_000),
       );
     }
   }

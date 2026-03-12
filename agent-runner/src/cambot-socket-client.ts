@@ -287,6 +287,22 @@ export class CambotSocketClient {
     }, 300_000);
   }
 
+  // ── Notifications ─────────────────────────────────────────
+
+  /** Submit a notification to the admin inbox. */
+  async sendNotification(
+    category: string,
+    summary: string,
+    priority?: 'critical' | 'high' | 'normal' | 'low' | 'info',
+    payload?: Record<string, unknown>,
+  ): Promise<SocketFrame> {
+    return this.request({
+      type: FRAME_TYPES.NOTIFICATION_SUBMIT,
+      id: uuid(),
+      payload: { category, summary, priority, payload },
+    }, 30_000);
+  }
+
   // ── Low-level Send ─────────────────────────────────────────────
 
   send(frame: SocketFrame): void {
