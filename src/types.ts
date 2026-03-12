@@ -28,6 +28,28 @@ export interface AllowedRoot {
 }
 
 import type { ToolPolicy } from './tools/tool-policy.js';
+import type { RoutingKeywords } from './agents/keyword-generator.js';
+
+// ── Subagent Definition ────────────────────────────────────────
+/** In-process SDK subagent that a container agent can spawn to help with subtasks. */
+export interface SubagentDefinition {
+  /** When to use this subagent (drives SDK auto-invocation). */
+  description: string;
+  /** System prompt for the subagent. */
+  prompt: string;
+  /** Allowed SDK tools (inherits parent's if omitted). */
+  tools?: string[];
+  /** SDK tools explicitly blocked for this subagent. */
+  disallowedTools?: string[];
+  /** MCP server names this subagent can access (references parent's servers). */
+  mcpServers?: string[];
+  /** Skill names to preload into the subagent context. */
+  skills?: string[];
+  /** Model override: sonnet, opus, haiku, or inherit from parent. */
+  model?: 'sonnet' | 'opus' | 'haiku';
+  /** Maximum agentic turns before the subagent stops. */
+  maxTurns?: number;
+}
 
 // ── Memory Strategy ─────────────────────────────────────────────
 export type MemoryStrategyMode = 'ephemeral' | 'conversation-scoped' | 'persistent' | 'long-lived';
@@ -190,6 +212,8 @@ export interface RegisteredAgent {
   concurrency: number;
   timeoutMs: number;
   isMain: boolean;
+  /** System agents are seeded at startup and cannot be deleted via API. */
+  system: boolean;
   toolPolicy?: ToolPolicy;
   systemPrompt: string | null;
   soul: string | null;
@@ -201,6 +225,10 @@ export interface RegisteredAgent {
   temperature: number | null;
   maxTokens: number | null;
   baseUrl: string | null;
+  /** AI-generated routing keywords for gateway local scoring. */
+  routingKeywords?: RoutingKeywords;
+  /** In-process SDK subagents this agent can spawn. Keys are subagent names. */
+  subagents?: Record<string, SubagentDefinition>;
   memoryStrategy?: MemoryStrategy;
   containerConfig?: ContainerConfig;
   createdAt: string;

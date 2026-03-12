@@ -174,6 +174,31 @@ export class SdkQueryRunner {
       input.allowedMcpTools,
     );
 
+    // Map subagent definitions to SDK AgentDefinition format
+    const sdkAgents = input.subagents && Object.keys(input.subagents).length > 0
+      ? Object.fromEntries(
+          Object.entries(input.subagents).map(([name, def]) => [
+            name,
+            {
+              description: def.description,
+              prompt: def.prompt,
+              ...(def.tools !== undefined && { tools: def.tools }),
+              ...(def.disallowedTools !== undefined && { disallowedTools: def.disallowedTools }),
+              ...(def.mcpServers !== undefined && { mcpServers: def.mcpServers }),
+              ...(def.skills !== undefined && { skills: def.skills }),
+              ...(def.model !== undefined && { model: def.model }),
+              ...(def.maxTurns !== undefined && { maxTurns: def.maxTurns }),
+            },
+          ]),
+        )
+      : undefined;
+
+    // Ensure Agent tool is available when subagents are defined
+    const baseTools = input.allowedSdkTools ?? DEFAULT_SDK_TOOLS;
+    const allowedTools = sdkAgents && !baseTools.includes('Agent')
+      ? [...baseTools, 'Agent']
+      : baseTools;
+
     return {
       cwd: this.paths.groupDir,
       additionalDirectories: context.additionalDirectories.length > 0
@@ -185,7 +210,7 @@ export class SdkQueryRunner {
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: context.systemPrompt }
         : undefined,
       allowedTools: [
-        ...(input.allowedSdkTools ?? DEFAULT_SDK_TOOLS),
+        ...allowedTools,
         ...mcpConfig.allowedTools,
       ],
       disallowedTools: input.disallowedSdkTools,
@@ -196,6 +221,7 @@ export class SdkQueryRunner {
       settingSources: ['project', 'user'] as SettingSource[],
       mcpServers: mcpConfig.servers,
       hooks: this.hookFactory.buildHooks(),
+      agents: sdkAgents,
     };
   }
 }

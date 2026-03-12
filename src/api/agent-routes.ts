@@ -9,6 +9,7 @@ import type { AgentMessageRepository } from '../db/agent-message-repository.js';
 import type { AgentRepository, CreateAgentInput, UpdateAgentInput } from '../db/agent-repository.js';
 import type { AgentTemplateRepository } from '../db/agent-template-repository.js';
 import { provisionAgent, type ProvisionInput } from '../agents/agent-factory.js';
+import { generateAndStoreKeywords } from '../agents/keyword-generator.js';
 import {
   listAgentConversations,
   createConversation,
@@ -78,14 +79,24 @@ export function handleAgentRoutes(
           json(res, 400, { error: 'id, name, and folder are required' });
           return;
         }
+        if (!input.description) {
+          json(res, 400, { error: 'description is required — used for gateway routing' });
+          return;
+        }
         // Default to readonly if no tool policy specified
         if (!input.toolPolicy) {
           input.toolPolicy = { preset: 'readonly' };
         }
         const agent = agentRepo.create(input);
         logger.info({ agentId: agent.id }, 'Agent created via API');
-        deps.onAgentMutation?.();
         json(res, 201, agent);
+
+        // Mutation + keyword gen: single mutation call after keywords are stored
+        if (!input.routingKeywords) {
+          generateAndStoreKeywords(agentRepo, agent, () => deps.onAgentMutation?.());
+        } else {
+          deps.onAgentMutation?.();
+        }
       } catch (err) {
         error(res, 400, err);
       }
@@ -116,10 +127,19 @@ export function handleAgentRoutes(
     readBody(req, res, (body) => {
       try {
         const updates = body as UpdateAgentInput;
+        const before = agentRepo.getById(agentMatch[1]);
         const agent = agentRepo.update(agentMatch[1], updates);
         logger.info({ agentId: agent.id }, 'Agent updated via API');
-        deps.onAgentMutation?.();
         json(res, 200, agent);
+
+        // Regenerate routing keywords when description or capabilities change
+        const descChanged = updates.description !== undefined && updates.description !== before?.description;
+        const capsChanged = updates.capabilities !== undefined;
+        if ((descChanged || capsChanged) && !updates.routingKeywords) {
+          generateAndStoreKeywords(agentRepo, agent, () => deps.onAgentMutation?.());
+        } else {
+          deps.onAgentMutation?.();
+        }
       } catch (err) {
         error(res, 400, err);
       }
@@ -132,6 +152,10 @@ export function handleAgentRoutes(
       const agent = agentRepo.getById(agentMatch[1]);
       if (!agent) {
         json(res, 404, { error: 'Agent not found' });
+        return true;
+      }
+      if (agent.system) {
+        json(res, 403, { error: `Cannot delete system agent "${agent.id}"` });
         return true;
       }
       agentRepo.delete(agentMatch[1]);

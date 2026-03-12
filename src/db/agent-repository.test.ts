@@ -104,11 +104,9 @@ describe('create', () => {
     expect(agent.baseUrl).toBe('https://api.openai.com');
   });
 
-  it('defaults description to empty string when not provided', () => {
-    const input = makeInput({ description: undefined });
-    delete (input as unknown as Record<string, unknown>).description;
-    const agent = repo.create({ id: 'no-desc', name: 'NoDesc', folder: 'no-desc' });
-    expect(agent.description).toBe('');
+  it('stores description from input', () => {
+    const agent = repo.create({ id: 'no-desc', name: 'NoDesc', folder: 'no-desc', description: 'A test agent' });
+    expect(agent.description).toBe('A test agent');
   });
 });
 

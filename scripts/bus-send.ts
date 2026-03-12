@@ -270,6 +270,14 @@ async function showAgent(showArgs: string[]): Promise<void> {
     if (row.tool_policy) console.log(`  Tool Policy:   ${row.tool_policy}`);
     if (row.memory_strategy) console.log(`  Memory:        ${row.memory_strategy}`);
     if (row.secret_keys && row.secret_keys !== '[]') console.log(`  Secret Keys:   ${formatJsonArray(row.secret_keys as string)}`);
+    if (row.routing_keywords) {
+      try {
+        const kw = JSON.parse(row.routing_keywords as string) as { words: string[]; phrases: string[] };
+        console.log(`  Keywords:      ${kw.words.length} words, ${kw.phrases.length} phrases`);
+        if (kw.words.length > 0) console.log(`    Words:       ${kw.words.slice(0, 20).join(', ')}${kw.words.length > 20 ? '...' : ''}`);
+        if (kw.phrases.length > 0) console.log(`    Phrases:     ${kw.phrases.slice(0, 5).join(' | ')}${kw.phrases.length > 5 ? ' | ...' : ''}`);
+      } catch { /* ignore parse errors */ }
+    }
     console.log(`  Created:       ${row.created_at}`);
     console.log(`  Updated:       ${row.updated_at}`);
   } finally {
@@ -575,8 +583,8 @@ async function resetAgent(resetArgs: string[]): Promise<void> {
 
   if (!all && ids.length === 0) {
     console.error('Usage: reset <agent-id> [agent-id ...] [--all]');
-    console.error('  reset web-agent              Clear conversations for web-agent');
-    console.error('  reset web-agent email-agent  Clear multiple agents');
+    console.error('  reset router-agent              Clear conversations for router-agent');
+    console.error('  reset router-agent email-agent  Clear multiple agents');
     console.error('  reset --all                  Clear all agent conversations');
     process.exit(1);
   }
@@ -906,7 +914,7 @@ function printUsage(): void {
   console.log('  bun run scripts/bus-send.ts update my-agent --description "Updated desc" --channels web');
   console.log('  bun run scripts/bus-send.ts update my-agent --tool-policy @policy.json');
   console.log('  bun run scripts/bus-send.ts delete my-agent');
-  console.log('  bun run scripts/bus-send.ts reset web-agent');
+  console.log('  bun run scripts/bus-send.ts reset router-agent');
   console.log('  bun run scripts/bus-send.ts reset --all');
   console.log('  bun run scripts/bus-send.ts -a email-agent "What\'s in my inbox?"');
 }
