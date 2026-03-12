@@ -10,9 +10,9 @@ import { readEnvFile } from '../config/env.js';
 import { logger } from '../logger.js';
 import { stripCodeFences } from '../workflows/index.js';
 import type { AgentRepository } from '../db/agent-repository.js';
+import { callAnthropicApi } from '../utils/anthropic-client.js';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
-const DEFAULT_API_URL = 'https://api.anthropic.com/v1/messages';
 
 export interface RoutingKeywords {
   /** Single-word tokens for fast matching after tokenization. */
@@ -47,43 +47,26 @@ interface GeneratorDeps {
   apiUrl?: string;
 }
 
-interface AnthropicResponse {
-  content: Array<{ type: string; text?: string }>;
-}
-
 export async function generateRoutingKeywords(
   deps: GeneratorDeps,
   agent: { name: string; description: string; capabilities: string[] },
 ): Promise<RoutingKeywords> {
   const { apiKey } = deps;
   const model = deps.model ?? DEFAULT_MODEL;
-  const apiUrl = deps.apiUrl ?? DEFAULT_API_URL;
+  const apiUrl = deps.apiUrl;
 
   const userMessage = `Agent: ${agent.name}
 Description: ${agent.description}
 Capabilities: ${agent.capabilities.join(', ') || '(none)'}`;
 
   try {
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-    });
+    const json = await callAnthropicApi(apiKey, {
+      model,
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: userMessage }],
+    }, apiUrl);
 
-    if (!response.ok) {
-      throw new Error(`Anthropic API error: ${response.status} ${response.statusText}`);
-    }
-
-    const json = await response.json() as AnthropicResponse;
     const text = json.content.find(b => b.type === 'text')?.text ?? '';
 
     const cleaned = stripCodeFences(text);

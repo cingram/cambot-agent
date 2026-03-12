@@ -91,11 +91,11 @@ export function handleAgentRoutes(
         logger.info({ agentId: agent.id }, 'Agent created via API');
         json(res, 201, agent);
 
-        // Mutation + keyword gen: single mutation call after keywords are stored
+        // Notify immediately so routing picks up the new agent right away,
+        // then again after keywords are generated for updated scoring
+        deps.onAgentMutation?.();
         if (!input.routingKeywords) {
           generateAndStoreKeywords(agentRepo, agent, () => deps.onAgentMutation?.());
-        } else {
-          deps.onAgentMutation?.();
         }
       } catch (err) {
         error(res, 400, err);

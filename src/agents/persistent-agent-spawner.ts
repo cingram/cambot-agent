@@ -21,8 +21,8 @@ import { cleanupSdkMemory } from '../utils/memory-cleanup.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
 import type { GatewayRouter, AgentRegistryEntry, RoutingDecision } from './gateway-router.js';
 import { scoreRoute, scoreContinuation } from './gateway-router.js';
-import type { HandoffRepository } from '../db/handoff-repository.js';
-import { HANDOFF_FREE_TURNS, HANDOFF_IDLE_TIMEOUT_MS, HANDOFF_CONFIDENCE_THRESHOLD } from '../config/config.js';
+import type { HandoffRepository, HandoffSession } from '../db/handoff-repository.js';
+import { HANDOFF_FREE_TURNS, HANDOFF_CONFIDENCE_THRESHOLD, GATEWAY_PRESET } from '../config/config.js';
 
 // ── Public types ───────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
       const isInterAgent = callerGroup.startsWith('agent:');
 
       // Gateway mode: lightweight API routing instead of full container
-      if (agent.toolPolicy?.preset === 'gateway' && deps.gatewayRouter && !isInterAgent) {
+      if (agent.toolPolicy?.preset === GATEWAY_PRESET && deps.gatewayRouter && !isInterAgent) {
         return spawnViaGateway(self, deps, registryCache, agent, prompt, callerGroup, startTime);
       }
 
@@ -388,7 +388,7 @@ async function handleActiveHandoff(
   prompt: string,
   callerGroup: string,
   startTime: number,
-  handoff: import('../db/handoff-repository.js').HandoffSession,
+  handoff: HandoffSession,
 ): Promise<AgentExecutionResult> {
   const handoffRepo = deps.handoffRepo!;
   const router = deps.gatewayRouter!;
@@ -459,7 +459,7 @@ async function routeToHandoffAgent(
   prompt: string,
   callerGroup: string,
   startTime: number,
-  handoff: import('../db/handoff-repository.js').HandoffSession,
+  handoff: HandoffSession,
 ): Promise<AgentExecutionResult> {
   deps.handoffRepo!.incrementTurn(handoff.id);
 

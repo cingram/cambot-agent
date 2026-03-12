@@ -10,6 +10,7 @@ import type Database from 'better-sqlite3';
 import type { ContainerConfig, MemoryStrategy, RegisteredAgent, SubagentDefinition } from '../types.js';
 import type { ToolPolicy } from '../tools/tool-policy.js';
 import type { RoutingKeywords } from '../agents/keyword-generator.js';
+import { GATEWAY_PRESET } from '../config/config.js';
 import { logger } from '../logger.js';
 
 // ── Raw row shape coming out of SQLite ────────────────────────────
@@ -374,7 +375,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       ).get() as AgentRow | undefined;
       if (!row) return undefined;
       const agent = rowToAgent(row);
-      return agent.toolPolicy?.preset === 'gateway' ? agent : undefined;
+      return agent.toolPolicy?.preset === GATEWAY_PRESET ? agent : undefined;
     },
 
     create(input: CreateAgentInput): RegisteredAgent {

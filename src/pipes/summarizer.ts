@@ -10,6 +10,7 @@
  */
 
 import { logger } from '../logger.js';
+import { callAnthropicApi } from '../utils/anthropic-client.js';
 
 export interface SummarizerResult {
   summary: string;
@@ -42,17 +43,12 @@ const VALID_INTENTS = new Set([
   'marketing', 'spam', 'suspicious', 'unknown',
 ]);
 
-const DEFAULT_API_URL = 'https://api.anthropic.com/v1/messages';
 const MAX_SUMMARIZER_INPUT_CHARS = 16_000;
-
-interface AnthropicResponse {
-  content: Array<{ type: string; text?: string }>;
-}
 
 export function createSummarizer(deps: SummarizerDeps) {
   const { apiKey } = deps;
   const model = deps.model ?? 'claude-haiku-4-5-20251001';
-  const apiUrl = deps.apiUrl ?? DEFAULT_API_URL;
+  const apiUrl = deps.apiUrl;
 
   return {
     async summarize(
@@ -70,26 +66,12 @@ export function createSummarizer(deps: SummarizerDeps) {
       const truncated = userMessage.slice(0, MAX_SUMMARIZER_INPUT_CHARS);
 
       try {
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 256,
-            system: SYSTEM_PROMPT,
-            messages: [{ role: 'user', content: truncated }],
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Anthropic API error: ${response.status} ${response.statusText}`);
-        }
-
-        const json = await response.json() as AnthropicResponse;
+        const json = await callAnthropicApi(apiKey, {
+          model,
+          max_tokens: 256,
+          system: SYSTEM_PROMPT,
+          messages: [{ role: 'user', content: truncated }],
+        }, apiUrl);
 
         const text = json.content
           .filter((b) => b.type === 'text' && b.text)

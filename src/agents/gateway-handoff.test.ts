@@ -21,6 +21,7 @@ vi.mock('../config/config.js', () => ({
   HANDOFF_IDLE_TIMEOUT_MS: 600_000,
   HANDOFF_FREE_TURNS: 3,
   HANDOFF_CONFIDENCE_THRESHOLD: 0.7,
+  GATEWAY_PRESET: 'gateway',
 }));
 
 // Mock local scoring to return low confidence by default (forces API path).

@@ -11,6 +11,7 @@
 
 import { logger } from '../logger.js';
 import { readEnvFile } from '../config/env.js';
+import { callAnthropicApi, type AnthropicResponse } from '../utils/anthropic-client.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -42,7 +43,6 @@ export interface GatewayRouterDeps {
 // ── Constants ────────────────────────────────────────────────
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
-const DEFAULT_API_URL = 'https://api.anthropic.com/v1/messages';
 
 const ROUTE_TOOL = {
   name: 'route',
@@ -92,24 +92,12 @@ ${agentList}
 7. When in doubt, delegate rather than respond`;
 }
 
-// ── Response types ───────────────────────────────────────────
-
-interface AnthropicResponse {
-  content: Array<{
-    type: string;
-    name?: string;
-    input?: Record<string, unknown>;
-    text?: string;
-  }>;
-  stop_reason?: string;
-}
-
 // ── Factory ──────────────────────────────────────────────────
 
 export function createGatewayRouter(deps: GatewayRouterDeps) {
   const { apiKey } = deps;
   const model = deps.model ?? DEFAULT_MODEL;
-  const apiUrl = deps.apiUrl ?? DEFAULT_API_URL;
+  const apiUrl = deps.apiUrl;
 
   return {
     async route(
@@ -119,28 +107,14 @@ export function createGatewayRouter(deps: GatewayRouterDeps) {
       const startMs = Date.now();
 
       try {
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 1024,
-            system: buildSystemPrompt(agents),
-            messages: [{ role: 'user', content: userMessage }],
-            tools: [ROUTE_TOOL],
-            tool_choice: { type: 'tool', name: 'route' },
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Anthropic API error: ${response.status} ${response.statusText}`);
-        }
-
-        const json = await response.json() as AnthropicResponse;
+        const json = await callAnthropicApi(apiKey, {
+          model,
+          max_tokens: 1024,
+          system: buildSystemPrompt(agents),
+          messages: [{ role: 'user', content: userMessage }],
+          tools: [ROUTE_TOOL],
+          tool_choice: { type: 'tool', name: 'route' },
+        }, apiUrl);
 
         // Extract the tool_use block
         const toolUse = json.content.find(b => b.type === 'tool_use' && b.name === 'route');
@@ -212,28 +186,14 @@ export function createGatewayRouter(deps: GatewayRouterDeps) {
 Does this message continue the same task, or pivot to a completely different topic needing a different agent?
 Rules: follow-ups, clarifications, and related requests = continue. Completely different domain = pivot. When in doubt, continue.`;
 
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 256,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: userMessage }],
-            tools: [CONTINUATION_TOOL],
-            tool_choice: { type: 'tool', name: 'classify_continuation' },
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`Anthropic API error: ${response.status} ${response.statusText}`);
-        }
-
-        const json = await response.json() as AnthropicResponse;
+        const json = await callAnthropicApi(apiKey, {
+          model,
+          max_tokens: 256,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userMessage }],
+          tools: [CONTINUATION_TOOL],
+          tool_choice: { type: 'tool', name: 'classify_continuation' },
+        }, apiUrl);
         const toolUse = json.content.find(b => b.type === 'tool_use' && b.name === 'classify_continuation');
         if (!toolUse?.input) {
           throw new Error('No classify_continuation tool_use in response');
