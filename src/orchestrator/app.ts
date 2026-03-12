@@ -76,6 +76,7 @@ import { createAgentRepository, type AgentRepository } from '../db/agent-reposit
 import { createAgentTemplateRepository } from '../db/agent-template-repository.js';
 import { createPersistentAgentSpawner } from '../agents/persistent-agent-spawner.js';
 import { createGatewayRouterFromEnv } from '../agents/gateway-router.js';
+import { createHandoffRepository, type HandoffRepository } from '../db/handoff-repository.js';
 import { assembleContextString } from '../utils/context-files.js';
 import { createPersistentAgentHandler, type PersistentAgentHandler } from '../agents/persistent-agent-handler.js';
 import { provisionAgent } from '../agents/agent-factory.js';
@@ -108,6 +109,7 @@ export class CamBotApp {
   private workflowAgentHandler: { destroy: () => void } | null = null;
   private agentSpawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner | null = null;
   private agentRepo: AgentRepository | null = null;
+  private handoffRepo: HandoffRepository | null = null;
   private socketServer: CambotSocketServer | null = null;
 
   async start(): Promise<void> {
@@ -513,6 +515,8 @@ export class CamBotApp {
     const db = getDatabase();
     const templateRepo = createAgentTemplateRepository(db);
     const agentRepo = this.agentRepo ?? createAgentRepository(db);
+    const handoffRepo = createHandoffRepository(db);
+    this.handoffRepo = handoffRepo;
 
     return createPersistentAgentSpawner({
       getActiveMcpServers: () => this.integrationMgr?.getActiveMcpServers(),
@@ -555,8 +559,10 @@ export class CamBotApp {
         name: a.name,
         description: a.description,
         capabilities: a.capabilities,
+        routingKeywords: a.routingKeywords,
       })),
       getAgentById: (id) => agentRepo.getById(id),
+      handoffRepo,
     });
   }
 
@@ -579,6 +585,7 @@ export class CamBotApp {
       const db = getDatabase();
       const agentRepo = createAgentRepository(db);
       agentRepo.ensureTable();
+      this.seedSystemGateway(agentRepo);
 
       this.agentRepo = agentRepo;
       const spawner = this.createAgentSpawner();
@@ -588,11 +595,93 @@ export class CamBotApp {
       const agents = agentRepo.getAll();
       logger.info(
         { agentCount: agents.length, agents: agents.map(a => a.id) },
-        'Persistent agents initialized (auto-provisioning enabled)',
+        'Persistent agents initialized (gateway + auto-provisioning enabled)',
       );
+
+      // Backfill routing keywords for agents that don't have them yet
+      this.backfillRoutingKeywords(agentRepo, spawner);
     } catch (err) {
       logger.error({ err }, 'Failed to initialize persistent agents');
     }
+  }
+
+  /** Generate routing keywords for agents missing them (background, non-blocking). */
+  private backfillRoutingKeywords(
+    agentRepo: AgentRepository,
+    spawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner,
+  ): void {
+    const agents = agentRepo.getAll().filter(
+      a => !a.routingKeywords && a.description && a.toolPolicy?.preset !== 'gateway',
+    );
+    if (agents.length === 0) return;
+
+    logger.info(
+      { count: agents.length, ids: agents.map(a => a.id) },
+      'Backfilling routing keywords for agents without them',
+    );
+
+    // Process sequentially to avoid rate limiting
+    (async () => {
+      const { generateRoutingKeywordsFromEnv } = await import('../agents/keyword-generator.js');
+      for (const agent of agents) {
+        try {
+          const keywords = await generateRoutingKeywordsFromEnv({
+            name: agent.name,
+            description: agent.description,
+            capabilities: agent.capabilities,
+          });
+          if (keywords.words.length > 0) {
+            agentRepo.update(agent.id, { routingKeywords: keywords });
+            spawner.invalidateRegistryCache?.();
+          }
+        } catch (err) {
+          logger.error({ err, agentId: agent.id }, 'Failed to backfill routing keywords');
+        }
+      }
+      logger.info({ count: agents.length }, 'Routing keyword backfill complete');
+    })().catch(err => logger.error({ err }, 'Routing keyword backfill failed'));
+  }
+
+  /**
+   * Ensure the system gateway agent exists. Creates it on first boot,
+   * upgrades a pre-existing gateway to system status, or re-creates
+   * if someone managed to delete it manually from the DB.
+   */
+  private seedSystemGateway(agentRepo: import('../db/agent-repository.js').AgentRepository): void {
+    const existing = agentRepo.getSystemGateway();
+    if (existing) {
+      logger.debug({ agentId: existing.id }, 'System gateway agent already exists');
+      return;
+    }
+
+    // Check if the ID is taken by a non-system agent (e.g. created before system flag existed)
+    const byId = agentRepo.getById('gateway');
+    if (byId) {
+      if (byId.toolPolicy?.preset === 'gateway') {
+        // Upgrade existing gateway agent to system status
+        agentRepo.markSystem(byId.id);
+        logger.info({ agentId: byId.id }, 'Upgraded existing gateway agent to system status');
+      } else {
+        logger.warn(
+          { agentId: byId.id },
+          'Agent with id "gateway" exists with non-gateway preset — skipping seed',
+        );
+      }
+      return;
+    }
+
+    agentRepo.create({
+      id: 'gateway',
+      name: 'Gateway Router',
+      description: 'Routes incoming messages to specialist agents via lightweight classification. System infrastructure.',
+      folder: 'gateway',
+      channels: [],
+      mcpServers: [],
+      capabilities: ['routing', 'classification'],
+      toolPolicy: { preset: 'gateway' },
+      isSystem: true,
+    });
+    logger.info('Seeded system gateway agent');
   }
 
   private async initSocketServer(): Promise<void> {
@@ -617,6 +706,7 @@ export class CamBotApp {
       agentSpawner: this.agentSpawner ?? undefined,
       agentRepo: this.agentRepo ?? undefined,
       agentMessageRepo: createAgentMessageRepository(getDatabase()),
+      onAgentMutation: () => this.handleAgentMutation(),
       // socketServer assigned below after CambotSocketServer creation
     };
 
@@ -639,6 +729,9 @@ export class CamBotApp {
     if (deletedFolder) {
       this.cleanupAgentFolder(deletedFolder);
     }
+
+    // Invalidate gateway's cached agent registry so new keywords are picked up
+    this.agentSpawner?.invalidateRegistryCache?.();
 
     if (this.persistentAgentHandler) {
       this.persistentAgentHandler.reload();
@@ -796,5 +889,13 @@ export class CamBotApp {
     setInterval(() => {
       cleanupStaleContainers(STALE_MAX_AGE);
     }, STALE_CLEANUP_INTERVAL);
+
+    // Periodic handoff session cleanup (every 60s)
+    if (this.handoffRepo) {
+      const repo = this.handoffRepo;
+      setInterval(() => {
+        try { repo.clearExpired(); } catch { /* non-critical */ }
+      }, 60_000);
+    }
   }
 }

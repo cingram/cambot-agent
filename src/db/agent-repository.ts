@@ -7,8 +7,9 @@
  */
 import type Database from 'better-sqlite3';
 
-import type { ContainerConfig, MemoryStrategy, RegisteredAgent } from '../types.js';
+import type { ContainerConfig, MemoryStrategy, RegisteredAgent, SubagentDefinition } from '../types.js';
 import type { ToolPolicy } from '../tools/tool-policy.js';
+import type { RoutingKeywords } from '../agents/keyword-generator.js';
 import { logger } from '../logger.js';
 
 // ── Raw row shape coming out of SQLite ────────────────────────────
@@ -23,6 +24,7 @@ interface AgentRow {
   concurrency: number;
   timeout_ms: number;
   is_main: number;
+  is_system: number;
   tool_policy: string | null;
   system_prompt: string | null;
   soul: string | null;
@@ -36,6 +38,8 @@ interface AgentRow {
   temperature: number | null;
   max_tokens: number | null;
   base_url: string | null;
+  routing_keywords: string | null;
+  subagents: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -44,7 +48,8 @@ interface AgentRow {
 export interface CreateAgentInput {
   id: string;
   name: string;
-  description?: string;
+  /** Required — used for gateway routing keyword generation. */
+  description: string;
   folder: string;
   channels?: string[];
   mcpServers?: string[];
@@ -52,6 +57,8 @@ export interface CreateAgentInput {
   concurrency?: number;
   timeoutMs?: number;
   isMain?: boolean;
+  /** Mark as system agent (seeded at startup, cannot be deleted). */
+  isSystem?: boolean;
   toolPolicy?: ToolPolicy;
   systemPrompt?: string | null;
   soul?: string | null;
@@ -65,6 +72,8 @@ export interface CreateAgentInput {
   temperature?: number | null;
   maxTokens?: number | null;
   baseUrl?: string | null;
+  routingKeywords?: RoutingKeywords;
+  subagents?: Record<string, SubagentDefinition>;
 }
 
 export interface UpdateAgentInput {
@@ -89,6 +98,8 @@ export interface UpdateAgentInput {
   temperature?: number | null;
   maxTokens?: number | null;
   baseUrl?: string | null;
+  routingKeywords?: RoutingKeywords;
+  subagents?: Record<string, SubagentDefinition>;
 }
 
 export interface AgentRepository {
@@ -96,8 +107,13 @@ export interface AgentRepository {
   getAll(): RegisteredAgent[];
   getById(id: string): RegisteredAgent | undefined;
   getByFolder(folder: string): RegisteredAgent | undefined;
+  /** Find the system gateway agent (toolPolicy.preset === 'gateway' + is_system). */
+  getSystemGateway(): RegisteredAgent | undefined;
   create(agent: CreateAgentInput): RegisteredAgent;
   update(id: string, updates: UpdateAgentInput): RegisteredAgent;
+  /** Promote an agent to system status (cannot be undone via API). */
+  markSystem(id: string): void;
+  /** Delete an agent. Throws if the agent is a system agent. */
   delete(id: string): boolean;
   getByChannel(channel: string): RegisteredAgent[];
   buildRoutingTable(): Map<string, string>;
@@ -158,6 +174,7 @@ function rowToAgent(row: AgentRow): RegisteredAgent {
     concurrency: row.concurrency,
     timeoutMs: row.timeout_ms,
     isMain: row.is_main === 1,
+    system: row.is_system === 1,
     toolPolicy: row.tool_policy ? JSON.parse(row.tool_policy) : undefined,
     systemPrompt: row.system_prompt,
     soul: row.soul,
@@ -171,6 +188,8 @@ function rowToAgent(row: AgentRow): RegisteredAgent {
     temperature: row.temperature,
     maxTokens: row.max_tokens,
     baseUrl: row.base_url,
+    routingKeywords: row.routing_keywords ? JSON.parse(row.routing_keywords) : undefined,
+    subagents: row.subagents ? JSON.parse(row.subagents) : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -292,6 +311,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
           concurrency   INTEGER NOT NULL DEFAULT 1,
           timeout_ms    INTEGER NOT NULL DEFAULT 300000,
           is_main       INTEGER NOT NULL DEFAULT 0,
+          is_system     INTEGER NOT NULL DEFAULT 0,
           agent_def_id  TEXT,
           tool_policy   TEXT,
           system_prompt TEXT,
@@ -324,6 +344,9 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       addColumnIfMissing(db, 'temperature', 'REAL');
       addColumnIfMissing(db, 'max_tokens', 'INTEGER');
       addColumnIfMissing(db, 'base_url', 'TEXT');
+      addColumnIfMissing(db, 'is_system', 'INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'routing_keywords', 'TEXT');
+      addColumnIfMissing(db, 'subagents', 'TEXT');
 
       // Data migrations
       migrateFromAgentDefinitions(db);
@@ -345,6 +368,15 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       return row ? rowToAgent(row) : undefined;
     },
 
+    getSystemGateway(): RegisteredAgent | undefined {
+      const row = db.prepare(
+        'SELECT * FROM registered_agents WHERE is_system = 1 AND tool_policy IS NOT NULL',
+      ).get() as AgentRow | undefined;
+      if (!row) return undefined;
+      const agent = rowToAgent(row);
+      return agent.toolPolicy?.preset === 'gateway' ? agent : undefined;
+    },
+
     create(input: CreateAgentInput): RegisteredAgent {
       const channels = input.channels ?? [];
       const mcpServers = input.mcpServers ?? [];
@@ -361,15 +393,15 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       db.prepare(`
         INSERT INTO registered_agents
           (id, name, description, folder, channels, mcp_servers, capabilities,
-           concurrency, timeout_ms, is_main, tool_policy,
+           concurrency, timeout_ms, is_main, is_system, tool_policy,
            system_prompt, soul, provider, model, secret_keys,
            memory_strategy, container_config, tools, skills, temperature, max_tokens, base_url,
-           created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           routing_keywords, subagents, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.id,
         input.name,
-        input.description ?? '',
+        input.description,
         input.folder,
         JSON.stringify(channels),
         JSON.stringify(mcpServers),
@@ -377,6 +409,7 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         concurrency,
         timeoutMs,
         input.isMain ? 1 : 0,
+        input.isSystem ? 1 : 0,
         input.toolPolicy ? JSON.stringify(input.toolPolicy) : null,
         input.systemPrompt ?? null,
         input.soul ?? null,
@@ -390,6 +423,8 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         input.temperature ?? null,
         input.maxTokens ?? null,
         input.baseUrl ?? null,
+        input.routingKeywords ? JSON.stringify(input.routingKeywords) : null,
+        input.subagents ? JSON.stringify(input.subagents) : null,
         now,
         now,
       );
@@ -501,6 +536,15 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
         fields.push('base_url = ?');
         values.push(updates.baseUrl);
       }
+      if (updates.routingKeywords !== undefined) {
+        fields.push('routing_keywords = ?');
+        values.push(JSON.stringify(updates.routingKeywords));
+      }
+      if (updates.subagents !== undefined) {
+        fields.push('subagents = ?');
+        values.push(updates.subagents ? JSON.stringify(updates.subagents) : null);
+        invalidatesSessions = true;
+      }
 
       if (fields.length === 0) return existing;
 
@@ -538,7 +582,20 @@ export function createAgentRepository(db: Database.Database): AgentRepository {
       return this.getById(id)!;
     },
 
+    markSystem(id: string): void {
+      const result = db.prepare(
+        'UPDATE registered_agents SET is_system = 1, updated_at = ? WHERE id = ?',
+      ).run(new Date().toISOString(), id);
+      if (result.changes === 0) {
+        throw new Error(`Agent "${id}" not found`);
+      }
+    },
+
     delete(id: string): boolean {
+      const existing = this.getById(id);
+      if (existing?.system) {
+        throw new Error(`Cannot delete system agent "${id}"`);
+      }
       const result = db.prepare('DELETE FROM registered_agents WHERE id = ?').run(id);
       return result.changes > 0;
     },

@@ -72,6 +72,9 @@ export interface SocketDeps {
   /** Agent repository for looking up registered agents (optional). */
   agentRepo?: AgentRepository;
 
+  /** Called after agent create/update/delete to refresh routing tables. */
+  onAgentMutation?: () => void;
+
   /** Agent message repository for persisting inter-agent communication (optional). */
   agentMessageRepo?: AgentMessageRepository;
 

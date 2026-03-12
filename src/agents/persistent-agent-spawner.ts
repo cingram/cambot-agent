@@ -19,7 +19,10 @@ import { resolveToolList, resolveDisallowedTools, resolveMcpToolList, applySafet
 import { channelFromJid } from '../utils/channel-from-jid.js';
 import { cleanupSdkMemory } from '../utils/memory-cleanup.js';
 import { resolveActiveConversation, setConversationSession, updatePreview } from '../db/conversation-repository.js';
-import type { GatewayRouter, AgentRegistryEntry } from './gateway-router.js';
+import type { GatewayRouter, AgentRegistryEntry, RoutingDecision } from './gateway-router.js';
+import { scoreRoute, scoreContinuation } from './gateway-router.js';
+import type { HandoffRepository } from '../db/handoff-repository.js';
+import { HANDOFF_FREE_TURNS, HANDOFF_IDLE_TIMEOUT_MS, HANDOFF_CONFIDENCE_THRESHOLD } from '../config/config.js';
 
 // ── Public types ───────────────────────────────────────────────
 
@@ -38,6 +41,8 @@ export interface ContainerSpawner {
     callerGroup: string,
     timeoutMs: number,
   ): Promise<AgentExecutionResult>;
+  /** Invalidate cached agent registry (call after agent create/update/delete). */
+  invalidateRegistryCache?: () => void;
 }
 
 // ── Dependencies ───────────────────────────────────────────────
@@ -70,11 +75,42 @@ export interface PersistentAgentSpawnerDeps {
   getAgentRegistry?: () => AgentRegistryEntry[];
   /** Look up a full RegisteredAgent by ID (for gateway delegation). */
   getAgentById?: (id: string) => RegisteredAgent | undefined;
+  /** Handoff session repository for gateway session stickiness. */
+  handoffRepo?: HandoffRepository;
+}
+
+// ── Agent Registry Cache ───────────────────────────────────────
+// Avoids re-querying + re-mapping on every message.
+// Invalidated when onAgentMutation fires (agent create/update/delete).
+
+const CACHE_TTL_MS = 60_000; // 1 minute max staleness
+
+interface RegistryCache {
+  entries: AgentRegistryEntry[];
+  builtAt: number;
+}
+
+function createRegistryCache(getAgentRegistry?: () => AgentRegistryEntry[]) {
+  let cache: RegistryCache | null = null;
+
+  return {
+    get(): AgentRegistryEntry[] {
+      if (!getAgentRegistry) return [];
+      if (cache && Date.now() - cache.builtAt < CACHE_TTL_MS) return cache.entries;
+      cache = { entries: getAgentRegistry(), builtAt: Date.now() };
+      return cache.entries;
+    },
+    invalidate(): void {
+      cache = null;
+    },
+  };
 }
 
 // ── Factory ────────────────────────────────────────────────────
 
 export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): ContainerSpawner {
+  const registryCache = createRegistryCache(deps.getAgentRegistry);
+
   // Store reference for recursive gateway delegation
   const self: ContainerSpawner = {
     async spawn(
@@ -88,7 +124,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
 
       // Gateway mode: lightweight API routing instead of full container
       if (agent.toolPolicy?.preset === 'gateway' && deps.gatewayRouter && !isInterAgent) {
-        return spawnViaGateway(self, deps, agent, prompt, callerGroup, startTime);
+        return spawnViaGateway(self, deps, registryCache, agent, prompt, callerGroup, startTime);
       }
 
       logger.debug(
@@ -179,6 +215,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
               ),
             ),
             assembledContext,
+            subagents: isCustomProvider ? undefined : agent.subagents,
           },
           (_proc, containerName) => {
             spawnedContainerName = containerName;
@@ -284,6 +321,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
         };
       }
     },
+    invalidateRegistryCache: () => registryCache.invalidate(),
   };
   return self;
 }
@@ -291,32 +329,173 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
 // ── Gateway Mode ─────────────────────────────────────────────
 
 /**
- * Handle a gateway agent: make a lightweight Haiku API call for routing,
- * then either respond directly or spawn the target agent.
+ * Handle a gateway agent: check for an active handoff session first,
+ * then fall back to full Haiku routing if no handoff exists.
  */
 async function spawnViaGateway(
   spawner: ContainerSpawner,
   deps: PersistentAgentSpawnerDeps,
+  cache: ReturnType<typeof createRegistryCache>,
   agent: RegisteredAgent,
   prompt: string,
   callerGroup: string,
   startTime: number,
 ): Promise<AgentExecutionResult> {
   const router = deps.gatewayRouter!;
-  const agents = deps.getAgentRegistry?.() ?? [];
+  const handoffRepo = deps.handoffRepo;
+  const channel = channelFromJid(callerGroup);
 
-  // Exclude the gateway agent itself from routing targets
+  // Check for active handoff session
+  const handoff = handoffRepo?.findActive(channel, callerGroup, agent.id);
+
+  if (handoff) {
+    return handleActiveHandoff(spawner, deps, cache, agent, prompt, callerGroup, startTime, handoff);
+  }
+
+  // No handoff — try local scoring first, defer to Haiku if low confidence
+  const agents = cache.get();
   const routeTargets = agents.filter(a => a.id !== agent.id);
 
-  const decision = await router.route(prompt, routeTargets);
+  const local = scoreRoute(prompt, routeTargets);
+  let decision: RoutingDecision;
 
+  if (local.confidence >= HANDOFF_CONFIDENCE_THRESHOLD) {
+    logger.info(
+      { confidence: local.confidence, action: local.decision.action, target: local.decision.targetAgent },
+      `[gateway] Local routing (confidence ${local.confidence})`,
+    );
+    decision = local.decision;
+  } else {
+    logger.info(
+      { confidence: local.confidence },
+      `[gateway] Low confidence (${local.confidence}), deferring to Haiku`,
+    );
+    decision = await router.route(prompt, routeTargets);
+  }
+
+  return executeRoutingDecision(spawner, deps, agent, prompt, callerGroup, startTime, decision);
+}
+
+/**
+ * Route to the handoff agent directly (free turns) or run continuation
+ * classification to decide if the conversation has pivoted.
+ */
+async function handleActiveHandoff(
+  spawner: ContainerSpawner,
+  deps: PersistentAgentSpawnerDeps,
+  cache: ReturnType<typeof createRegistryCache>,
+  gateway: RegisteredAgent,
+  prompt: string,
+  callerGroup: string,
+  startTime: number,
+  handoff: import('../db/handoff-repository.js').HandoffSession,
+): Promise<AgentExecutionResult> {
+  const handoffRepo = deps.handoffRepo!;
+  const router = deps.gatewayRouter!;
+
+  // Free turns — skip classification entirely
+  if (handoff.turnCount <= HANDOFF_FREE_TURNS) {
+    logger.info(
+      { gateway: gateway.id, agent: handoff.activeAgent, turn: handoff.turnCount, callerGroup },
+      `[gateway] Handoff free turn ${handoff.turnCount}/${HANDOFF_FREE_TURNS}`,
+    );
+    return routeToHandoffAgent(spawner, deps, gateway, prompt, callerGroup, startTime, handoff);
+  }
+
+  // Past free turns — try local scoring, defer to Haiku if low confidence
+  const agents = cache.get();
+  const localCont = scoreContinuation(prompt, handoff.activeAgent, handoff.intent, agents);
+
+  let continuation: { action: 'continue' | 'pivot' };
+  if (localCont.confidence >= HANDOFF_CONFIDENCE_THRESHOLD) {
+    logger.info(
+      { confidence: localCont.confidence, action: localCont.decision.action, agent: handoff.activeAgent },
+      `[gateway] Local continuation (confidence ${localCont.confidence})`,
+    );
+    continuation = localCont.decision;
+  } else {
+    logger.info(
+      { confidence: localCont.confidence },
+      `[gateway] Low continuation confidence (${localCont.confidence}), deferring to Haiku`,
+    );
+    continuation = await router.classifyContinuation(prompt, handoff.activeAgent, handoff.intent);
+  }
+
+  if (continuation.action === 'continue') {
+    return routeToHandoffAgent(spawner, deps, gateway, prompt, callerGroup, startTime, handoff);
+  }
+
+  // Pivot — clear handoff, re-route from scratch
+  logger.info(
+    { gateway: gateway.id, previousAgent: handoff.activeAgent, callerGroup },
+    '[gateway] Handoff pivot detected, re-routing',
+  );
+  handoffRepo.clear(handoff.id);
+
+  const routeTargets = agents.filter(a => a.id !== gateway.id);
+
+  const localRoute = scoreRoute(prompt, routeTargets);
+  let decision: RoutingDecision;
+  if (localRoute.confidence >= HANDOFF_CONFIDENCE_THRESHOLD) {
+    logger.info(
+      { confidence: localRoute.confidence, action: localRoute.decision.action, target: localRoute.decision.targetAgent },
+      `[gateway] Local re-routing (confidence ${localRoute.confidence})`,
+    );
+    decision = localRoute.decision;
+  } else {
+    decision = await router.route(prompt, routeTargets);
+  }
+
+  return executeRoutingDecision(spawner, deps, gateway, prompt, callerGroup, startTime, decision);
+}
+
+/**
+ * Route directly to the handoff agent, incrementing turn count.
+ */
+async function routeToHandoffAgent(
+  spawner: ContainerSpawner,
+  deps: PersistentAgentSpawnerDeps,
+  gateway: RegisteredAgent,
+  prompt: string,
+  callerGroup: string,
+  startTime: number,
+  handoff: import('../db/handoff-repository.js').HandoffSession,
+): Promise<AgentExecutionResult> {
+  deps.handoffRepo!.incrementTurn(handoff.id);
+
+  const targetAgent = deps.getAgentById?.(handoff.activeAgent);
+  if (!targetAgent) {
+    logger.warn({ target: handoff.activeAgent }, 'Handoff target agent no longer exists, clearing');
+    deps.handoffRepo!.clear(handoff.id);
+    return {
+      status: 'error',
+      content: `Agent "${handoff.activeAgent}" not found`,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  return spawner.spawn(targetAgent, prompt, callerGroup, targetAgent.timeoutMs);
+}
+
+/**
+ * Execute a routing decision — respond directly or delegate to a specialist.
+ * On delegate, creates a handoff session for future stickiness.
+ */
+async function executeRoutingDecision(
+  spawner: ContainerSpawner,
+  deps: PersistentAgentSpawnerDeps,
+  gateway: RegisteredAgent,
+  prompt: string,
+  callerGroup: string,
+  startTime: number,
+  decision: RoutingDecision,
+): Promise<AgentExecutionResult> {
   if (decision.action === 'respond') {
-    // Direct response — emit to bus, no container needed
     if (decision.response) {
       await deps.messageBus.emit(
         new OutboundMessage('persistent-agent', callerGroup, decision.response, {
-          groupFolder: agent.folder,
-          agentId: agent.id,
+          groupFolder: gateway.folder,
+          agentId: gateway.id,
         }),
       );
     }
@@ -327,7 +506,7 @@ async function spawnViaGateway(
     };
   }
 
-  // Delegate — look up and spawn the target agent directly
+  // Delegate — look up and spawn the target agent
   if (!decision.targetAgent || !decision.prompt) {
     return {
       status: 'error',
@@ -346,12 +525,31 @@ async function spawnViaGateway(
     };
   }
 
-  logger.info(
-    { gateway: agent.id, target: decision.targetAgent, callerGroup },
-    `[gateway] Delegating to ${decision.targetAgent}`,
-  );
+  // Create handoff session for session stickiness
+  if (deps.handoffRepo) {
+    const channel = channelFromJid(callerGroup);
+    const intent = extractIntent(decision.prompt);
+    deps.handoffRepo.upsert({
+      channel,
+      chatJid: callerGroup,
+      gatewayId: gateway.id,
+      activeAgent: decision.targetAgent,
+      intent,
+    });
+    logger.info(
+      { gateway: gateway.id, target: decision.targetAgent, intent, callerGroup },
+      `[gateway] Handoff session created → ${decision.targetAgent}`,
+    );
+  }
 
-  // Spawn target agent via the same spawner (recursive).
-  // The target agent won't be a gateway, so it takes the normal container path.
   return spawner.spawn(targetAgent, decision.prompt, callerGroup, targetAgent.timeoutMs);
+}
+
+/**
+ * Extract a short intent description from the enriched prompt.
+ * Truncates to the first sentence or 100 characters.
+ */
+function extractIntent(prompt: string): string {
+  const firstSentence = prompt.match(/^[^.!?]+[.!?]/)?.[0] ?? prompt;
+  return firstSentence.slice(0, 100);
 }

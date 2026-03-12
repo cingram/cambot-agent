@@ -63,9 +63,10 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
 
   const resilienceStates = new Map<string, AgentResilienceState>();
   let routingTable = agentRepo.buildRoutingTable();
+  let gatewayAgentId: string | null = agentRepo.getSystemGateway()?.id ?? null;
 
   logger.info(
-    { routeCount: routingTable.size, routes: Object.fromEntries(routingTable) },
+    { routeCount: routingTable.size, routes: Object.fromEntries(routingTable), gatewayAgentId },
     'Persistent agent routing table built',
   );
 
@@ -209,7 +210,13 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
 
       let agentId = routingTable.get(channel);
 
-      // Auto-provision: create agent on-demand for unclaimed channels
+      // Fallback: route unclaimed channels through the system gateway
+      if (!agentId && gatewayAgentId) {
+        agentId = gatewayAgentId;
+        logger.debug({ channel, gatewayAgentId }, 'Routing unclaimed channel through system gateway');
+      }
+
+      // Last resort: auto-provision a dedicated agent (only when no gateway exists)
       if (!agentId && autoProvision) {
         try {
           const newAgent = autoProvision(channel);
@@ -224,7 +231,6 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
             { channel, err: err instanceof Error ? err.message : String(err) },
             'Auto-provision skipped (agent may already exist)',
           );
-          // Retry routing table lookup — another concurrent message may have created it
           routingTable = agentRepo.buildRoutingTable();
           agentId = routingTable.get(channel);
         }
@@ -259,9 +265,10 @@ export function createPersistentAgentHandler(deps: PersistentAgentHandlerDeps): 
   return {
     reload(): void {
       routingTable = agentRepo.buildRoutingTable();
+      gatewayAgentId = agentRepo.getSystemGateway()?.id ?? null;
       pruneStaleResilienceStates();
       logger.info(
-        { routeCount: routingTable.size, routes: Object.fromEntries(routingTable) },
+        { routeCount: routingTable.size, routes: Object.fromEntries(routingTable), gatewayAgentId },
         'Persistent agent routing table reloaded',
       );
     },

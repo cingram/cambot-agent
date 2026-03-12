@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import { FRAME_TYPES } from '../protocol/types.js';
 import { logger } from '../../logger.js';
+import { generateAndStoreKeywords } from '../../agents/keyword-generator.js';
 import type { CommandRegistry } from './registry.js';
 
 // ── Schemas ──────────────────────────────────────────────
@@ -56,10 +57,16 @@ export function registerAgentCrud(registry: CommandRegistry): void {
 
       try {
         const agentData = payload.agent as Record<string, unknown>;
+        const description = (agentData.description as string) ?? '';
+        if (!description) {
+          connection.replyError(frame, 'VALIDATION', 'description is required — used for gateway routing');
+          return;
+        }
+
         const agent = deps.agentRepo.create({
           id: agentData.id as string,
           name: agentData.name as string,
-          description: (agentData.description as string) ?? '',
+          description,
           folder: (agentData.group_folder as string) ?? (agentData.id as string),
           provider: (agentData.provider as string) ?? 'claude',
           model: (agentData.model as string) ?? 'claude-sonnet-4-6',
@@ -84,6 +91,13 @@ export function registerAgentCrud(registry: CommandRegistry): void {
         });
 
         logger.info({ agentId: agent.id }, 'Agent created via socket');
+
+        // Generate routing keywords in background (includes cache invalidation)
+        generateAndStoreKeywords(
+          deps.agentRepo,
+          agent,
+          () => deps.onAgentMutation?.(),
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.error({ err }, 'agent.create failed');
@@ -229,12 +243,17 @@ export function registerAgentCrud(registry: CommandRegistry): void {
       }
 
       try {
-        const deleted = deps.agentRepo.delete(payload.agentId);
-
-        if (!deleted) {
+        const agent = deps.agentRepo.getById(payload.agentId);
+        if (!agent) {
           connection.replyError(frame, 'NOT_FOUND', `Agent "${payload.agentId}" not found`);
           return;
         }
+        if (agent.system) {
+          connection.replyError(frame, 'FORBIDDEN', `Cannot delete system agent "${payload.agentId}"`);
+          return;
+        }
+
+        deps.agentRepo.delete(payload.agentId);
 
         connection.reply(frame, FRAME_TYPES.AGENT_DELETE, {
           status: 'ok',

@@ -181,6 +181,17 @@ export const CONVERSATION_MAX_SIZE_KB = parseInt(
 // Long-lived agents: very high rotation threshold (50MB) to prevent unbounded growth
 export const LONG_LIVED_DEFAULT_MAX_SIZE_KB = 51200;
 
+// Gateway handoff — session stickiness for multi-turn gateway conversations
+export const HANDOFF_IDLE_TIMEOUT_MS = parseInt(
+  process.env.HANDOFF_IDLE_TIMEOUT_MS || '600000', 10,  // 10 minutes
+);
+export const HANDOFF_FREE_TURNS = parseInt(
+  process.env.HANDOFF_FREE_TURNS || '0', 10,
+);
+export const HANDOFF_CONFIDENCE_THRESHOLD = parseFloat(
+  process.env.HANDOFF_CONFIDENCE_THRESHOLD || '0.7',
+);
+
 // Heartbeat monitoring interval (host polls container heartbeat file at this rate)
 export const HEARTBEAT_INTERVAL_MS = 5000;
 

@@ -49,6 +49,7 @@ export function provisionAgent(
   return deps.agentRepo.create({
     id,
     name,
+    description: `Auto-provisioned agent for the ${input.channel} channel.`,
     folder,
     channels: [input.channel],
     provider: input.provider ?? 'claude',

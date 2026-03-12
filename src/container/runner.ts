@@ -26,7 +26,7 @@ import { resolveGroupFolderPath } from '../groups/group-folder.js';
 import { logger } from '../logger.js';
 import { CONTAINER_RUNTIME_BIN, killContainersForGroup, readonlyMountArgs, stopContainer } from './runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { ExecutionContext } from '../types.js';
+import type { ExecutionContext, SubagentDefinition } from '../types.js';
 import { AgentOptions } from '../agents/agents.js';
 import type { CambotSocketServer } from '../cambot-socket/server.js';
 import { registerOutputCallback, removeOutputCallback } from '../cambot-socket/handlers/output.js';
@@ -85,6 +85,8 @@ export interface ContainerInput {
   /** Pre-assembled context string (identity + soul + tools + agents + heartbeat + channels).
    *  Passed to container via stdin; container wraps in <cambot-context> and adds memory. */
   assembledContext?: string;
+  /** In-process SDK subagents the container agent can spawn. Keys are subagent names. */
+  subagents?: Record<string, SubagentDefinition>;
 }
 
 export interface ContainerTelemetry {

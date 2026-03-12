@@ -19,6 +19,7 @@ function createMockAgent(overrides: Partial<RegisteredAgent> = {}): RegisteredAg
     concurrency: 2,
     timeoutMs: 60_000,
     isMain: false,
+    system: false,
     systemPrompt: null,
     soul: null,
     provider: 'anthropic',

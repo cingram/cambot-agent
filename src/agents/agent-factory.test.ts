@@ -25,6 +25,7 @@ function makeAgent(overrides: Partial<RegisteredAgent> = {}): RegisteredAgent {
     concurrency: 1,
     timeoutMs: 300_000,
     isMain: false,
+    system: false,
     systemPrompt: null,
     soul: null,
     provider: 'claude',
@@ -76,6 +77,7 @@ describe('provisionAgent', () => {
     expect(agentRepo.create).toHaveBeenCalledWith({
       id: 'web-agent',
       name: 'web agent',
+      description: 'Auto-provisioned agent for the web channel.',
       folder: 'web-agent',
       channels: ['web'],
       provider: 'claude',

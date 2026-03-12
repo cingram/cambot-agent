@@ -50,6 +50,18 @@ interface BaseContainerInput {
   mcpSocketGroup?: string;
 }
 
+/** In-process SDK subagent definition (passed from host, fed to SDK query options). */
+export interface SubagentDefinition {
+  description: string;
+  prompt: string;
+  tools?: string[];
+  disallowedTools?: string[];
+  mcpServers?: string[];
+  skills?: string[];
+  model?: 'sonnet' | 'opus' | 'haiku';
+  maxTurns?: number;
+}
+
 export interface ClaudeContainerInput extends BaseContainerInput {
   kind: 'claude';
   /** Claude model to use (e.g. 'claude-opus-4-6'). Falls back to SDK default. */
@@ -71,6 +83,8 @@ export interface ClaudeContainerInput extends BaseContainerInput {
   /** Pre-assembled context string from host (identity + soul + tools + agents + heartbeat + channels).
    *  Container wraps this in <cambot-context> and adds memory instructions. */
   assembledContext?: string;
+  /** In-process SDK subagents this agent can spawn. Keys are subagent names. */
+  subagents?: Record<string, SubagentDefinition>;
   customAgent?: undefined;
 }
 
