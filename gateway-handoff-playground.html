@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gateway Handoff Routing</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --surface3: #30363d;
+    --border: #30363d; --text: #e6edf3; --text2: #8b949e; --text3: #6e7681;
+    --accent: #58a6ff; --green: #3fb950; --red: #f85149; --orange: #d29922;
+    --purple: #bc8cff; --pink: #f778ba; --cyan: #79c0ff; --yellow: #e3b341;
+    --radius: 8px;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+
+  /* -- Header -- */
+  .header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  .header h1 { font-size: 16px; font-weight: 600; }
+  .header .subtitle { color: var(--text2); font-size: 13px; }
+
+  /* -- Main layout -- */
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* -- Left panel: controls -- */
+  .controls { width: 340px; flex-shrink: 0; border-right: 1px solid var(--border); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .control-group { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
+  .control-group h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); margin-bottom: 10px; }
+  .control-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .control-row:last-child { margin-bottom: 0; }
+  .control-row label { font-size: 12px; color: var(--text2); min-width: 100px; }
+  .control-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .control-row .val { font-size: 12px; color: var(--text); min-width: 36px; text-align: right; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+  select, input[type="text"] { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 6px 8px; font-size: 13px; width: 100%; font-family: inherit; }
+  select:focus, input[type="text"]:focus { outline: none; border-color: var(--accent); }
+
+  .agent-list { display: flex; flex-direction: column; gap: 4px; }
+  .agent-chip { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; font-size: 12px; background: var(--surface2); border: 1px solid var(--border); }
+  .agent-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .agent-chip .id { font-family: monospace; color: var(--text); }
+  .agent-chip .desc { color: var(--text3); margin-left: auto; font-size: 11px; }
+
+  /* -- Center: visualization -- */
+  .viz { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Message input */
+  .input-bar { padding: 16px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0; }
+  .input-bar input { flex: 1; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 10px 14px; font-size: 14px; font-family: inherit; }
+  .input-bar input:focus { outline: none; border-color: var(--accent); }
+  .input-bar input::placeholder { color: var(--text3); }
+  .send-btn { background: var(--accent); color: #0d1117; border: none; border-radius: 6px; padding: 10px 20px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .send-btn:hover { filter: brightness(1.1); }
+  .send-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* Flow area */
+  .flow-area { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+
+  /* Flow step */
+  .flow-step { display: flex; gap: 12px; align-items: flex-start; opacity: 0; transform: translateY(8px); transition: opacity 0.3s, transform 0.3s; }
+  .flow-step.visible { opacity: 1; transform: translateY(0); }
+  .step-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+  .step-body { flex: 1; min-width: 0; }
+  .step-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text3); margin-bottom: 2px; }
+  .step-title { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  .step-detail { font-size: 12px; color: var(--text2); line-height: 1.5; }
+  .step-detail code { background: var(--surface2); padding: 1px 5px; border-radius: 3px; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; color: var(--cyan); }
+  .step-detail .tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .tag-delegate { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tag-respond { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .tag-continue { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .tag-pivot { background: rgba(248,81,73,0.15); color: var(--red); }
+  .tag-free { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .tag-skip { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .tag-expired { background: rgba(110,118,129,0.15); color: var(--text3); }
+  .tag-local { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tag-api { background: rgba(210,153,34,0.15); color: var(--orange); }
+
+  /* Component colors */
+  .ic-gateway { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .ic-handoff { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .ic-classifier { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .ic-agent { background: rgba(63,185,80,0.15); color: var(--green); }
+  .ic-respond { background: rgba(121,192,255,0.15); color: var(--cyan); }
+  .ic-error { background: rgba(248,81,73,0.15); color: var(--red); }
+  .ic-score { background: rgba(63,185,80,0.12); color: var(--green); }
+
+  /* Session state sidebar */
+  .session-state { padding: 16px; border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+  .session-state h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); margin-bottom: 8px; }
+  .session-table { width: 100%; font-size: 12px; }
+  .session-table td { padding: 3px 0; }
+  .session-table td:first-child { color: var(--text3); width: 100px; }
+  .session-table td:last-child { color: var(--text); font-family: monospace; }
+  .no-session { color: var(--text3); font-size: 12px; font-style: italic; }
+
+  /* -- Presets -- */
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .preset-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); border-radius: 4px; padding: 4px 10px; font-size: 11px; cursor: pointer; font-family: inherit; transition: border-color 0.15s; }
+  .preset-btn:hover { border-color: var(--accent); color: var(--text); }
+  .preset-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.08); }
+
+  /* Connector line */
+  .connector { width: 2px; height: 16px; background: var(--surface3); margin-left: 17px; opacity: 0; transition: opacity 0.3s; }
+  .connector.visible { opacity: 1; }
+
+  /* History */
+  .history-divider { display: flex; align-items: center; gap: 8px; color: var(--text3); font-size: 11px; margin: 8px 0; }
+  .history-divider::before, .history-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  /* API cost badge */
+  .cost-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 11px; color: var(--text2); margin-top: 6px; }
+  .cost-badge .no-cost { color: var(--green); }
+  .cost-badge .has-cost { color: var(--orange); }
+
+  /* Confidence bar */
+  .conf-bar-wrap { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .conf-bar { height: 6px; border-radius: 3px; background: var(--surface3); flex: 1; max-width: 180px; overflow: hidden; }
+  .conf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+  .conf-val { font-size: 11px; font-family: 'SF Mono', 'Cascadia Code', monospace; min-width: 36px; }
+  .conf-threshold-line { position: relative; }
+  .conf-threshold-marker { position: absolute; top: -2px; width: 2px; height: 10px; background: var(--text3); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Gateway Handoff Routing</h1>
+  <span class="subtitle">Interactive routing flow &mdash; local confidence scoring + Haiku API fallback</span>
+</div>
+
+<div class="main">
+  <!-- Left: Controls -->
+  <div class="controls">
+    <div class="control-group">
+      <h3>Configuration</h3>
+      <div class="control-row">
+        <label>Confidence threshold</label>
+        <input type="range" id="confThreshold" min="0" max="100" value="70" step="5">
+        <span class="val" id="confThresholdVal">0.70</span>
+      </div>
+      <div class="control-row">
+        <label>Free turns</label>
+        <input type="range" id="freeTurns" min="0" max="10" value="0">
+        <span class="val" id="freeTurnsVal">0</span>
+      </div>
+      <div class="control-row">
+        <label>Idle timeout</label>
+        <input type="range" id="idleTimeout" min="1" max="30" value="10">
+        <span class="val" id="idleTimeoutVal">10m</span>
+      </div>
+      <div class="control-row">
+        <label>Channel</label>
+        <select id="channel">
+          <option value="web">web (web:ui)</option>
+          <option value="whatsapp">whatsapp</option>
+          <option value="cli">cli</option>
+          <option value="email">email</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <h3>Agent Registry</h3>
+      <div class="agent-list" id="agentList"></div>
+    </div>
+
+    <div class="control-group">
+      <h3>Scenarios</h3>
+      <div class="presets" id="presets"></div>
+    </div>
+
+    <div class="control-group">
+      <h3>Session State</h3>
+      <div id="sessionDisplay"></div>
+    </div>
+
+    <div class="control-group">
+      <h3>Stats</h3>
+      <table class="session-table">
+        <tr><td>Messages</td><td id="statMessages">0</td></tr>
+        <tr><td>Local scored</td><td id="statLocal">0</td></tr>
+        <tr><td>API calls</td><td id="statApiCalls">0</td></tr>
+        <tr><td>Free turns</td><td id="statFreeTurns">0</td></tr>
+        <tr><td>API savings</td><td id="statSavings">&mdash;</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Center: Visualization -->
+  <div class="viz">
+    <div class="input-bar">
+      <input type="text" id="messageInput" placeholder="Type a message to route through the gateway..." autofocus>
+      <button class="send-btn" id="sendBtn">Send</button>
+    </div>
+    <div class="flow-area" id="flowArea"></div>
+  </div>
+</div>
+
+<script>
+// -- State --
+const state = {
+  confThreshold: 0.7,
+  freeTurns: 0,
+  idleTimeoutMin: 10,
+  channel: 'web',
+  handoff: null,   // { activeAgent, intent, turnCount, createdAt, expiresAt }
+  messageCount: 0,
+  apiCalls: 0,
+  localScored: 0,
+  freeTurnCount: 0,
+};
+
+// -- Agent registry (mirrors real registered_agents table) --
+const AGENTS = [
+  { id: 'email-agent', name: 'Email Agent', description: 'Email management', capabilities: ['email'], color: '#3fb950' },
+  { id: 'search-agent', name: 'Search Agent', description: 'Web search & research', capabilities: ['WebSearch'], color: '#58a6ff' },
+  { id: 'scheduler-agent', name: 'Scheduler', description: 'Task scheduling', capabilities: ['scheduling'], color: '#d29922' },
+  { id: 'code-agent', name: 'Code Agent', description: 'Code review & generation', capabilities: ['code'], color: '#bc8cff' },
+];
+
+// -- Domain Expansions (from gateway-router.ts) --
+const DOMAIN_EXPANSIONS = {
+  email: ['inbox', 'unread', 'gmail', 'mail', 'newsletter', 'spam', 'draft', 'reply', 'forward', 'compose', 'archive'],
+  websearch: ['search', 'weather', 'news', 'research', 'article', 'latest', 'google', 'lookup', 'find'],
+  search: ['weather', 'news', 'research', 'article', 'latest', 'google', 'lookup', 'find'],
+  scheduling: ['schedule', 'remind', 'reminder', 'calendar', 'appointment', 'meeting', 'deadline', 'cron'],
+  code: ['review', 'refactor', 'bug', 'commit', 'deploy', 'test', 'lint', 'debug', 'pull', 'merge'],
+  browser: ['browse', 'website', 'page', 'click', 'scrape', 'screenshot'],
+};
+
+const GREETING_PATTERN = /^(hi|hello|hey|yo|sup|what can you do|help|good morning|good afternoon|good evening)\b/i;
+const FOLLOWUP_PATTERN = /^(yes|no|ok|okay|sure|do it|go ahead|thanks|now |also |and |then |next |please |show me|tell me more|can you also|what about|how about|great|perfect|good|got it|right)\b/i;
+
+// -- tokenize (from gateway-router.ts) --
+function tokenize(text) {
+  return text
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[\W_]+/)
+    .filter(w => w.length > 2);
+}
+
+// -- extractAgentKeywords (from gateway-router.ts) --
+function extractAgentKeywords(agent) {
+  const words = new Set();
+  const source = `${agent.id} ${agent.name} ${agent.description} ${agent.capabilities.join(' ')}`;
+  for (const token of tokenize(source)) words.add(token);
+
+  const toExpand = [...agent.capabilities.map(c => c.toLowerCase()), ...words];
+  for (const key of toExpand) {
+    const expansions = DOMAIN_EXPANSIONS[key];
+    if (expansions) for (const w of expansions) words.add(w);
+  }
+  return words;
+}
+
+// -- scoreRoute (from gateway-router.ts) --
+function scoreRoute(message) {
+  const m = message.toLowerCase();
+  const words = tokenize(message);
+
+  // Greeting detection
+  if (GREETING_PATTERN.test(m) && m.length < 50) {
+    return {
+      confidence: 0.95,
+      decision: {
+        action: 'respond',
+        response: 'Hello! I can help route your request. What do you need?',
+      },
+    };
+  }
+
+  // Score each agent by keyword overlap
+  const agentScores = AGENTS.map(agent => {
+    const keywords = extractAgentKeywords(agent);
+    let matches = 0;
+    for (const w of words) { if (keywords.has(w)) matches++; }
+    return { agent, matches, keywords };
+  });
+  agentScores.sort((a, b) => b.matches - a.matches);
+
+  const top = agentScores[0];
+  const second = agentScores[1];
+
+  if (!top || top.matches === 0) {
+    return { confidence: 0, decision: { action: 'delegate' }, agentScores };
+  }
+
+  const gap = top.matches - (second?.matches ?? 0);
+  const confidence = Math.min(0.95, 0.4 + gap * 0.15 + Math.min(top.matches, 4) * 0.08);
+
+  return {
+    confidence: Math.round(confidence * 100) / 100,
+    decision: {
+      action: 'delegate',
+      targetAgent: top.agent.id,
+      prompt: message,
+    },
+    agentScores,
+  };
+}
+
+// -- scoreContinuation (from gateway-router.ts) --
+function scoreContinuation(message, activeAgent, intent) {
+  const m = message.toLowerCase();
+
+  // Follow-up signals
+  if (FOLLOWUP_PATTERN.test(m)) {
+    return { confidence: 0.92, decision: { action: 'continue' } };
+  }
+
+  // Intent keyword overlap
+  if (intent) {
+    const intentWords = tokenize(intent);
+    const msgWords = tokenize(message);
+    const overlap = intentWords.filter(w => msgWords.includes(w)).length;
+    if (overlap >= 2) {
+      return { confidence: 0.85, decision: { action: 'continue' } };
+    }
+  }
+
+  // Compare keyword matches
+  const words = tokenize(message);
+  const activeEntry = AGENTS.find(a => a.id === activeAgent);
+  const otherEntries = AGENTS.filter(a => a.id !== activeAgent);
+
+  const activeKeywords = activeEntry ? extractAgentKeywords(activeEntry) : new Set();
+  let activeMatches = 0;
+  for (const w of words) { if (activeKeywords.has(w)) activeMatches++; }
+
+  let maxOtherMatches = 0;
+  let topOtherAgent = null;
+  for (const other of otherEntries) {
+    const kw = extractAgentKeywords(other);
+    let matches = 0;
+    for (const w of words) { if (kw.has(w)) matches++; }
+    if (matches > maxOtherMatches) { maxOtherMatches = matches; topOtherAgent = other.id; }
+  }
+
+  if (activeMatches > 0 && maxOtherMatches === 0) {
+    return { confidence: 0.85, decision: { action: 'continue' }, activeMatches, maxOtherMatches };
+  }
+  if (maxOtherMatches > 0 && activeMatches === 0) {
+    const conf = Math.min(0.9, 0.5 + maxOtherMatches * 0.15);
+    return { confidence: conf, decision: { action: 'pivot' }, topOtherAgent, activeMatches, maxOtherMatches };
+  }
+  if (activeMatches > 0 && maxOtherMatches > 0) {
+    return { confidence: 0.35, decision: { action: 'continue' }, activeMatches, maxOtherMatches };
+  }
+
+  return { confidence: 0.3, decision: { action: 'continue' }, activeMatches: 0, maxOtherMatches: 0 };
+}
+
+// -- Haiku API simulation (regex fallback for when local score is too low) --
+function classifyRouteAPI(message) {
+  const m = message.toLowerCase();
+  if (/^(hi|hello|hey|yo|sup|what can you do|help)\b/i.test(m) && m.length < 40) {
+    return { action: 'respond', response: 'Hello! I can help route your request to the right specialist. What do you need help with?' };
+  }
+  if (/email|inbox|unread|gmail|mail|newsletter|archive.*mail|draft/i.test(m)) {
+    return { action: 'delegate', targetAgent: 'email-agent', prompt: enrichPrompt(message, 'email-agent') };
+  }
+  if (/schedule|remind|calendar|appointment|meeting|task.*list|deadline|timer/i.test(m)) {
+    return { action: 'delegate', targetAgent: 'scheduler-agent', prompt: enrichPrompt(message, 'scheduler-agent') };
+  }
+  if (/search|find|look up|weather|news|research|what is|who is|latest/i.test(m)) {
+    return { action: 'delegate', targetAgent: 'search-agent', prompt: enrichPrompt(message, 'search-agent') };
+  }
+  if (/code|review|refactor|function|bug|pull request|commit|deploy|test/i.test(m)) {
+    return { action: 'delegate', targetAgent: 'code-agent', prompt: enrichPrompt(message, 'code-agent') };
+  }
+  return { action: 'delegate', targetAgent: 'search-agent', prompt: enrichPrompt(message, 'search-agent') };
+}
+
+function classifyContinuationAPI(message, activeAgent, intent) {
+  const m = message.toLowerCase();
+  const agentDomains = {
+    'email-agent': /email|inbox|unread|gmail|mail|newsletter|archive|draft|send|reply|forward|cc|bcc/i,
+    'search-agent': /search|find|look up|weather|news|research|what is|who is|latest|article/i,
+    'scheduler-agent': /schedule|remind|calendar|appointment|meeting|task|deadline|timer|cron/i,
+    'code-agent': /code|review|refactor|function|bug|pull request|commit|deploy|test|lint/i,
+  };
+  if (/^(yes|no|ok|sure|do it|go ahead|now |also |and |then |next |please |what about|how about|show me|tell me more|can you also)/i.test(m)) {
+    return { action: 'continue' };
+  }
+  for (const [agentId, pattern] of Object.entries(agentDomains)) {
+    if (agentId !== activeAgent && pattern.test(m)) {
+      if (agentDomains[activeAgent]?.test(m)) return { action: 'continue' };
+      return { action: 'pivot' };
+    }
+  }
+  return { action: 'continue' };
+}
+
+function enrichPrompt(message, agentId) {
+  const enrichments = {
+    'email-agent': `Process the following email-related request. Check inbox, filter as needed: ${message}`,
+    'search-agent': `Research the following topic using web search. Provide sources and key findings: ${message}`,
+    'scheduler-agent': `Handle the following scheduling request. Check calendar conflicts: ${message}`,
+    'code-agent': `Handle the following code-related request. Follow best practices: ${message}`,
+  };
+  return enrichments[agentId] || message;
+}
+
+// Mirrors extractIntent() from persistent-agent-spawner.ts
+function extractIntent(prompt) {
+  const firstSentence = prompt.match(/^[^.!?]+[.!?]/)?.[0] ?? prompt;
+  return firstSentence.slice(0, 100);
+}
+
+// -- Confidence bar rendering --
+function renderConfBar(confidence, threshold) {
+  const pct = Math.round(confidence * 100);
+  const threshPct = Math.round(threshold * 100);
+  const isAbove = confidence >= threshold;
+  const color = isAbove ? 'var(--green)' : 'var(--orange)';
+  const label = isAbove ? 'LOCAL' : 'API';
+  const tagClass = isAbove ? 'tag-local' : 'tag-api';
+
+  return `<div class="conf-bar-wrap">
+    <div class="conf-bar conf-threshold-line">
+      <div class="conf-bar-fill" style="width:${pct}%;background:${color}"></div>
+      <div class="conf-threshold-marker" style="left:${threshPct}%" title="Threshold: ${threshold}"></div>
+    </div>
+    <span class="conf-val" style="color:${color}">${confidence.toFixed(2)}</span>
+    <span class="tag ${tagClass}">${label}</span>
+  </div>`;
+}
+
+// -- Agent score breakdown --
+function renderAgentScoreBreakdown(agentScores) {
+  if (!agentScores || agentScores.length === 0) return '';
+  const rows = agentScores
+    .filter(s => s.matches > 0)
+    .map(s => {
+      const agent = AGENTS.find(a => a.id === s.agent.id);
+      const barW = Math.min(100, s.matches * 25);
+      return `<span style="color:${agent?.color || 'var(--text)'};font-size:11px">${s.agent.id}</span>: ${s.matches} match${s.matches !== 1 ? 'es' : ''}`;
+    });
+  if (rows.length === 0) return '<span style="font-size:11px;color:var(--text3)">No keyword matches</span>';
+  return rows.join(' &middot; ');
+}
+
+// -- Rendering --
+
+const flowArea = document.getElementById('flowArea');
+const sessionDisplay = document.getElementById('sessionDisplay');
+
+function addStep(icon, iconClass, label, title, detail, delay) {
+  const connector = document.createElement('div');
+  connector.className = 'connector';
+  flowArea.appendChild(connector);
+
+  const step = document.createElement('div');
+  step.className = 'flow-step';
+  step.innerHTML = `
+    <div class="step-icon ${iconClass}">${icon}</div>
+    <div class="step-body">
+      <div class="step-label">${label}</div>
+      <div class="step-title">${title}</div>
+      <div class="step-detail">${detail}</div>
+    </div>
+  `;
+  flowArea.appendChild(step);
+
+  setTimeout(() => {
+    connector.classList.add('visible');
+    step.classList.add('visible');
+    flowArea.scrollTop = flowArea.scrollHeight;
+  }, delay);
+
+  return step;
+}
+
+function addDivider(text) {
+  const div = document.createElement('div');
+  div.className = 'history-divider';
+  div.textContent = text;
+  flowArea.appendChild(div);
+}
+
+function renderSession() {
+  if (!state.handoff) {
+    sessionDisplay.innerHTML = '<div class="no-session">No active handoff session</div>';
+    return;
+  }
+  const h = state.handoff;
+  const agent = AGENTS.find(a => a.id === h.activeAgent);
+  sessionDisplay.innerHTML = `
+    <table class="session-table">
+      <tr><td>Agent</td><td style="color:${agent?.color || 'var(--text)'}">${h.activeAgent}</td></tr>
+      <tr><td>Intent</td><td>${h.intent || '&mdash;'}</td></tr>
+      <tr><td>Turn</td><td>${h.turnCount}</td></tr>
+      <tr><td>Expires</td><td>${h.expiresAt}</td></tr>
+    </table>
+  `;
+}
+
+function renderStats() {
+  document.getElementById('statMessages').textContent = state.messageCount;
+  document.getElementById('statLocal').textContent = state.localScored;
+  document.getElementById('statApiCalls').textContent = state.apiCalls;
+  document.getElementById('statFreeTurns').textContent = state.freeTurnCount;
+  const total = state.messageCount;
+  if (total > 0) {
+    const saved = state.localScored + state.freeTurnCount;
+    const pct = Math.round((saved / total) * 100);
+    document.getElementById('statSavings').textContent = `${pct}% (${saved}/${total} no API)`;
+    document.getElementById('statSavings').style.color = pct > 0 ? 'var(--green)' : 'var(--text2)';
+  }
+}
+
+// -- Core routing (mirrors spawnViaGateway) --
+
+async function routeMessage(message) {
+  state.messageCount++;
+  let delay = 0;
+  const step = (d) => { delay += d; return delay; };
+  const threshold = state.confThreshold;
+
+  // Step 1: Message arrives
+  addStep('\u2193', 'ic-gateway', 'Message Ingress', `"${message}"`,
+    `Channel: <code>${state.channel}</code>`, step(0));
+
+  // Step 2: Check handoff store
+  const handoff = state.handoff;
+
+  if (handoff) {
+    addStep('\u25C9', 'ic-handoff', 'Handoff Lookup', 'Active session found',
+      `Agent: <code>${handoff.activeAgent}</code> &middot; Turn: ${handoff.turnCount} &middot; Intent: "${handoff.intent}"`,
+      step(300));
+
+    // Free turn check
+    if (handoff.turnCount <= state.freeTurns) {
+      state.freeTurnCount++;
+      addStep('\u26A1', 'ic-handoff', 'Free Turn', `Turn ${handoff.turnCount} \u2264 ${state.freeTurns} \u2014 skip classifier`,
+        `<span class="tag tag-free">FREE TURN</span> No scoring, no API call. Direct routing.
+         <div class="cost-badge"><span class="no-cost">$0</span> \u2014 classifier skipped</div>`,
+        step(300));
+
+      handoff.turnCount++;
+      const agent = AGENTS.find(a => a.id === handoff.activeAgent);
+      addStep('\u2192', 'ic-agent', 'Route to Agent', handoff.activeAgent,
+        `<span style="color:${agent?.color}">${agent?.name}</span> handles the message directly`,
+        step(300));
+
+    } else {
+      // Past free turns -- local confidence scoring first
+      const localScore = scoreContinuation(message, handoff.activeAgent, handoff.intent);
+
+      addStep('\u25C7', 'ic-score', 'Local Scoring', `scoreContinuation()`,
+        `Keyword matching against agent registry &amp; intent overlap<br>
+         Active agent matches: ${localScore.activeMatches ?? '?'} &middot; Other agent max: ${localScore.maxOtherMatches ?? '?'}
+         ${renderConfBar(localScore.confidence, threshold)}`,
+        step(350));
+
+      let continuation;
+      if (localScore.confidence >= threshold) {
+        // High confidence -- use local decision, skip API
+        state.localScored++;
+        continuation = localScore.decision;
+        addStep('\u2713', 'ic-score', 'Local Decision', `Confidence ${localScore.confidence.toFixed(2)} \u2265 ${threshold.toFixed(2)}`,
+          `<span class="tag tag-local">LOCAL</span> Skipping Haiku API call \u2014 local classifier is confident enough.
+           <div class="cost-badge"><span class="no-cost">$0</span> \u2014 API skipped</div>`,
+          step(300));
+      } else {
+        // Low confidence -- defer to Haiku API
+        state.apiCalls++;
+        continuation = classifyContinuationAPI(message, handoff.activeAgent, handoff.intent);
+        addStep('\u25C7', 'ic-classifier', 'API Fallback', `Confidence ${localScore.confidence.toFixed(2)} < ${threshold.toFixed(2)}`,
+          `<span class="tag tag-api">API</span> Deferring to Haiku for reliable classification.<br>
+           Model: <code>claude-haiku-4-5</code> &middot; max_tokens: <code>256</code> &middot; forced tool: <code>classify_continuation</code>
+           <div class="cost-badge"><span class="has-cost">~100 tokens</span> \u2014 lightweight check</div>`,
+          step(400));
+      }
+
+      if (continuation.action === 'continue') {
+        addStep('\u2713', 'ic-handoff', 'Decision: Continue', 'Same task \u2014 route to existing agent',
+          `<span class="tag tag-continue">CONTINUE</span> Message is a follow-up to "${handoff.intent}"`,
+          step(300));
+
+        handoff.turnCount++;
+        const agent = AGENTS.find(a => a.id === handoff.activeAgent);
+        addStep('\u2192', 'ic-agent', 'Route to Agent', handoff.activeAgent,
+          `<span style="color:${agent?.color}">${agent?.name}</span> handles the message`,
+          step(300));
+      } else {
+        // Pivot
+        addStep('\u2717', 'ic-error', 'Decision: Pivot', 'Different topic \u2014 clearing handoff',
+          `<span class="tag tag-pivot">PIVOT</span> Message doesn't match "${handoff.intent}" \u2014 clearing session`,
+          step(300));
+
+        state.handoff = null;
+        doFullRouting(message, step);
+      }
+    }
+  } else {
+    // No handoff -- full gateway routing
+    addStep('\u25CB', 'ic-handoff', 'Handoff Lookup', 'No active session',
+      `<span class="tag tag-expired">NONE</span> No handoff for this channel/chat/gateway`,
+      step(300));
+
+    doFullRouting(message, step);
+  }
+
+  renderSession();
+  renderStats();
+}
+
+function doFullRouting(message, step) {
+  const threshold = state.confThreshold;
+
+  // Local scoring first
+  const localScore = scoreRoute(message);
+
+  addStep('\u25C7', 'ic-score', 'Local Scoring', `scoreRoute()`,
+    `Keyword matching against ${AGENTS.length} agents in registry<br>
+     ${renderAgentScoreBreakdown(localScore.agentScores)}
+     ${renderConfBar(localScore.confidence, threshold)}`,
+    step(350));
+
+  let decision;
+  if (localScore.confidence >= threshold) {
+    // High confidence -- use local decision
+    state.localScored++;
+    decision = localScore.decision;
+    if (decision.action === 'delegate') {
+      decision.prompt = enrichPrompt(message, decision.targetAgent);
+    }
+    addStep('\u2713', 'ic-score', 'Local Decision', `Confidence ${localScore.confidence.toFixed(2)} \u2265 ${threshold.toFixed(2)}`,
+      `<span class="tag tag-local">LOCAL</span> Using local keyword-based routing \u2014 no API call needed.
+       <div class="cost-badge"><span class="no-cost">$0</span> \u2014 API skipped</div>`,
+      step(300));
+  } else {
+    // Low confidence -- defer to Haiku
+    state.apiCalls++;
+    decision = classifyRouteAPI(message);
+    addStep('\u25C8', 'ic-gateway', 'API Fallback', `Confidence ${localScore.confidence.toFixed(2)} < ${threshold.toFixed(2)}`,
+      `<span class="tag tag-api">API</span> Deferring to Haiku for full classification.<br>
+       System: <em>buildSystemPrompt(${AGENTS.length} agents)</em><br>
+       Model: <code>claude-haiku-4-5</code> &middot; max_tokens: <code>1024</code> &middot; forced tool: <code>route</code>
+       <div class="cost-badge"><span class="has-cost">~500 tokens</span> \u2014 full classification</div>`,
+      step(400));
+  }
+
+  executeDecision(decision, message, step);
+}
+
+// mirrors: executeRoutingDecision()
+function executeDecision(decision, message, step) {
+  if (decision.action === 'respond') {
+    addStep('\uD83D\uDCAC', 'ic-respond', 'Action: Respond', 'Direct gateway response',
+      `<span class="tag tag-respond">RESPOND</span> "${decision.response}"<br>
+       <span style="color:var(--text3)">No handoff created \u2014 greetings & clarifications don't sticky.</span>`,
+      step(300));
+  } else {
+    const agent = AGENTS.find(a => a.id === decision.targetAgent);
+    addStep('\u2B21', 'ic-gateway', 'Action: Delegate', `\u2192 ${decision.targetAgent}`,
+      `<span class="tag tag-delegate">DELEGATE</span> Enriched prompt: "${(decision.prompt || message).slice(0, 80)}\u2026"`,
+      step(300));
+
+    // Create handoff session
+    const intent = extractIntent(decision.prompt || message);
+    state.handoff = {
+      activeAgent: decision.targetAgent,
+      intent,
+      turnCount: 1,
+      createdAt: new Date().toLocaleTimeString(),
+      expiresAt: `${state.idleTimeoutMin}m from now`,
+    };
+
+    addStep('\u25C9', 'ic-handoff', 'Handoff Created', `Session \u2192 ${decision.targetAgent}`,
+      `Intent: "${intent}"<br>
+       Expires: ${state.idleTimeoutMin}min idle timeout<br>
+       <span style="color:var(--text3)">Future messages route directly to this agent.</span>`,
+      step(300));
+
+    addStep('\u2192', 'ic-agent', 'Route to Agent', decision.targetAgent,
+      `<span style="color:${agent?.color}">${agent?.name}</span> spawns container &amp; processes request`,
+      step(300));
+  }
+}
+
+// -- Presets (conversation scenarios) --
+
+const SCENARIOS = [
+  {
+    name: 'Email flow',
+    messages: [
+      'do I have any unread emails?',
+      'archive the ones from last week',
+      'now mark the newsletters as read',
+    ],
+  },
+  {
+    name: 'Greeting \u2192 task',
+    messages: [
+      'hello',
+      'organize my inbox',
+    ],
+  },
+  {
+    name: 'Pivot mid-conversation',
+    messages: [
+      'check my inbox for new emails',
+      'reply to the one from Sarah',
+      'what is the weather in Tokyo today?',
+    ],
+  },
+  {
+    name: 'Multi-domain',
+    messages: [
+      'search for Node.js best practices',
+      'schedule a meeting tomorrow at 3pm',
+      'check my inbox',
+      'review my latest pull request',
+    ],
+  },
+  {
+    name: 'Free turns demo',
+    setup: () => { document.getElementById('freeTurns').value = 3; state.freeTurns = 3; document.getElementById('freeTurnsVal').textContent = '3'; },
+    messages: [
+      'check my email inbox',
+      'show unread only',
+      'archive the spam',
+      'forward the invoice to accounting',
+      'what is the weather tomorrow?',
+    ],
+  },
+  {
+    name: 'Low threshold (0.4)',
+    setup: () => { document.getElementById('confThreshold').value = 40; state.confThreshold = 0.4; document.getElementById('confThresholdVal').textContent = '0.40'; },
+    messages: [
+      'check my emails',
+      'also search for that news article',
+      'schedule a reminder for tomorrow',
+    ],
+  },
+  {
+    name: 'High threshold (0.95)',
+    setup: () => { document.getElementById('confThreshold').value = 95; state.confThreshold = 0.95; document.getElementById('confThresholdVal').textContent = '0.95'; },
+    messages: [
+      'check my emails',
+      'also search for that news article',
+      'schedule a reminder for tomorrow',
+    ],
+  },
+];
+
+function renderPresets() {
+  const container = document.getElementById('presets');
+  container.innerHTML = '';
+  SCENARIOS.forEach((scenario, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'preset-btn';
+    btn.textContent = scenario.name;
+    btn.onclick = () => runScenario(i, btn);
+    container.appendChild(btn);
+  });
+}
+
+async function runScenario(index, btn) {
+  // Reset state
+  state.handoff = null;
+  state.messageCount = 0;
+  state.apiCalls = 0;
+  state.localScored = 0;
+  state.freeTurnCount = 0;
+  flowArea.innerHTML = '';
+
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  const scenario = SCENARIOS[index];
+  if (scenario.setup) scenario.setup();
+
+  for (let i = 0; i < scenario.messages.length; i++) {
+    if (i > 0) {
+      await sleep(1200);
+      addDivider(`Message ${i + 1}`);
+    }
+    document.getElementById('messageInput').value = scenario.messages[i];
+    await routeMessage(scenario.messages[i]);
+    await sleep(800);
+  }
+
+  document.getElementById('messageInput').value = '';
+  document.getElementById('messageInput').focus();
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// -- Agent list render --
+
+function renderAgentList() {
+  const list = document.getElementById('agentList');
+  list.innerHTML = AGENTS.map(a => `
+    <div class="agent-chip">
+      <div class="dot" style="background:${a.color}"></div>
+      <span class="id">${a.id}</span>
+      <span class="desc">${a.capabilities.join(', ')}</span>
+    </div>
+  `).join('');
+}
+
+// -- Controls wiring --
+
+document.getElementById('confThreshold').oninput = (e) => {
+  state.confThreshold = parseInt(e.target.value) / 100;
+  document.getElementById('confThresholdVal').textContent = state.confThreshold.toFixed(2);
+};
+document.getElementById('freeTurns').oninput = (e) => {
+  state.freeTurns = parseInt(e.target.value);
+  document.getElementById('freeTurnsVal').textContent = state.freeTurns;
+};
+document.getElementById('idleTimeout').oninput = (e) => {
+  state.idleTimeoutMin = parseInt(e.target.value);
+  document.getElementById('idleTimeoutVal').textContent = state.idleTimeoutMin + 'm';
+};
+document.getElementById('channel').onchange = (e) => {
+  state.channel = e.target.value;
+};
+
+document.getElementById('sendBtn').onclick = () => {
+  const input = document.getElementById('messageInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  if (state.messageCount > 0) addDivider(`Message ${state.messageCount + 1}`);
+  routeMessage(msg);
+  input.value = '';
+  input.focus();
+};
+
+document.getElementById('messageInput').onkeydown = (e) => {
+  if (e.key === 'Enter') document.getElementById('sendBtn').click();
+};
+
+// -- Init --
+
+renderAgentList();
+renderPresets();
+renderSession();
+renderStats();
+</script>
+</body>
+</html>
