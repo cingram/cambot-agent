@@ -82,7 +82,7 @@ import { createPersistentAgentHandler, type PersistentAgentHandler } from '../ag
 import { provisionAgent } from '../agents/agent-factory.js';
 import { createWorkflowTriggerHandler } from '../workflows/workflow-trigger-handler.js';
 import { createWorkflowAgentHandler } from '../workflows/workflow-agent-handler.js';
-import { GROUPS_DIR } from '../config/config.js';
+import { GATEWAY_PRESET, GROUPS_DIR } from '../config/config.js';
 
 // cambot-socket imports
 import { CambotSocketServer, CommandRegistry, registerAllHandlers } from '../cambot-socket/index.js';
@@ -111,6 +111,7 @@ export class CamBotApp {
   private agentRepo: AgentRepository | null = null;
   private handoffRepo: HandoffRepository | null = null;
   private socketServer: CambotSocketServer | null = null;
+  private cleanupTimers: ReturnType<typeof setInterval>[] = [];
 
   async start(): Promise<void> {
     this.installProcessHandlers();
@@ -461,6 +462,8 @@ export class CamBotApp {
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received');
       if (this.interceptor) await this.interceptor.close();
+      for (const timer of this.cleanupTimers) clearInterval(timer);
+      this.cleanupTimers = [];
       if (this.taskPromptHandler) this.taskPromptHandler.destroy();
       if (this.persistentAgentHandler) this.persistentAgentHandler.destroy();
       if (this.workflowTriggerHandler) this.workflowTriggerHandler.destroy();
@@ -599,7 +602,7 @@ export class CamBotApp {
       );
 
       // Backfill routing keywords for agents that don't have them yet
-      this.backfillRoutingKeywords(agentRepo, spawner);
+      this.backfillRoutingKeywords(agentRepo, spawner, agents);
     } catch (err) {
       logger.error({ err }, 'Failed to initialize persistent agents');
     }
@@ -609,9 +612,10 @@ export class CamBotApp {
   private backfillRoutingKeywords(
     agentRepo: AgentRepository,
     spawner: import('../agents/persistent-agent-spawner.js').ContainerSpawner,
+    allAgents: import('../types.js').RegisteredAgent[],
   ): void {
-    const agents = agentRepo.getAll().filter(
-      a => !a.routingKeywords && a.description && a.toolPolicy?.preset !== 'gateway',
+    const agents = allAgents.filter(
+      a => !a.routingKeywords && a.description && a.toolPolicy?.preset !== GATEWAY_PRESET,
     );
     if (agents.length === 0) return;
 
@@ -620,9 +624,10 @@ export class CamBotApp {
       'Backfilling routing keywords for agents without them',
     );
 
-    // Process sequentially to avoid rate limiting
+    // Process sequentially to avoid rate limiting; invalidate cache once at end
     (async () => {
       const { generateRoutingKeywordsFromEnv } = await import('../agents/keyword-generator.js');
+      let updated = 0;
       for (const agent of agents) {
         try {
           const keywords = await generateRoutingKeywordsFromEnv({
@@ -632,13 +637,15 @@ export class CamBotApp {
           });
           if (keywords.words.length > 0) {
             agentRepo.update(agent.id, { routingKeywords: keywords });
-            spawner.invalidateRegistryCache?.();
+            updated++;
           }
         } catch (err) {
           logger.error({ err, agentId: agent.id }, 'Failed to backfill routing keywords');
         }
       }
-      logger.info({ count: agents.length }, 'Routing keyword backfill complete');
+      // Single cache invalidation after all updates
+      if (updated > 0) spawner.invalidateRegistryCache?.();
+      logger.info({ count: agents.length, updated }, 'Routing keyword backfill complete');
     })().catch(err => logger.error({ err }, 'Routing keyword backfill failed'));
   }
 
@@ -657,7 +664,7 @@ export class CamBotApp {
     // Check if the ID is taken by a non-system agent (e.g. created before system flag existed)
     const byId = agentRepo.getById('gateway');
     if (byId) {
-      if (byId.toolPolicy?.preset === 'gateway') {
+      if (byId.toolPolicy?.preset === GATEWAY_PRESET) {
         // Upgrade existing gateway agent to system status
         agentRepo.markSystem(byId.id);
         logger.info({ agentId: byId.id }, 'Upgraded existing gateway agent to system status');
@@ -678,7 +685,7 @@ export class CamBotApp {
       channels: [],
       mcpServers: [],
       capabilities: ['routing', 'classification'],
-      toolPolicy: { preset: 'gateway' },
+      toolPolicy: { preset: GATEWAY_PRESET },
       isSystem: true,
     });
     logger.info('Seeded system gateway agent');
@@ -886,16 +893,16 @@ export class CamBotApp {
   private startStaleCleanup(): void {
     const STALE_CLEANUP_INTERVAL = 5 * 60_000;
     const STALE_MAX_AGE = 90 * 60_000;
-    setInterval(() => {
-      cleanupStaleContainers(STALE_MAX_AGE);
-    }, STALE_CLEANUP_INTERVAL);
+    this.cleanupTimers.push(
+      setInterval(() => { cleanupStaleContainers(STALE_MAX_AGE); }, STALE_CLEANUP_INTERVAL),
+    );
 
     // Periodic handoff session cleanup (every 60s)
     if (this.handoffRepo) {
       const repo = this.handoffRepo;
-      setInterval(() => {
-        try { repo.clearExpired(); } catch { /* non-critical */ }
-      }, 60_000);
+      this.cleanupTimers.push(
+        setInterval(() => { try { repo.clearExpired(); } catch { /* non-critical */ } }, 60_000),
+      );
     }
   }
 }

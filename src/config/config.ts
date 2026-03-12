@@ -192,6 +192,9 @@ export const HANDOFF_CONFIDENCE_THRESHOLD = parseFloat(
   process.env.HANDOFF_CONFIDENCE_THRESHOLD || '0.7',
 );
 
+/** Tool policy preset name that identifies a gateway agent. */
+export const GATEWAY_PRESET = 'gateway' as const;
+
 // Heartbeat monitoring interval (host polls container heartbeat file at this rate)
 export const HEARTBEAT_INTERVAL_MS = 5000;
 
