@@ -15,7 +15,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createDefaultContainerPaths, parseContainerInput } from './types.js';
-import { ConsoleLogger } from './logger.js';
+import { ConsoleLogger, SocketLogger } from './logger.js';
 import { SocketOutputWriter } from './socket-output-writer.js';
 import { CambotSocketClient } from './cambot-socket-client.js';
 import { TelemetryCollector } from './telemetry-collector.js';
@@ -65,7 +65,10 @@ async function main(): Promise<void> {
     containerInput.groupFolder,
     containerInput.socketToken,
   );
-  logger.log('Connected to cambot-socket server');
+
+  // Upgrade to structured socket logging — host receives log frames at correct levels
+  const socketLogger = new SocketLogger(client, logger);
+  socketLogger.log('Connected to cambot-socket server');
 
   const outputWriter = new SocketOutputWriter(client);
 
@@ -73,7 +76,7 @@ async function main(): Promise<void> {
   if (containerInput.kind === 'custom') {
     const { runCustomAgent } = await import('./custom-agent-runner.js');
     try {
-      await runCustomAgent(containerInput, outputWriter.write.bind(outputWriter), logger.log.bind(logger));
+      await runCustomAgent(containerInput, outputWriter.write.bind(outputWriter), socketLogger.log.bind(socketLogger));
     } finally {
       client.close();
     }
@@ -107,26 +110,26 @@ async function main(): Promise<void> {
     && (containerInput.guardrailEnabled ?? true);
   const apiKey = sdkEnv['ANTHROPIC_API_KEY'];
   const guardrail = guardrailEnabled && apiKey
-    ? new GuardrailReviewer({ apiKey, logger })
+    ? new GuardrailReviewer({ apiKey, logger: socketLogger })
     : undefined;
   if (guardrail) {
-    logger.log('Haiku guardrail enabled for inline tool review');
+    socketLogger.log('Haiku guardrail enabled for inline tool review');
   } else if (!guardrailEnabled) {
-    logger.log('Haiku guardrail disabled by configuration');
+    socketLogger.log('Haiku guardrail disabled by configuration');
   }
 
   const telemetry = new TelemetryCollector();
-  const archiver = new TranscriptArchiver(paths, logger);
-  const hookFactory = new HookFactory(telemetry, archiver, logger, client, guardrail);
-  const contextBuilder = new ContextBuilder(paths, logger);
-  const queryRunner = new SdkQueryRunner(paths, logger, outputWriter, client, hookFactory, contextBuilder, telemetry, __dirname, client);
-  const agentRunner = new AgentRunner(logger, outputWriter, client, queryRunner, {}, client);
+  const archiver = new TranscriptArchiver(paths, socketLogger);
+  const hookFactory = new HookFactory(telemetry, archiver, socketLogger, client, guardrail);
+  const contextBuilder = new ContextBuilder(paths, socketLogger);
+  const queryRunner = new SdkQueryRunner(paths, socketLogger, outputWriter, client, hookFactory, contextBuilder, telemetry, __dirname, client);
+  const agentRunner = new AgentRunner(socketLogger, outputWriter, client, queryRunner, {}, client);
 
   try {
     await agentRunner.run(containerInput, sdkEnv);
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    logger.log(`Agent error: ${errorMsg}`);
+    socketLogger.error(`Agent error: ${errorMsg}`);
     outputWriter.write({
       status: 'error',
       result: null,

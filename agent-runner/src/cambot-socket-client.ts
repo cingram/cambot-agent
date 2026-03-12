@@ -14,7 +14,7 @@
  */
 import net from 'net';
 import { encodeFrame, FrameDecoder } from './cambot-socket/codec.js';
-import type { SocketFrame, HeartbeatPhase, OutputPayload } from './cambot-socket/types.js';
+import type { SocketFrame, HeartbeatPhase, OutputPayload, LogLevel } from './cambot-socket/types.js';
 import { FRAME_TYPES } from './cambot-socket/types.js';
 import { uuid } from './mcp-tools/helpers.js';
 
@@ -221,6 +221,12 @@ export class CambotSocketClient {
 
   sendOutput(output: OutputPayload): void {
     this.send({ type: FRAME_TYPES.OUTPUT, id: uuid(), payload: output });
+  }
+
+  // ── Structured Logging ──────────────────────────────────────────
+
+  sendLog(level: LogLevel, message: string): void {
+    this.send({ type: FRAME_TYPES.LOG, id: uuid(), payload: { level, message } });
   }
 
   // ── Outbound Messages ──────────────────────────────────────────

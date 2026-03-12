@@ -45,7 +45,7 @@ export class AgentRunner {
 
     // Query loop: run query -> wait for socket message -> run new query -> repeat
     while (true) {
-      this.logger.log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
+      this.logger.info(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
       prompt = this.hooks.onQueryStart?.(prompt, sessionId) ?? prompt;
 
       this.heartbeat?.setPhase('querying');
@@ -72,7 +72,7 @@ export class AgentRunner {
       if (queryResult.closedDuringQuery) {
         this.heartbeat?.setPhase('shutting-down');
         this.hooks.onClose?.('closedDuringQuery');
-        this.logger.log('Socket closed during query, exiting');
+        this.logger.info('Socket closed during query, exiting');
         break;
       }
 
@@ -82,7 +82,7 @@ export class AgentRunner {
       // Recover messages from race windows
       const recovered = queryResult.unconsumedMessages;
       if (recovered.length > 0) {
-        this.logger.log(`Immediate follow-up: ${recovered.length} pending message(s)`);
+        this.logger.info(`Immediate follow-up: ${recovered.length} pending message(s)`);
         prompt = recovered.join('\n');
         continue;
       }
@@ -91,11 +91,11 @@ export class AgentRunner {
       if (!this.client.isConnected()) {
         this.heartbeat?.setPhase('shutting-down');
         this.hooks.onClose?.('sessionClose');
-        this.logger.log('Socket connection closed, exiting');
+        this.logger.info('Socket connection closed, exiting');
         break;
       }
 
-      this.logger.log('Query ended, waiting for next message...');
+      this.logger.info('Query ended, waiting for next message...');
       this.heartbeat?.setPhase('idle');
 
       // Wait for the next message over the socket
@@ -103,11 +103,11 @@ export class AgentRunner {
       if (nextMessage === null) {
         this.heartbeat?.setPhase('shutting-down');
         this.hooks.onClose?.('timeout');
-        this.logger.log('Socket closed (or session ended), exiting');
+        this.logger.info('Socket closed (or session ended), exiting');
         break;
       }
 
-      this.logger.log(`Got new message (${nextMessage.length} chars), starting new query`);
+      this.logger.info(`Got new message (${nextMessage.length} chars), starting new query`);
       prompt = this.hooks.onMessageReceived?.(nextMessage) ?? nextMessage;
     }
   }

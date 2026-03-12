@@ -90,12 +90,12 @@ export class SdkQueryRunner {
 
         if (message.type === 'system' && message.subtype === 'init') {
           newSessionId = message.session_id;
-          this.logger.log(`Session initialized: ${newSessionId}`);
+          this.logger.info(`Session initialized: ${newSessionId}`);
         }
 
         if (message.type === 'system' && message.subtype === 'task_notification') {
           const tn = message as SDKTaskNotificationMessage;
-          this.logger.log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
+          this.logger.info(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
         }
 
         if (message.type === 'result') {
@@ -103,18 +103,18 @@ export class SdkQueryRunner {
 
           // Suppress duplicate results
           if (textResult && textResult === lastResultText) {
-            this.logger.log(`Result: suppressed duplicate of result #${resultCount}`);
+            this.logger.debug(`Result: suppressed duplicate of result #${resultCount}`);
             continue;
           }
           lastResultText = textResult || null;
           resultCount++;
-          this.logger.log(
+          this.logger.info(
             `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
           );
 
           // Extract telemetry from typed SDK fields
           queryTelemetry = this.telemetry.extractFromResult(message);
-          this.logger.log(
+          this.logger.info(
             `Telemetry: cost=$${queryTelemetry.totalCostUsd.toFixed(4)}, turns=${queryTelemetry.numTurns}, tools=${queryTelemetry.toolInvocations.length}`,
           );
 
@@ -137,10 +137,10 @@ export class SdkQueryRunner {
     // Recover unconsumed messages from the stream
     const unconsumedMessages = stream.drain();
     if (unconsumedMessages.length > 0) {
-      this.logger.log(`Recovered ${unconsumedMessages.length} unconsumed message(s) from stream`);
+      this.logger.info(`Recovered ${unconsumedMessages.length} unconsumed message(s) from stream`);
     }
 
-    this.logger.log(
+    this.logger.info(
       `Query done. Messages: ${messageCount}, results: ${resultCount}, ` +
       `lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${bridgeResult.closedDuringQuery}`,
     );
@@ -230,5 +230,5 @@ function logMessage(logger: Logger, message: SDKMessage, count: number): void {
   const msgType = message.type === 'system'
     ? `system/${message.subtype}`
     : message.type;
-  logger.log(`[msg #${count}] type=${msgType}`);
+  logger.debug(`[msg #${count}] type=${msgType}`);
 }

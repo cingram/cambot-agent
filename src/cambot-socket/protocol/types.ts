@@ -163,6 +163,15 @@ export interface ContextSavePayload {
   filename?: string;
 }
 
+// ── Log Payloads ───────────────────────────────────────────────────
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export interface LogPayload {
+  level: LogLevel;
+  message: string;
+}
+
 // ── Error Payload ───────────────────────────────────────────────────
 
 export interface ErrorPayload { error: string; details?: unknown }
@@ -244,6 +253,8 @@ export const FRAME_TYPES = {
   BUS_MESSAGE: 'bus.message',
   // Context
   CONTEXT_SAVE: 'context.save',
+  // Log
+  LOG: 'log',
   // Error
   ERROR: 'error',
 } as const;

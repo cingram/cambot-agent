@@ -19,6 +19,7 @@ import { registerEmailHandlers } from './handlers/email.js';
 import { registerBusMessage } from './handlers/bus-message.js';
 import { registerContextSave } from './handlers/context-save.js';
 import { registerOutputHandler } from './handlers/output.js';
+import { registerLogHandler } from './handlers/log.js';
 import { registerWorkflowQuery } from './handlers/workflow-query.js';
 
 /** Register all cambot-socket command handlers with the given registry. */
@@ -40,4 +41,5 @@ export function registerAllHandlers(registry: CommandRegistry): void {
   registerBusMessage(registry);
   registerContextSave(registry);
   registerOutputHandler(registry);
+  registerLogHandler(registry);
 }
