@@ -12,8 +12,14 @@ export function registerMessagingTools(ctx: McpToolContext): void {
     {
       text: z.string().describe('The message text to send'),
       sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+      channel: z.string().optional().describe(
+        'Channel name for cross-channel messaging (main group only). '
+        + 'The host resolves this to the correct JID automatically. '
+        + 'Examples: "imessage", "telegram", "web", "whatsapp", "discord", "email"',
+      ),
       target_jid: z.string().optional().describe(
         'Target chat JID for cross-channel messaging (main group only). '
+        + 'Prefer using "channel" instead — it resolves the JID for you. '
         + 'Defaults to current chat. Examples: "im:+1234567890", "web:ui", "tg:12345"',
       ),
     },
@@ -21,7 +27,7 @@ export function registerMessagingTools(ctx: McpToolContext): void {
       ctx.client.sendMessage(
         args.target_jid || ctx.chatJid,
         args.text,
-        args.sender,
+        { sender: args.sender, channel: args.channel },
       );
       return mcpText('Message sent.');
     },

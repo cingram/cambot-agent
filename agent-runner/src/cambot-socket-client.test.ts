@@ -206,7 +206,7 @@ describe('CambotSocketClient', () => {
     const sock = latestSocket();
     sock.write.mockClear();
 
-    client.sendMessage('chat-123', 'Hey there', 'cam');
+    client.sendMessage('chat-123', 'Hey there', { sender: 'cam' });
 
     expect(sock.write).toHaveBeenCalledOnce();
     const buf = sock.write.mock.calls[0][0] as Buffer;

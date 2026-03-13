@@ -133,9 +133,18 @@ export class BusHandlerRegistry {
       bus.on(OutboundMessage, async (event) => {
         const integrationMgr = this.deps.getIntegrationManager();
         const activeChannels = integrationMgr?.getActiveChannels() ?? this.deps.getChannels();
+        if (logger.isLevelEnabled('debug')) {
+          logger.debug(
+            { jid: event.jid, source: event.source, channelCount: activeChannels.length, channels: activeChannels.map(ch => ({ name: ch.name, owns: ch.ownsJid(event.jid), connected: ch.isConnected() })) },
+            'Channel delivery: evaluating targets',
+          );
+        }
         const targets = event.broadcast
           ? activeChannels.filter(ch => ch.isConnected())
           : activeChannels.filter(ch => ch.ownsJid(event.jid) && ch.isConnected());
+        if (targets.length === 0) {
+          logger.warn({ jid: event.jid, source: event.source }, 'Channel delivery: no targets found for outbound message');
+        }
         for (const ch of targets) {
           try {
             await ch.sendMessage(event.jid, event.text);

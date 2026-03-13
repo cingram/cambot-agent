@@ -231,11 +231,11 @@ export class CambotSocketClient {
 
   // ── Outbound Messages ──────────────────────────────────────────
 
-  sendMessage(chatJid: string, text: string, sender?: string): void {
+  sendMessage(chatJid: string, text: string, opts?: { sender?: string; channel?: string }): void {
     this.send({
       type: FRAME_TYPES.MESSAGE_OUTBOUND,
       id: uuid(),
-      payload: { chatJid, text, sender },
+      payload: { chatJid, text, ...opts },
     });
   }
 
