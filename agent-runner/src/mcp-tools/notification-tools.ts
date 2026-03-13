@@ -39,6 +39,11 @@ export function registerNotificationTools(ctx: McpToolContext): void {
           'Priority level — classify using the guide above. '
           + 'When unsure, prefer normal over high. Default: normal',
         ),
+      dedupKey: z.string().optional().describe(
+        'Deduplication key. If a pending notification with this key already exists, '
+        + 'it will be updated instead of creating a duplicate. Use a deterministic key '
+        + 'like "calendar-event:{eventId}:{date}" or "task-due:{taskId}".',
+      ),
       payload: z.record(z.string(), z.unknown()).optional().describe(
         'Structured data for the admin assistant to act on. '
         + 'For emails include: sender, subject, threadId, labels. '
@@ -55,6 +60,7 @@ export function registerNotificationTools(ctx: McpToolContext): void {
             category: args.category,
             summary: args.summary,
             priority: args.priority,
+            dedupKey: args.dedupKey,
             payload: args.payload,
           },
         },

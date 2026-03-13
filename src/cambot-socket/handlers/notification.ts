@@ -17,6 +17,7 @@ const SubmitSchema = z.object({
   category: z.string().min(1),
   priority: z.enum(['critical', 'high', 'normal', 'low', 'info']).optional(),
   summary: z.string().min(1),
+  dedupKey: z.string().min(1).optional(),
   payload: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -53,6 +54,7 @@ export function registerNotificationHandlers(registry: CommandRegistry): void {
         category: payload.category,
         priority: payload.priority,
         summary: payload.summary,
+        dedupKey: payload.dedupKey,
         payload: payload.payload,
       });
 

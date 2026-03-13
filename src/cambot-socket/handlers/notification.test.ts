@@ -124,6 +124,40 @@ describe('notification.submit', () => {
     expect(pending[0].sourceAgent).toBe('research-agent');
   });
 
+  it('deduplicates notifications with same dedup key', async () => {
+    const deps = createMockDeps();
+    const registry = new CommandRegistry(deps);
+    registerNotificationHandlers(registry);
+
+    const conn = agentConnection('scheduler');
+
+    // First submit
+    await registry.dispatch(
+      makeFrame(FRAME_TYPES.NOTIFICATION_SUBMIT, {
+        category: 'calendar-event',
+        summary: 'Standup at 10:00',
+        dedupKey: 'calendar-event:abc123',
+      }, 'frame-1'),
+      conn,
+    );
+
+    // Second submit with same dedup key — should update, not duplicate
+    await registry.dispatch(
+      makeFrame(FRAME_TYPES.NOTIFICATION_SUBMIT, {
+        category: 'calendar-event',
+        summary: 'Standup at 10:00 (3 attendees)',
+        dedupKey: 'calendar-event:abc123',
+        priority: 'high',
+      }, 'frame-2'),
+      conn,
+    );
+
+    const pending = notificationRepo.getPending();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].summary).toBe('Standup at 10:00 (3 attendees)');
+    expect(pending[0].priority).toBe('high');
+  });
+
   it('returns error when repo not configured', async () => {
     const deps = createMockDeps({ notificationRepo: undefined });
     const registry = new CommandRegistry(deps);

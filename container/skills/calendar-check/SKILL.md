@@ -112,12 +112,19 @@ When this skill runs as part of a scheduled task (chatJid starts with `system:`)
 | Overdue task | `high` (category: `task-due`) |
 | Task due today | `normal` (category: `task-due`) |
 
+Always pass a `dedup_key` to prevent duplicate notifications across runs:
+- Calendar events: `calendar-event:{eventId}` (use the Google Calendar event ID)
+- Calendar conflicts: `calendar-conflict:{eventId1}:{eventId2}`
+- Tasks: `task-due:{taskId}`
+
+If a pending notification with the same key already exists, the system updates it in place rather than creating a duplicate.
+
 Payload shape for calendar events:
 ```json
 { "title": "...", "startTime": "ISO", "endTime": "ISO", "attendees": [...], "meetingLink": "..." }
 ```
 
-Group back-to-back events (gap < 15 min) into a single notification.
+Group back-to-back events (gap < 15 min) into a single notification (use the first event's ID as the dedup key).
 
 ## Tone
 

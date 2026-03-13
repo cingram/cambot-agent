@@ -85,6 +85,93 @@ describe('insert', () => {
   });
 });
 
+// ── dedup ──────────────────────────────────────────────────
+
+describe('dedup', () => {
+  it('creates notification with dedup key', () => {
+    const n = repo.insert({
+      sourceAgent: 'scheduler',
+      category: 'calendar-event',
+      summary: 'Team standup at 10:00',
+      dedupKey: 'calendar-event:abc123',
+    });
+
+    expect(n.dedupKey).toBe('calendar-event:abc123');
+  });
+
+  it('updates existing pending notification with same dedup key', () => {
+    const n1 = repo.insert({
+      sourceAgent: 'scheduler',
+      category: 'calendar-event',
+      summary: 'Team standup at 10:00',
+      dedupKey: 'calendar-event:abc123',
+    });
+
+    const n2 = repo.insert({
+      sourceAgent: 'scheduler',
+      category: 'calendar-event',
+      summary: 'Team standup at 10:00 (updated)',
+      dedupKey: 'calendar-event:abc123',
+      priority: 'high',
+    });
+
+    // Same ID — it was an update, not a new insert
+    expect(n2.id).toBe(n1.id);
+    expect(n2.summary).toBe('Team standup at 10:00 (updated)');
+    expect(n2.priority).toBe('high');
+
+    // Only one pending notification
+    expect(repo.getPending()).toHaveLength(1);
+  });
+
+  it('allows same dedup key after previous is acknowledged', () => {
+    const n1 = repo.insert({
+      sourceAgent: 'scheduler',
+      category: 'calendar-event',
+      summary: 'First run',
+      dedupKey: 'calendar-event:abc123',
+    });
+
+    repo.acknowledge([n1.id], 'admin');
+
+    const n2 = repo.insert({
+      sourceAgent: 'scheduler',
+      category: 'calendar-event',
+      summary: 'Second run',
+      dedupKey: 'calendar-event:abc123',
+    });
+
+    // Different ID — new notification created after ack
+    expect(n2.id).not.toBe(n1.id);
+    expect(n2.summary).toBe('Second run');
+    expect(repo.getPending()).toHaveLength(1);
+  });
+
+  it('does not dedup notifications without dedup key', () => {
+    repo.insert({ sourceAgent: 'a', category: 'cat', summary: 'one' });
+    repo.insert({ sourceAgent: 'a', category: 'cat', summary: 'one' });
+
+    expect(repo.getPending()).toHaveLength(2);
+  });
+
+  it('dedup keys are independent across different keys', () => {
+    repo.insert({
+      sourceAgent: 'scheduler',
+      category: 'calendar-event',
+      summary: 'Event A',
+      dedupKey: 'calendar-event:aaa',
+    });
+    repo.insert({
+      sourceAgent: 'scheduler',
+      category: 'calendar-event',
+      summary: 'Event B',
+      dedupKey: 'calendar-event:bbb',
+    });
+
+    expect(repo.getPending()).toHaveLength(2);
+  });
+});
+
 // ── getPending ──────────────────────────────────────────────
 
 describe('getPending', () => {

@@ -8,6 +8,8 @@
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 
+import { addColumnIfMissing } from './schema-utils.js';
+
 // ── Types ────────────────────────────────────────────────────
 
 export type NotificationPriority = 'critical' | 'high' | 'normal' | 'low' | 'info';
@@ -19,6 +21,7 @@ export interface Notification {
   category: string;
   priority: NotificationPriority;
   summary: string;
+  dedupKey: string | null;
   payload: Record<string, unknown>;
   status: NotificationStatus;
   acknowledgedBy: string | null;
@@ -32,6 +35,7 @@ export interface InsertNotificationInput {
   category: string;
   priority?: NotificationPriority;
   summary: string;
+  dedupKey?: string;
   payload?: Record<string, unknown>;
   ttlDays?: number;
 }
@@ -58,6 +62,7 @@ interface NotificationRow {
   category: string;
   priority: string;
   summary: string;
+  dedup_key: string | null;
   payload: string;
   status: string;
   acknowledged_by: string | null;
@@ -73,6 +78,7 @@ function parseRow(row: NotificationRow): Notification {
     category: row.category,
     priority: row.priority as NotificationPriority,
     summary: row.summary,
+    dedupKey: row.dedup_key,
     payload: JSON.parse(row.payload),
     status: row.status as NotificationStatus,
     acknowledgedBy: row.acknowledged_by,
@@ -89,18 +95,20 @@ const DEFAULT_TTL_DAYS = 30;
 export function createNotificationRepository(db: Database.Database): NotificationRepository {
   // Statements are prepared lazily on first use (table must exist first).
   let prepared = false;
-  let insertStmt!: Database.Statement;
-  let getByIdStmt!: Database.Statement;
+  let upsertStmt!: Database.Statement;
   let getPendingStmt!: Database.Statement;
   let purgeStmt!: Database.Statement;
 
   function ensureStatements(): void {
     if (prepared) return;
-    insertStmt = db.prepare(`
-      INSERT INTO admin_inbox (id, source_agent, category, priority, summary, payload, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+    upsertStmt = db.prepare(`
+      INSERT INTO admin_inbox (id, source_agent, category, priority, summary, dedup_key, payload, expires_at)
+      VALUES ($id, $sourceAgent, $category, $priority, $summary, $dedupKey, $payload, $expiresAt)
+      ON CONFLICT(dedup_key) WHERE dedup_key IS NOT NULL AND status = 'pending'
+      DO UPDATE SET summary = excluded.summary, priority = excluded.priority,
+                    payload = excluded.payload, expires_at = excluded.expires_at
+      RETURNING *
     `);
-    getByIdStmt = db.prepare('SELECT * FROM admin_inbox WHERE id = ?');
     getPendingStmt = db.prepare(`
       SELECT * FROM admin_inbox
       WHERE status = 'pending'
@@ -129,6 +137,7 @@ export function createNotificationRepository(db: Database.Database): Notificatio
           category        TEXT NOT NULL,
           priority        TEXT NOT NULL DEFAULT 'normal',
           summary         TEXT NOT NULL,
+          dedup_key       TEXT,
           payload         TEXT NOT NULL DEFAULT '{}',
           status          TEXT NOT NULL DEFAULT 'pending',
           acknowledged_by TEXT,
@@ -140,19 +149,27 @@ export function createNotificationRepository(db: Database.Database): Notificatio
         CREATE INDEX IF NOT EXISTS idx_admin_inbox_priority ON admin_inbox(priority);
         CREATE INDEX IF NOT EXISTS idx_admin_inbox_expires ON admin_inbox(expires_at);
       `);
+      addColumnIfMissing(db, 'admin_inbox', 'dedup_key', 'TEXT');
+      db.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_inbox_dedup "
+        + "ON admin_inbox(dedup_key) WHERE dedup_key IS NOT NULL AND status = 'pending'",
+      );
       ensureStatements();
     },
 
     insert(input) {
       ensureStatements();
-      const id = randomUUID();
-      const priority = input.priority ?? 'normal';
-      const payload = JSON.stringify(input.payload ?? {});
-      const ttlDays = input.ttlDays ?? DEFAULT_TTL_DAYS;
-      const expiresAt = new Date(Date.now() + ttlDays * 86_400_000).toISOString();
-
-      insertStmt.run(id, input.sourceAgent, input.category, priority, input.summary, payload, expiresAt);
-      return parseRow(getByIdStmt.get(id) as NotificationRow);
+      const row = upsertStmt.get({
+        id: randomUUID(),
+        sourceAgent: input.sourceAgent,
+        category: input.category,
+        priority: input.priority ?? 'normal',
+        summary: input.summary,
+        dedupKey: input.dedupKey ?? null,
+        payload: JSON.stringify(input.payload ?? {}),
+        expiresAt: new Date(Date.now() + (input.ttlDays ?? DEFAULT_TTL_DAYS) * 86_400_000).toISOString(),
+      }) as NotificationRow;
+      return parseRow(row);
     },
 
     getPending(options) {

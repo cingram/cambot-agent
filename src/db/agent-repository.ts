@@ -12,6 +12,7 @@ import type { ToolPolicy } from '../tools/tool-policy.js';
 import type { RoutingKeywords } from '../agents/keyword-generator.js';
 import { GATEWAY_PRESET } from '../config/config.js';
 import { logger } from '../logger.js';
+import { addColumnIfMissing as addColumn } from './schema-utils.js';
 
 // ── Raw row shape coming out of SQLite ────────────────────────────
 interface AgentRow {
@@ -199,11 +200,7 @@ function rowToAgent(row: AgentRow): RegisteredAgent {
 // ── Migration helpers ─────────────────────────────────────────────
 
 function addColumnIfMissing(db: Database.Database, column: string, definition: string): void {
-  try {
-    db.exec(`ALTER TABLE registered_agents ADD COLUMN ${column} ${definition}`);
-  } catch {
-    // Column already exists
-  }
+  addColumn(db, 'registered_agents', column, definition);
 }
 
 function migrateFromAgentDefinitions(db: Database.Database): void {
