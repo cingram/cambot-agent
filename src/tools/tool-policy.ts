@@ -79,44 +79,80 @@ export const WORKFLOW_MCP_TOOLS = [
   'delete_workflow',
 ] as const;
 
-/** Google Workspace MCP tools (short names). */
+/** Google Workspace MCP tools (short names — must match workspace-mcp v3.x tool names). */
 export const GOOGLE_MCP_TOOLS = [
   // Gmail (outbound only — read goes through check_email/read_email IPC)
   'send_gmail_message',
+  'search_gmail_messages',
+  'get_gmail_message_content',
+  'get_gmail_messages_content_batch',
   'list_gmail_labels',
+  'list_gmail_filters',
+  'manage_gmail_label',
+  'manage_gmail_filter',
+  'modify_gmail_message_labels',
+  'draft_gmail_message',
   // Calendar
-  'list_calendar_events',
-  'create_calendar_event',
-  'update_calendar_event',
+  'get_events',
+  'manage_event',
+  'list_calendars',
+  'query_freebusy',
   // Tasks
   'list_task_lists',
   'list_tasks',
-  'create_task',
-  'complete_task',
+  'get_task',
+  'get_task_list',
+  'manage_task',
+  'manage_task_list',
   // Drive
   'search_drive_files',
   'get_drive_file_content',
   'list_drive_files',
+  'list_drive_items',
   // Docs
   'get_doc_content',
+  'get_doc_as_markdown',
   'create_doc',
   // Sheets
   'get_spreadsheet',
+  'get_spreadsheet_info',
+  'read_sheet_values',
   'create_spreadsheet',
+  'create_sheet',
   'update_spreadsheet_values',
+  'modify_sheet_values',
+  // Contacts
+  'list_contacts',
+  'search_contacts',
+  'get_contact',
 ] as const;
 
 /** Read-only subset of Google Workspace tools. */
 const GOOGLE_READONLY_TOOLS = [
   'list_gmail_labels',
-  'list_calendar_events',
+  'list_gmail_filters',
+  'search_gmail_messages',
+  'get_gmail_message_content',
+  'get_gmail_messages_content_batch',
+  'get_events',
+  'list_calendars',
+  'query_freebusy',
   'list_task_lists',
   'list_tasks',
+  'get_task',
+  'get_task_list',
   'search_drive_files',
   'get_drive_file_content',
   'list_drive_files',
+  'list_drive_items',
   'get_doc_content',
+  'get_doc_as_markdown',
   'get_spreadsheet',
+  'get_spreadsheet_info',
+  'read_sheet_values',
+  'list_contacts',
+  'search_contacts',
+  'get_contact',
 ] as const;
 
 /** MCP tool override within a ToolPolicy. */
