@@ -74,6 +74,8 @@ export interface ContainerInput {
   mcpSocketToken?: string;
   /** Group identifier for the MCP stdio subprocess's TCP connection */
   mcpSocketGroup?: string;
+  /** User-provided Anthropic credential override for containers. */
+  userCredential?: { envVar: string; value: string };
   /** Skill directories to mount (by name). Empty array = no skills. Undefined = all skills. */
   skills?: string[];
   /** SDK tools this agent is allowed to use (resolved from ToolPolicy) */
@@ -441,6 +443,10 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets(agentOptions.secretKeys);
+    // User-provided credential overrides .env secrets
+    if (input.userCredential) {
+      input.secrets[input.userCredential.envVar] = input.userCredential.value;
+    }
     // Derive memoryMode from strategy when set; ephemeral forces markdown-only
     input.memoryMode = input.memoryStrategy?.mode === 'ephemeral' ? 'markdown' : MEMORY_MODE;
     input.guardrailEnabled = EMAIL_GUARDRAIL_ENABLED;
@@ -448,6 +454,7 @@ export async function runContainerAgent(
     container.stdin.end();
     // Remove secrets and ephemeral fields from input so they don't appear in logs
     delete input.secrets;
+    delete input.userCredential;
     delete input.socketToken;
     delete input.mcpSocketToken;
     delete input.mcpSocketGroup;

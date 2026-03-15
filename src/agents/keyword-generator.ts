@@ -10,7 +10,7 @@ import { readEnvFile } from '../config/env.js';
 import { logger } from '../logger.js';
 import { stripCodeFences } from '../workflows/index.js';
 import type { AgentRepository } from '../db/agent-repository.js';
-import { callAnthropicApi } from '../utils/anthropic-client.js';
+import { callAnthropic, type AnthropicCallerDeps } from '../utils/anthropic-client.js';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
@@ -42,30 +42,28 @@ No markdown fences, no explanation.
 Aim for 30-60 words and 15-30 phrases. Quality over quantity — every entry should unambiguously point to THIS agent.`;
 
 interface GeneratorDeps {
-  apiKey: string;
+  credentials: AnthropicCallerDeps;
   model?: string;
-  apiUrl?: string;
 }
 
 export async function generateRoutingKeywords(
   deps: GeneratorDeps,
   agent: { name: string; description: string; capabilities: string[] },
 ): Promise<RoutingKeywords> {
-  const { apiKey } = deps;
+  const { credentials } = deps;
   const model = deps.model ?? DEFAULT_MODEL;
-  const apiUrl = deps.apiUrl;
 
   const userMessage = `Agent: ${agent.name}
 Description: ${agent.description}
 Capabilities: ${agent.capabilities.join(', ') || '(none)'}`;
 
   try {
-    const json = await callAnthropicApi(apiKey, {
+    const json = await callAnthropic(credentials, {
       model,
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: userMessage }],
-    }, apiUrl);
+    });
 
     const text = json.content.find(b => b.type === 'text')?.text ?? '';
 
@@ -94,27 +92,29 @@ Capabilities: ${agent.capabilities.join(', ') || '(none)'}`;
   }
 }
 
-// Cache the API key — it doesn't change at runtime
-let cachedApiKey: string | null | undefined;
+// Cache credentials — they don't change at runtime
+let cachedCredentials: AnthropicCallerDeps | null | undefined;
 
-function getApiKey(): string | null {
-  if (cachedApiKey === undefined) {
-    const env = readEnvFile(['ANTHROPIC_API_KEY']);
-    cachedApiKey = env.ANTHROPIC_API_KEY || null;
+function getCredentials(): AnthropicCallerDeps | null {
+  if (cachedCredentials === undefined) {
+    const env = readEnvFile(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']);
+    const apiKey = env.ANTHROPIC_API_KEY || undefined;
+    const oauthToken = env.CLAUDE_CODE_OAUTH_TOKEN || undefined;
+    cachedCredentials = (apiKey || oauthToken) ? { apiKey, oauthToken } : null;
   }
-  return cachedApiKey;
+  return cachedCredentials;
 }
 
-/** Create a generator that reads the API key from .env (cached). */
+/** Create a generator that reads credentials from .env (cached). */
 export function generateRoutingKeywordsFromEnv(
   agent: { name: string; description: string; capabilities: string[] },
 ): Promise<RoutingKeywords> {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    logger.warn('ANTHROPIC_API_KEY not set — skipping keyword generation');
+  const credentials = getCredentials();
+  if (!credentials) {
+    logger.warn('No Anthropic credentials — skipping keyword generation');
     return Promise.resolve({ words: [], phrases: [] });
   }
-  return generateRoutingKeywords({ apiKey }, agent);
+  return generateRoutingKeywords({ credentials }, agent);
 }
 
 /**

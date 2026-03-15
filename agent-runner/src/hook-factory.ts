@@ -20,7 +20,7 @@ import type { GuardrailReviewer } from './guardrail-reviewer.js';
 import type { HeartbeatHandle } from './types.js';
 
 /** Env vars to strip from Bash subprocess environments. */
-const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY'];
+const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
 export class HookFactory {
   constructor(

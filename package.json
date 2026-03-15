@@ -19,6 +19,7 @@
     "test:e2e": "npx playwright test"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.63",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^11.8.1",
     "cambot-channels": "file:../cambot-channels",

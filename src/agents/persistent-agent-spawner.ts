@@ -77,6 +77,8 @@ export interface PersistentAgentSpawnerDeps {
   getAgentById?: (id: string) => RegisteredAgent | undefined;
   /** Handoff session repository for gateway session stickiness. */
   handoffRepo?: HandoffRepository;
+  /** Returns the best Anthropic credential for containers. */
+  getContainerSecret?: () => { envVar: string; value: string } | undefined;
 }
 
 // ── Agent Registry Cache ───────────────────────────────────────
@@ -216,6 +218,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             ),
             assembledContext,
             subagents: isCustomProvider ? undefined : agent.subagents,
+            userCredential: deps.getContainerSecret?.(),
           },
           (_proc, containerName) => {
             spawnedContainerName = containerName;

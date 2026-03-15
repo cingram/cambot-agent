@@ -3,7 +3,7 @@ import http from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { logger } from '../logger.js';
-import type { WebAuth } from './web-auth.js';
+import type { WsAuthStrategy } from '../auth/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,7 +22,7 @@ type ConnectHandler = () => void;
 
 export interface WebSocketManager {
   /** Attach to an existing HTTP server (noServer mode upgrade on /ws). */
-  attach(server: http.Server, auth: WebAuth, allowedOrigins: string[]): void;
+  attach(server: http.Server, auth: WsAuthStrategy, allowedOrigins: string[]): void;
   /** Broadcast a JSON payload to every connected client. */
   broadcast(msg: Record<string, unknown>): void;
   /** Number of currently connected clients. */
@@ -102,7 +102,7 @@ export function createWebSocketManager(): WebSocketManager {
   }
 
   return {
-    attach(server: http.Server, auth: WebAuth, allowedOrigins: string[]): void {
+    attach(server: http.Server, auth: WsAuthStrategy, allowedOrigins: string[]): void {
       wss = new WebSocketServer({ noServer: true });
 
       server.on('upgrade', (req, socket, head) => {
@@ -125,11 +125,11 @@ export function createWebSocketManager(): WebSocketManager {
           return;
         }
 
-        // Auth check: require token in query param
-        const token = url.searchParams.get('token');
-        if (!auth.validate(token ?? undefined)) {
+        // Auth check
+        const authResult = auth.authenticateUpgrade(req, url);
+        if (!authResult.authenticated) {
           logger.warn(
-            { ip },
+            { ip, reason: authResult.reason },
             'WebSocket: rejected unauthenticated connection',
           );
           socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');

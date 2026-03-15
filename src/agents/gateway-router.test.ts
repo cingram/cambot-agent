@@ -16,8 +16,7 @@ let router: GatewayRouter;
 
 beforeEach(() => {
   router = createGatewayRouter({
-    apiKey: 'test-key',
-    apiUrl: 'https://test.api/v1/messages',
+    credentials: { apiKey: 'test-key', apiUrl: 'https://test.api/v1/messages' },
   });
 });
 

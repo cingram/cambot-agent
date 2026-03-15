@@ -35,7 +35,7 @@ describe('generateRoutingKeywords', () => {
     globalThis.fetch = mockFetch(expected) as typeof fetch;
 
     const result = await generateRoutingKeywords(
-      { apiKey: 'test-key' },
+      { credentials: { apiKey: 'test-key' } },
       { name: 'Email Agent', description: 'Manages email', capabilities: ['email'] },
     );
 
@@ -50,7 +50,7 @@ describe('generateRoutingKeywords', () => {
     }) as typeof fetch;
 
     const result = await generateRoutingKeywords(
-      { apiKey: 'test-key' },
+      { credentials: { apiKey: 'test-key' } },
       { name: 'Email Agent', description: 'Email', capabilities: [] },
     );
 
@@ -65,7 +65,7 @@ describe('generateRoutingKeywords', () => {
     }) as typeof fetch;
 
     const result = await generateRoutingKeywords(
-      { apiKey: 'test-key' },
+      { credentials: { apiKey: 'test-key' } },
       { name: 'Test', description: 'Test', capabilities: [] },
     );
 
@@ -79,7 +79,7 @@ describe('generateRoutingKeywords', () => {
     }) as typeof fetch;
 
     const result = await generateRoutingKeywords(
-      { apiKey: 'test-key' },
+      { credentials: { apiKey: 'test-key' } },
       { name: 'Test', description: 'Test', capabilities: [] },
     );
 
@@ -95,7 +95,7 @@ describe('generateRoutingKeywords', () => {
     }) as typeof fetch;
 
     const result = await generateRoutingKeywords(
-      { apiKey: 'test-key' },
+      { credentials: { apiKey: 'test-key' } },
       { name: 'Test', description: 'Test', capabilities: [] },
     );
 
@@ -111,7 +111,7 @@ describe('generateRoutingKeywords', () => {
     }) as typeof fetch;
 
     const result = await generateRoutingKeywords(
-      { apiKey: 'test-key' },
+      { credentials: { apiKey: 'test-key' } },
       { name: 'Test', description: 'Test', capabilities: [] },
     );
 
@@ -128,7 +128,7 @@ describe('generateRoutingKeywords', () => {
     }) as typeof fetch;
 
     const result = await generateRoutingKeywords(
-      { apiKey: 'test-key' },
+      { credentials: { apiKey: 'test-key' } },
       { name: 'Test', description: 'Test', capabilities: [] },
     );
 
@@ -141,7 +141,7 @@ describe('generateRoutingKeywords', () => {
     globalThis.fetch = fetchSpy as typeof fetch;
 
     await generateRoutingKeywords(
-      { apiKey: 'my-key', model: 'claude-sonnet-4-6' },
+      { credentials: { apiKey: 'my-key' }, model: 'claude-sonnet-4-6' },
       { name: 'Research Agent', description: 'Does research', capabilities: ['websearch'] },
     );
 

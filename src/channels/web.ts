@@ -2,7 +2,7 @@ import http from 'http';
 
 import { randomUUID } from 'node:crypto';
 
-import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, WEB_ALLOWED_ORIGINS, WEB_AUTH_TOKEN, WEB_CHANNEL_PORT } from '../config/config.js';
+import { ASSISTANT_NAME, MAIN_GROUP_FOLDER, STORE_DIR, WEB_ALLOWED_ORIGINS, WEB_AUTH_TOKEN } from '../config/config.js';
 import {
   getChatHistory,
   getDatabase,
@@ -19,7 +19,8 @@ import { handleAgentRoutes } from '../api/agent-routes.js';
 import { logger } from '../logger.js';
 import { Channel, ChannelOpts, NewMessage } from '../types.js';
 import { ChatMetadata, InboundMessage } from '../bus/index.js';
-import { createWebAuth, WebAuth } from './web-auth.js';
+import { ApiKeyProvider } from '../auth/api-key-provider.js';
+import type { AuthProvider } from '../auth/types.js';
 import { createWebSocketManager, WebSocketManager } from './web-ws.js';
 
 const WEB_JID = 'web:ui';
@@ -72,13 +73,13 @@ export class WebChannel implements Channel {
   private pending = new Map<string, PendingResponse>();
   private wsManager: WebSocketManager;
   private messageBuffer: BufferedMessage[] = [];
-  private auth: WebAuth;
+  private auth: AuthProvider;
   private agentRoutesDeps?: import('../api/agent-routes.js').AgentRoutesDeps;
 
   constructor(opts: ChannelOpts, port?: number) {
     this.opts = opts;
     this.port = port ?? DEFAULT_PORT;
-    this.auth = createWebAuth(WEB_AUTH_TOKEN);
+    this.auth = new ApiKeyProvider({ envToken: WEB_AUTH_TOKEN, storeDir: STORE_DIR });
     this.wsManager = createWebSocketManager();
   }
 
@@ -209,6 +210,7 @@ export class WebChannel implements Channel {
   async disconnect(): Promise<void> {
     this.connected = false;
     this.wsManager.close();
+    this.auth.destroy();
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer);
     }
@@ -243,19 +245,19 @@ export class WebChannel implements Channel {
       return;
     }
 
-    // Auth: require valid Bearer token on all non-OPTIONS requests
-    const authHeader = req.headers.authorization;
-    if (!this.auth.validate(authHeader)) {
+    const url = new URL(req.url || '/', 'http://localhost');
+
+    // Auth: require valid credentials on all non-OPTIONS requests
+    const authResult = this.auth.authenticateRequest(req);
+    if (!authResult.authenticated) {
       logger.warn(
-        { ip: req.socket.remoteAddress, path: req.url },
+        { ip: req.socket.remoteAddress, path: req.url, reason: authResult.reason },
         'Web channel: rejected unauthenticated request',
       );
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
       return;
     }
-
-    const url = new URL(req.url || '/', 'http://localhost');
 
     // Extract conversation ID from /conversations/:id paths
     const convoMatch = url.pathname.match(/^\/conversations\/([^/]+)$/);
@@ -627,4 +629,5 @@ export class WebChannel implements Channel {
       res.end(JSON.stringify({ error: 'Failed to delete all conversations' }));
     }
   }
+
 }

@@ -11,7 +11,7 @@
 
 import { logger } from '../logger.js';
 import { readEnvFile } from '../config/env.js';
-import { callAnthropicApi, type AnthropicResponse } from '../utils/anthropic-client.js';
+import { callAnthropic, type AnthropicCallerDeps, type AnthropicResponse } from '../utils/anthropic-client.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -35,9 +35,8 @@ export interface AgentRegistryEntry {
 }
 
 export interface GatewayRouterDeps {
-  apiKey: string;
+  credentials: AnthropicCallerDeps | (() => AnthropicCallerDeps);
   model?: string;
-  apiUrl?: string;
 }
 
 // ── Constants ────────────────────────────────────────────────
@@ -94,10 +93,19 @@ ${agentList}
 
 // ── Factory ──────────────────────────────────────────────────
 
+function resolveCredentials(
+  credentials: AnthropicCallerDeps | (() => AnthropicCallerDeps),
+): AnthropicCallerDeps {
+  const creds = typeof credentials === 'function' ? credentials() : credentials;
+  if (!creds.apiKey && !creds.oauthToken) {
+    throw new Error('No Anthropic credentials available for gateway router');
+  }
+  return creds;
+}
+
 export function createGatewayRouter(deps: GatewayRouterDeps) {
-  const { apiKey } = deps;
+  const { credentials } = deps;
   const model = deps.model ?? DEFAULT_MODEL;
-  const apiUrl = deps.apiUrl;
 
   return {
     async route(
@@ -107,14 +115,14 @@ export function createGatewayRouter(deps: GatewayRouterDeps) {
       const startMs = Date.now();
 
       try {
-        const json = await callAnthropicApi(apiKey, {
+        const json = await callAnthropic(resolveCredentials(credentials), {
           model,
           max_tokens: 1024,
           system: buildSystemPrompt(agents),
           messages: [{ role: 'user', content: userMessage }],
           tools: [ROUTE_TOOL],
           tool_choice: { type: 'tool', name: 'route' },
-        }, apiUrl);
+        });
 
         // Extract the tool_use block
         const toolUse = json.content.find(b => b.type === 'tool_use' && b.name === 'route');
@@ -186,14 +194,14 @@ export function createGatewayRouter(deps: GatewayRouterDeps) {
 Does this message continue the same task, or pivot to a completely different topic needing a different agent?
 Rules: follow-ups, clarifications, and related requests = continue. Completely different domain = pivot. When in doubt, continue.`;
 
-        const json = await callAnthropicApi(apiKey, {
+        const json = await callAnthropic(resolveCredentials(credentials), {
           model,
           max_tokens: 256,
           system: systemPrompt,
           messages: [{ role: 'user', content: userMessage }],
           tools: [CONTINUATION_TOOL],
           tool_choice: { type: 'tool', name: 'classify_continuation' },
-        }, apiUrl);
+        });
         const toolUse = json.content.find(b => b.type === 'tool_use' && b.name === 'classify_continuation');
         if (!toolUse?.input) {
           throw new Error('No classify_continuation tool_use in response');
@@ -698,12 +706,18 @@ const CONTINUATION_TOOL = {
 
 export type GatewayRouter = ReturnType<typeof createGatewayRouter>;
 
-/** Convenience: create a router from the .env file. */
-export function createGatewayRouterFromEnv(): GatewayRouter {
-  const env = readEnvFile(['ANTHROPIC_API_KEY']);
-  const apiKey = env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY required for gateway router');
+/** Create a router with a dynamic credential resolver. */
+export function createGatewayRouterFromEnv(
+  credentialResolver?: () => AnthropicCallerDeps,
+): GatewayRouter {
+  if (credentialResolver) {
+    return createGatewayRouter({ credentials: credentialResolver });
   }
-  return createGatewayRouter({ apiKey });
+  const env = readEnvFile(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']);
+  return createGatewayRouter({
+    credentials: {
+      apiKey: env.ANTHROPIC_API_KEY || undefined,
+      oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN || undefined,
+    },
+  });
 }

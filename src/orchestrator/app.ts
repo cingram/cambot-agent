@@ -84,6 +84,7 @@ import { provisionAgent } from '../agents/agent-factory.js';
 import { createWorkflowTriggerHandler } from '../workflows/workflow-trigger-handler.js';
 import { createWorkflowAgentHandler } from '../workflows/workflow-agent-handler.js';
 import { GATEWAY_PRESET, GROUPS_DIR } from '../config/config.js';
+import { AnthropicCredentialProvider } from '../auth/anthropic-credential-provider.js';
 
 // cambot-socket imports
 import { CambotSocketServer, CommandRegistry, registerAllHandlers } from '../cambot-socket/index.js';
@@ -113,6 +114,7 @@ export class CamBotApp {
   private handoffRepo: HandoffRepository | null = null;
   private notificationRepo: import('../db/notification-repository.js').NotificationRepository | null = null;
   private socketServer: CambotSocketServer | null = null;
+  private anthropicCredential: AnthropicCredentialProvider | null = null;
   private cleanupTimers: ReturnType<typeof setInterval>[] = [];
 
   async start(): Promise<void> {
@@ -122,6 +124,13 @@ export class CamBotApp {
     this.notificationRepo = createNotificationRepository(getDatabase());
     this.notificationRepo.ensureTable();
     this.state.load();
+
+    // Initialize Anthropic credential provider (reads OAuth from ~/.claude, API key from .env)
+    const credEnv = readEnvFile(['ANTHROPIC_API_KEY']);
+    this.anthropicCredential = new AnthropicCredentialProvider({
+      apiKey: credEnv.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || undefined,
+    });
+
     loadAgentsConfig();
     this.initLifecycleInterceptor();
 
@@ -173,6 +182,7 @@ export class CamBotApp {
       getWorkflowBuilderService: () => this.workflowBuilderService,
       getIntegrationManager: () => this.integrationMgr,
       getSocketServer: () => this.socketServer ?? undefined,
+      getContainerSecret: () => this.anthropicCredential?.getContainerSecret(),
       getRegisteredAgents: () => this.agentRepo?.getAll().map(a => ({
         id: a.id,
         name: a.name,
@@ -310,6 +320,7 @@ export class CamBotApp {
               isMain: true,
               customAgent: input.customAgent,
               mcpServers: this.integrationMgr?.getActiveMcpServers(),
+              userCredential: this.anthropicCredential?.getContainerSecret(),
             },
             (_proc, containerName) => {
               spawnedContainerName = containerName;
@@ -423,15 +434,14 @@ export class CamBotApp {
       return;
     }
 
-    const apiKey = readEnvFile(['ANTHROPIC_API_KEY']).ANTHROPIC_API_KEY
-      || process.env.ANTHROPIC_API_KEY || '';
-
-    if (!apiKey) {
-      logger.warn('Content pipe disabled: no ANTHROPIC_API_KEY available for summarizer');
+    const apiKey = this.anthropicCredential?.getApiKey();
+    const oauthToken = this.anthropicCredential?.getOAuthToken();
+    if (!apiKey && !oauthToken) {
+      logger.warn('Content pipe disabled: no Anthropic credentials available for summarizer');
       return;
     }
 
-    const summarizer = createSummarizer({ apiKey, model: CONTENT_PIPE_MODEL });
+    const summarizer = createSummarizer({ credentials: { apiKey, oauthToken }, model: CONTENT_PIPE_MODEL });
     this.contentPipe = createEmailPipe({
       summarizer,
       injectionDetector: createInjectionDetector(),
@@ -560,7 +570,10 @@ export class CamBotApp {
       },
       getInterceptor: () => this.interceptor ?? null,
       getSocketServer: () => this.socketServer ?? undefined,
-      gatewayRouter: createGatewayRouterFromEnv(),
+      gatewayRouter: createGatewayRouterFromEnv(() => ({
+        apiKey: this.anthropicCredential?.getApiKey(),
+        oauthToken: this.anthropicCredential?.getOAuthToken(),
+      })),
       getAgentRegistry: () => agentRepo.getAll().map(a => ({
         id: a.id,
         name: a.name,
@@ -570,6 +583,7 @@ export class CamBotApp {
       })),
       getAgentById: (id) => agentRepo.getById(id),
       handoffRepo,
+      getContainerSecret: () => this.anthropicCredential?.getContainerSecret(),
     });
   }
 

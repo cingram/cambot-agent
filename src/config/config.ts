@@ -36,7 +36,7 @@ export const WEB_CHANNEL_PORT = parseInt(
   process.env.WEB_CHANNEL_PORT || envConfig.WEB_CHANNEL_PORT || '3100',
   10,
 );
-// Web channel auth token (auto-generated if not set — see src/channels/web-auth.ts)
+// Web channel auth token (auto-generated if not set — see src/auth/api-key-provider.ts)
 export const WEB_AUTH_TOKEN =
   process.env.WEB_AUTH_TOKEN || envConfig.WEB_AUTH_TOKEN || '';
 

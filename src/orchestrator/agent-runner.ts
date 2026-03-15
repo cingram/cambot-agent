@@ -44,6 +44,7 @@ export interface AgentRunnerDeps {
   getWorkflowBuilderService: () => WorkflowBuilderService | null;
   getIntegrationManager: () => IntegrationManager | null;
   getSocketServer?: () => CambotSocketServer | undefined;
+  getContainerSecret?: () => { envVar: string; value: string } | undefined;
   getRegisteredAgents?: () => Array<{
     id: string;
     name: string;
@@ -128,6 +129,7 @@ export class AgentRunner {
           groupFolder: group.folder,
           chatJid,
           isMain,
+          userCredential: this.deps.getContainerSecret?.(),
           mcpServers: integrationMgr?.getActiveMcpServers(),
           memoryStrategy,
           conversationId: resolution.isTransient ? undefined : conversation.id,

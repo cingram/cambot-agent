@@ -10,6 +10,7 @@ import type { AgentRepository, CreateAgentInput, UpdateAgentInput } from '../db/
 import type { AgentTemplateRepository } from '../db/agent-template-repository.js';
 import { provisionAgent, type ProvisionInput } from '../agents/agent-factory.js';
 import { generateAndStoreKeywords } from '../agents/keyword-generator.js';
+import { json, error, readBody } from './http-helpers.js';
 import {
   listAgentConversations,
   createConversation,
@@ -407,34 +408,6 @@ function handleConversationRoutes(
   return false;
 }
 
-// ── Helpers ──
-
-function json(res: http.ServerResponse, status: number, data: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(data));
-}
-
-function error(res: http.ServerResponse, status: number, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  logger.error({ err }, 'Agent API error');
-  json(res, status, { error: message });
-}
-
-function readBody(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  handler: (body: Record<string, unknown>) => void,
-): void {
-  let raw = '';
-  req.on('data', (chunk: Buffer) => { raw += chunk; });
-  req.on('end', () => {
-    try {
-      handler(JSON.parse(raw));
-    } catch {
-      json(res, 400, { error: 'Invalid JSON' });
-    }
-  });
-}
 
 // ── Skills cache (static on disk, scanned once) ──
 

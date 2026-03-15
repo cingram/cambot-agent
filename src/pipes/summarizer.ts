@@ -10,7 +10,7 @@
  */
 
 import { logger } from '../logger.js';
-import { callAnthropicApi } from '../utils/anthropic-client.js';
+import { callAnthropic, type AnthropicCallerDeps } from '../utils/anthropic-client.js';
 
 export interface SummarizerResult {
   summary: string;
@@ -18,9 +18,8 @@ export interface SummarizerResult {
 }
 
 export interface SummarizerDeps {
-  apiKey: string;
+  credentials: AnthropicCallerDeps;
   model?: string;
-  apiUrl?: string;
 }
 
 const SYSTEM_PROMPT = `You are a content summarizer. You receive untrusted external content and produce a structured JSON summary. You have no tools or actions.
@@ -46,9 +45,8 @@ const VALID_INTENTS = new Set([
 const MAX_SUMMARIZER_INPUT_CHARS = 16_000;
 
 export function createSummarizer(deps: SummarizerDeps) {
-  const { apiKey } = deps;
+  const { credentials } = deps;
   const model = deps.model ?? 'claude-haiku-4-5-20251001';
-  const apiUrl = deps.apiUrl;
 
   return {
     async summarize(
@@ -66,12 +64,12 @@ export function createSummarizer(deps: SummarizerDeps) {
       const truncated = userMessage.slice(0, MAX_SUMMARIZER_INPUT_CHARS);
 
       try {
-        const json = await callAnthropicApi(apiKey, {
+        const json = await callAnthropic(credentials, {
           model,
           max_tokens: 256,
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: truncated }],
-        }, apiUrl);
+        });
 
         const text = json.content
           .filter((b) => b.type === 'text' && b.text)
