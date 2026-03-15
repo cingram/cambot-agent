@@ -607,6 +607,7 @@ export class CamBotApp {
       const agentRepo = createAgentRepository(db);
       agentRepo.ensureTable();
       this.seedSystemGateway(agentRepo);
+      this.seedSystemOps(agentRepo);
 
       this.agentRepo = agentRepo;
       const spawner = this.createAgentSpawner();
@@ -707,6 +708,63 @@ export class CamBotApp {
       isSystem: true,
     });
     logger.info('Seeded system gateway agent');
+  }
+
+  private seedSystemOps(agentRepo: import('../db/agent-repository.js').AgentRepository): void {
+    const AGENT_ID = 'system-ops';
+    const existing = agentRepo.getById(AGENT_ID);
+    if (existing) {
+      logger.debug({ agentId: AGENT_ID }, 'System ops agent already exists');
+      return;
+    }
+
+    agentRepo.create({
+      id: AGENT_ID,
+      name: 'System Ops',
+      description: 'System health and operations agent. Monitors infrastructure, runs database maintenance, checks service health, tracks resource usage, and reports issues. Handles scheduled housekeeping and on-demand diagnostics.',
+      folder: 'system-ops',
+      channels: [],
+      mcpServers: [],
+      capabilities: [
+        'maintenance', 'database', 'cleanup', 'optimization',
+        'health-check', 'monitoring', 'diagnostics', 'system-status',
+      ],
+      isSystem: true,
+      isMain: true, // Needed for admin-only tools (run_maintenance)
+      memoryStrategy: { mode: 'persistent' },
+      toolPolicy: {
+        preset: 'sandboxed',
+        mcp: {
+          allow: [
+            'run_maintenance',
+            'send_message',
+            'submit_notification',
+            'get_notifications',
+            'acknowledge_notifications',
+            'list_tasks',
+            'schedule_task',
+          ],
+        },
+      },
+      systemPrompt: `You are the system operations agent. You handle health monitoring, diagnostics, and maintenance for the CamBot platform.
+
+Responsibilities:
+- Database maintenance: run_maintenance tool for decay, dedup, purge, vacuum, FTS rebuild
+- System health: check Docker status, disk usage, container counts, log errors
+- Service monitoring: verify workspace-mcp, scheduled tasks, agent containers are healthy
+- Issue reporting: surface problems via submit_notification (category: "system-health" or "system-maintenance")
+- Diagnostics: investigate issues when asked — read logs, check processes, inspect state
+
+Rules:
+- Use run_maintenance for database operations — never modify the database directly.
+- Report results via submit_notification with appropriate category and priority.
+- Only send_message to the user if something failed or needs immediate attention.
+- Wrap routine output in <internal> tags to keep things quiet.
+- If a step fails, continue with remaining steps and report the failure.
+- When checking system health, check: disk space, Docker containers, database size, log errors, scheduled task status.`,
+      skills: [], // No skills needed
+    });
+    logger.info('Seeded system ops agent');
   }
 
   private async initSocketServer(): Promise<void> {

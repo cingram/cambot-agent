@@ -257,6 +257,8 @@ export const FRAME_TYPES = {
   NOTIFICATION_RESULT: 'notification.result',
   // Context
   CONTEXT_SAVE: 'context.save',
+  // Maintenance
+  MAINTENANCE_RUN: 'maintenance.run',
   // Log
   LOG: 'log',
   // Error

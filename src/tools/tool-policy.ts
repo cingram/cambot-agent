@@ -71,6 +71,7 @@ export const CAMBOT_MCP_TOOLS = [
   'submit_notification',
   'get_notifications',
   'acknowledge_notifications',
+  'run_maintenance',
 ] as const;
 
 /** Workflow-builder MCP tools (conceptual grouping — subset of CAMBOT_MCP_TOOLS). */
@@ -352,6 +353,7 @@ const ADMIN_ONLY_MCP_TOOLS = [
   'delete_custom_agent',
   'get_notifications',
   'acknowledge_notifications',
+  'run_maintenance',
 ];
 
 export interface SafetyContext {
