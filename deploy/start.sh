@@ -14,6 +14,13 @@
 #   bash start.sh status       # Check service status
 #   bash start.sh stop         # Stop all services
 # ===========================================================================
+
+# Fix Windows line endings if present
+if [[ -f "${BASH_SOURCE[0]}" ]] && grep -qP '\r' "${BASH_SOURCE[0]}" 2>/dev/null; then
+  sed -i'' -e 's/\r$//' "${BASH_SOURCE[0]}"
+  exec bash "${BASH_SOURCE[0]}" "$@"
+fi
+
 set -euo pipefail
 
 CAMBOT_HOME="${CAMBOT_HOME:-/opt/cambot}"

@@ -5,13 +5,20 @@
 # Downloads and installs CamBot from GitHub Releases. No tarball needed.
 #
 # Quick install:
-#   curl -sSL https://raw.githubusercontent.com/cingram/cambot-agent/main/deploy/install.sh | bash
+#   bash /opt/cambot/cambot-agent/deploy/install.sh
 #
 # Or run locally:
 #   bash install.sh [--version v1.2.3] [--home /opt/cambot] [--no-service]
 #
 # Idempotent: running twice is safe. Never deletes user data.
 # ===========================================================================
+
+# Fix Windows line endings if present (self-heal for CRLF contamination)
+if [[ -f "${BASH_SOURCE[0]}" ]] && grep -qP '\r' "${BASH_SOURCE[0]}" 2>/dev/null; then
+  sed -i'' -e 's/\r$//' "${BASH_SOURCE[0]}"
+  exec bash "${BASH_SOURCE[0]}" "$@"
+fi
+
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
