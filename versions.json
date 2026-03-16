@@ -1,0 +1,8 @@
+{
+  "cambot-core": "main",
+  "cambot-integrations": "main",
+  "cambot-channels": "main",
+  "cambot-workflows": "main",
+  "cambot-llm": "main",
+  "cambot-core-ui": "main"
+}

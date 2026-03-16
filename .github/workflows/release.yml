@@ -1,0 +1,240 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: >-
+            cambot-agent,cambot-core,cambot-integrations,cambot-channels,cambot-workflows,cambot-llm,cambot-core-ui
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Read version manifest
+        id: versions
+        run: |
+          echo "core=$(jq -r '.["cambot-core"]' versions.json)" >> "$GITHUB_OUTPUT"
+          echo "integrations=$(jq -r '.["cambot-integrations"]' versions.json)" >> "$GITHUB_OUTPUT"
+          echo "channels=$(jq -r '.["cambot-channels"]' versions.json)" >> "$GITHUB_OUTPUT"
+          echo "workflows=$(jq -r '.["cambot-workflows"]' versions.json)" >> "$GITHUB_OUTPUT"
+          echo "llm=$(jq -r '.["cambot-llm"]' versions.json)" >> "$GITHUB_OUTPUT"
+          echo "ui=$(jq -r '.["cambot-core-ui"]' versions.json)" >> "$GITHUB_OUTPUT"
+
+      # Check out all sibling repos at pinned versions
+      - uses: actions/checkout@v4
+        with:
+          repository: cingram/cambot-integrations
+          ref: ${{ steps.versions.outputs.integrations }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: cambot-integrations
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cingram/cambot-core
+          ref: ${{ steps.versions.outputs.core }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: cambot-core
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cingram/cambot-channels
+          ref: ${{ steps.versions.outputs.channels }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: cambot-channels
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cingram/cambot-workflows
+          ref: ${{ steps.versions.outputs.workflows }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: cambot-workflows
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cingram/cambot-llm
+          ref: ${{ steps.versions.outputs.llm }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: cambot-llm
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cingram/cambot-core-ui
+          ref: ${{ steps.versions.outputs.ui }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: cambot-core-ui
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@v2
+
+      # Arrange the workspace so file: dependencies resolve correctly.
+      # cambot-agent was checked out into the repo root; move it next to the
+      # sibling repos so the directory layout mirrors local development:
+      #   workspace/cambot-agent/
+      #   workspace/cambot-core/
+      #   workspace/cambot-integrations/  ...etc
+      - name: Arrange workspace
+        run: |
+          WORKSPACE="$(pwd)"
+          # The sibling repos are already at workspace/<name>.
+          # Move the cambot-agent source (repo root) into workspace/cambot-agent
+          mkdir -p /tmp/cambot-agent-src
+          # Move everything except the sibling repo dirs
+          shopt -s dotglob
+          for f in *; do
+            case "$f" in
+              cambot-core|cambot-integrations|cambot-channels|cambot-workflows|cambot-llm|cambot-core-ui) ;;
+              *) mv "$f" /tmp/cambot-agent-src/ ;;
+            esac
+          done
+          shopt -u dotglob
+          mkdir -p cambot-agent
+          mv /tmp/cambot-agent-src/* cambot-agent/ 2>/dev/null || true
+          mv /tmp/cambot-agent-src/.* cambot-agent/ 2>/dev/null || true
+          rmdir /tmp/cambot-agent-src 2>/dev/null || true
+          echo "WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
+
+      # Build libraries in dependency order
+      - name: Install and build cambot-integrations
+        run: cd "$WORKSPACE/cambot-integrations" && bun install && bun run build
+
+      - name: Install and build cambot-core
+        run: cd "$WORKSPACE/cambot-core" && bun install && bun run build
+
+      - name: Install and build cambot-channels
+        run: cd "$WORKSPACE/cambot-channels" && bun install && bun run build
+
+      - name: Install and build cambot-workflows
+        run: cd "$WORKSPACE/cambot-workflows" && bun install && bun run build
+
+      - name: Install and build cambot-llm
+        run: cd "$WORKSPACE/cambot-llm" && bun install && bun run build
+
+      - name: Install and build cambot-agent
+        run: cd "$WORKSPACE/cambot-agent" && bun install && bun run build
+
+      - name: Build agent-runner
+        run: cd "$WORKSPACE/cambot-agent/agent-runner" && bun install && bun run build
+
+      # Build Next.js standalone output for UI
+      - name: Build cambot-core-ui
+        run: |
+          cd "$WORKSPACE/cambot-core-ui"
+          bun install
+          bun run build
+        env:
+          CAMBOT_DB_PATH: /tmp/cambot-placeholder.sqlite
+          CAMBOT_UI_SECRET: 0000000000000000000000000000000000000000000000000000000000000000
+
+      # Stage agent artifact
+      - name: Stage agent artifact
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          STAGE="$RUNNER_TEMP/stage-agent"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+
+          # Helper: copy a library package (dist + package.json)
+          stage_lib() {
+            local name="$1"
+            local src="$WORKSPACE/$name"
+            local dst="$STAGE/$name"
+            mkdir -p "$dst"
+            cp "$src/package.json" "$dst/"
+            [ -f "$src/tsconfig.json" ] && cp "$src/tsconfig.json" "$dst/"
+            [ -d "$src/dist" ] && cp -r "$src/dist" "$dst/dist"
+          }
+
+          stage_lib cambot-integrations
+          stage_lib cambot-core
+          stage_lib cambot-channels
+          stage_lib cambot-workflows
+          stage_lib cambot-llm
+
+          # cambot-llm: also include src (mounted into containers)
+          cp -r "$WORKSPACE/cambot-llm/src" "$STAGE/cambot-llm/src"
+
+          # cambot-agent
+          AGENT_SRC="$WORKSPACE/cambot-agent"
+          AGENT_DST="$STAGE/cambot-agent"
+          mkdir -p "$AGENT_DST"
+          cp "$AGENT_SRC/package.json" "$AGENT_DST/"
+          cp "$AGENT_SRC/tsconfig.json" "$AGENT_DST/"
+          cp -r "$AGENT_SRC/dist" "$AGENT_DST/dist"
+          [ -f "$AGENT_SRC/agents.yaml" ] && cp "$AGENT_SRC/agents.yaml" "$AGENT_DST/"
+          cp "$AGENT_SRC/.env.example" "$AGENT_DST/.env.example"
+
+          # Container assets
+          cp -r "$AGENT_SRC/container" "$AGENT_DST/container"
+          rm -rf "$AGENT_DST/container/cambot-llm" "$AGENT_DST/container/cambot-agent-runner"
+
+          # Agent-runner (source mounted into containers)
+          mkdir -p "$AGENT_DST/agent-runner"
+          cp "$AGENT_SRC/agent-runner/package.json" "$AGENT_DST/agent-runner/"
+          cp "$AGENT_SRC/agent-runner/tsconfig.json" "$AGENT_DST/agent-runner/"
+          cp -r "$AGENT_SRC/agent-runner/src" "$AGENT_DST/agent-runner/src"
+          find "$AGENT_DST/agent-runner/src" -name '*.test.ts' -delete 2>/dev/null || true
+          [ -d "$AGENT_SRC/agent-runner/dist" ] && \
+            cp -r "$AGENT_SRC/agent-runner/dist" "$AGENT_DST/agent-runner/dist"
+
+          # Deploy scripts
+          cp -r "$AGENT_SRC/deploy" "$AGENT_DST/deploy"
+
+          # Version stamp
+          cat > "$STAGE/VERSION" <<EOF
+          version: $VERSION
+          built: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          source: github-actions
+          EOF
+
+          tar czf "$RUNNER_TEMP/cambot-agent-${VERSION}.tar.gz" -C "$STAGE" .
+
+      # Stage UI artifact
+      - name: Stage UI artifact
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          STAGE="$RUNNER_TEMP/stage-ui"
+          rm -rf "$STAGE"
+
+          UI_SRC="$WORKSPACE/cambot-core-ui"
+          mkdir -p "$STAGE/cambot-core-ui"
+
+          # Next.js standalone output
+          if [ -d "$UI_SRC/.next/standalone" ]; then
+            cp -r "$UI_SRC/.next/standalone/." "$STAGE/cambot-core-ui/"
+            # Static assets
+            [ -d "$UI_SRC/.next/static" ] && \
+              cp -r "$UI_SRC/.next/static" "$STAGE/cambot-core-ui/.next/static"
+            [ -d "$UI_SRC/public" ] && \
+              cp -r "$UI_SRC/public" "$STAGE/cambot-core-ui/public"
+          else
+            # Fallback: copy built app (non-standalone)
+            cp "$UI_SRC/package.json" "$STAGE/cambot-core-ui/"
+            cp -r "$UI_SRC/.next" "$STAGE/cambot-core-ui/.next"
+            [ -d "$UI_SRC/public" ] && cp -r "$UI_SRC/public" "$STAGE/cambot-core-ui/public"
+          fi
+
+          tar czf "$RUNNER_TEMP/cambot-ui-${VERSION}.tar.gz" -C "$STAGE" .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ runner.temp }}/cambot-agent-${{ github.ref_name }}.tar.gz
+            ${{ runner.temp }}/cambot-ui-${{ github.ref_name }}.tar.gz

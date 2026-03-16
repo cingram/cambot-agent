@@ -55,6 +55,7 @@ mkdir -p "$STAGE_DIR/cambot"
 cp "$AGENT_ROOT/deploy/install.sh"   "$STAGE_DIR/install.sh"
 cp "$AGENT_ROOT/deploy/update.sh"    "$STAGE_DIR/update.sh"
 cp "$AGENT_ROOT/deploy/uninstall.sh" "$STAGE_DIR/uninstall.sh"
+cp "$AGENT_ROOT/deploy/start.sh"     "$STAGE_DIR/start.sh"
 chmod +x "$STAGE_DIR"/*.sh
 
 # ---------------------------------------------------------------------------
@@ -131,22 +132,22 @@ if [ -d "$MONO_ROOT/cambot-llm/dist" ]; then
   cp -r "$MONO_ROOT/cambot-llm/dist" "$DST_LLM/dist"
 fi
 
-# cambot-core-ui: copy source for Docker build on target
+# cambot-core-ui: copy source for Docker build on target (skip node_modules, .next, .turbo)
 if [ -d "$MONO_ROOT/cambot-core-ui" ]; then
   DST_UI="$STAGE_DIR/cambot/cambot-core-ui"
   mkdir -p "$DST_UI"
-  # Copy everything except node_modules, .next, and other build artifacts
-  rsync -a \
-    --exclude='node_modules' \
-    --exclude='.next' \
-    --exclude='.turbo' \
-    "$MONO_ROOT/cambot-core-ui/" "$DST_UI/" 2>/dev/null \
+  (cd "$MONO_ROOT/cambot-core-ui" && find . \
+    -path ./node_modules -prune -o \
+    -path ./.next -prune -o \
+    -path ./.turbo -prune -o \
+    -print0) | (cd "$MONO_ROOT/cambot-core-ui" && xargs -0 -I{} cp --parents -r "{}" "$DST_UI/" 2>/dev/null) \
   || (
-    # Fallback if rsync not available (Windows Git Bash)
-    cp -r "$MONO_ROOT/cambot-core-ui" "$DST_UI.tmp"
-    rm -rf "$DST_UI.tmp/node_modules" "$DST_UI.tmp/.next" "$DST_UI.tmp/.turbo"
-    rm -rf "$DST_UI"
-    mv "$DST_UI.tmp" "$DST_UI"
+    # Fallback: copy files individually using tar (handles Windows Git Bash)
+    cd "$MONO_ROOT/cambot-core-ui" && tar cf - \
+      --exclude='node_modules' \
+      --exclude='.next' \
+      --exclude='.turbo' \
+      . | (cd "$DST_UI" && tar xf -)
   )
 fi
 
