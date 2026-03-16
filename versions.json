@@ -1,8 +1,8 @@
 {
   "cambot-core": "main",
   "cambot-integrations": "main",
-  "cambot-channels": "main",
-  "cambot-workflows": "main",
+  "cambot-channels": "master",
+  "cambot-workflows": "master",
   "cambot-llm": "main",
   "cambot-core-ui": "main"
 }
