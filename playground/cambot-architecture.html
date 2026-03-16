@@ -1,0 +1,1622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CamBot-Agent Architecture Explorer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --text-bright: #f0f6fc;
+    --blue: #58a6ff; --blue-dim: #1f6feb33; --green: #3fb950; --green-dim: #23883833;
+    --orange: #d29922; --orange-dim: #9e6a0333; --red: #f85149; --red-dim: #da363333;
+    --purple: #bc8cff; --purple-dim: #8957e533; --cyan: #39d2c0; --cyan-dim: #1b7c6d33;
+    --radius: 8px; --font: system-ui, -apple-system, sans-serif; --mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; overflow: hidden; }
+
+  /* Layout */
+  .app { display: grid; grid-template-rows: 48px 1fr 220px; height: 100vh; }
+  .topbar { display: flex; align-items: center; gap: 8px; padding: 0 16px; background: var(--surface); border-bottom: 1px solid var(--border); z-index: 10; }
+  .topbar h1 { font-size: 15px; font-weight: 600; color: var(--text-bright); margin-right: 16px; white-space: nowrap; }
+  .main-area { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
+  .canvas-wrap { position: relative; overflow: hidden; background: var(--bg); }
+  .canvas-wrap svg { width: 100%; height: 100%; }
+  .detail-panel { background: var(--surface); border-left: 1px solid var(--border); overflow-y: auto; padding: 16px; }
+  .bottom-bar { background: var(--surface); border-top: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .bottom-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .bottom-header span { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .bottom-content { flex: 1; overflow-y: auto; padding: 12px 16px; font-family: var(--mono); font-size: 12px; line-height: 1.6; color: var(--text-dim); white-space: pre-wrap; }
+
+  /* Buttons */
+  .btn { padding: 6px 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 13px; cursor: pointer; transition: all 0.15s; font-family: var(--font); }
+  .btn:hover { border-color: var(--text-dim); background: var(--border); }
+  .btn.active { border-color: var(--blue); background: var(--blue-dim); color: var(--blue); }
+  .btn-sim { background: linear-gradient(135deg, #1f6feb, #8957e5); border: none; color: white; font-weight: 600; padding: 6px 18px; }
+  .btn-sim:hover { opacity: 0.9; }
+  .btn-sim:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-copy { background: var(--surface2); font-size: 12px; padding: 4px 12px; }
+  .btn-copy.copied { border-color: var(--green); color: var(--green); }
+  .spacer { flex: 1; }
+
+  /* View tabs */
+  .view-tabs { display: flex; gap: 4px; }
+
+  /* Detail panel */
+  .detail-panel h2 { font-size: 14px; font-weight: 600; color: var(--text-bright); margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  .detail-panel h3 { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin: 16px 0 8px; }
+  .detail-section { margin-bottom: 16px; }
+  .detail-item { padding: 8px 10px; background: var(--surface2); border-radius: var(--radius); margin-bottom: 6px; font-size: 12px; line-height: 1.5; }
+  .detail-item .label { color: var(--text-dim); font-size: 11px; }
+  .detail-item .value { color: var(--text); font-family: var(--mono); font-size: 11px; }
+  .detail-item code { background: var(--bg); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 11px; color: var(--cyan); }
+  .file-ref { color: var(--purple); font-family: var(--mono); font-size: 11px; display: block; margin-top: 4px; opacity: 0.8; }
+
+  /* SVG styles */
+  .node { cursor: pointer; transition: opacity 0.2s; }
+  .node:hover { opacity: 0.85; }
+  .node rect, .node .shape { transition: stroke-width 0.15s, filter 0.15s; }
+  .node.selected rect, .node.selected .shape { stroke-width: 3; filter: drop-shadow(0 0 8px currentColor); }
+  .node-label { font-family: system-ui, sans-serif; font-size: 12px; fill: var(--text-bright); pointer-events: none; font-weight: 600; }
+  .node-sublabel { font-family: 'SF Mono', Consolas, monospace; font-size: 9px; fill: var(--text-dim); pointer-events: none; }
+  .edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+  .edge-label { font-family: system-ui, sans-serif; font-size: 9px; fill: var(--text-dim); }
+  .group-box { fill: none; stroke: var(--border); stroke-width: 1; stroke-dasharray: 6,3; rx: 12; }
+  .group-label { font-family: system-ui, sans-serif; font-size: 11px; fill: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+
+  /* Animation pulse */
+  .pulse { animation: pulse 0.8s ease-out; }
+  @keyframes pulse {
+    0% { r: 6; opacity: 1; }
+    100% { r: 24; opacity: 0; }
+  }
+  .flow-dot { fill: var(--cyan); }
+  .flow-trail { stroke: var(--cyan); stroke-width: 2.5; opacity: 0.5; stroke-dasharray: 4,4; animation: dashFlow 0.6s linear infinite; }
+  @keyframes dashFlow { to { stroke-dashoffset: -8; } }
+
+  /* Priority badge on bus handlers */
+  .priority-badge { font-family: 'SF Mono', Consolas, monospace; font-size: 9px; font-weight: 700; }
+
+  /* Sim visited trail — nodes already visited glow dimly */
+  .node.sim-visited rect { filter: drop-shadow(0 0 3px #39d2c044); }
+
+  /* Legend */
+  .legend { display: flex; gap: 16px; align-items: center; margin-left: 24px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-dim); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* Status bar */
+  .status { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+  .status .highlight { color: var(--cyan); }
+
+  /* Empty state */
+  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); gap: 8px; }
+  .empty-state .icon { font-size: 32px; opacity: 0.3; }
+  .empty-state p { font-size: 13px; }
+
+  /* Message Trace timeline */
+  .trace-timeline { height: 100%; overflow-y: auto; padding: 24px 32px; }
+  .trace-stage { display: grid; grid-template-columns: 180px 1fr; gap: 16px; position: relative; padding-bottom: 8px; cursor: pointer; }
+  .trace-stage:hover .trace-json-panel { border-color: var(--text-dim); }
+  .trace-stage.active .trace-json-panel { border-color: var(--cyan); box-shadow: 0 0 12px #39d2c033; }
+  .trace-stage.active .trace-label { color: var(--cyan); }
+  .trace-stage.visited .trace-label { color: var(--cyan); opacity: 0.6; }
+  .trace-stage.visited .trace-json-panel { border-color: #39d2c044; }
+
+  .trace-left { display: flex; flex-direction: column; align-items: flex-end; padding-top: 10px; position: relative; }
+  .trace-step-num { font-family: var(--mono); font-size: 11px; color: var(--text-dim); background: var(--surface2); border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-bottom: 4px; flex-shrink: 0; border: 1px solid var(--border); }
+  .trace-stage.active .trace-step-num { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-dim); }
+  .trace-label { font-size: 13px; font-weight: 600; color: var(--text-bright); text-align: right; line-height: 1.3; }
+  .trace-sublabel { font-size: 11px; color: var(--text-dim); font-family: var(--mono); text-align: right; margin-top: 2px; }
+
+  .trace-json-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; font-family: var(--mono); font-size: 11px; line-height: 1.6; overflow-x: auto; transition: border-color 0.15s, box-shadow 0.15s; white-space: pre; }
+  .trace-json-panel .json-key { color: var(--text-dim); }
+  .trace-json-panel .json-str { color: var(--green); }
+  .trace-json-panel .json-num { color: var(--orange); }
+  .trace-json-panel .json-bool { color: var(--purple); }
+  .trace-json-panel .json-null { color: var(--text-dim); font-style: italic; }
+  .trace-json-panel .json-new { color: var(--cyan); font-weight: 600; }
+  .trace-json-panel .json-bracket { color: var(--text-dim); opacity: 0.6; }
+
+  .trace-arrow { display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 90px; }
+  .trace-arrow-line { width: 2px; height: 20px; background: var(--border); margin-left: 90px; }
+  .trace-arrow-label { font-size: 10px; color: var(--text-dim); font-family: var(--mono); padding: 2px 8px; background: var(--surface2); border-radius: 4px; margin-left: 8px; }
+  .trace-stage.active + .trace-arrow .trace-arrow-line { background: var(--cyan); }
+
+  .trace-connector { display: flex; align-items: center; padding: 0 0 0 180px; margin: -2px 0; }
+  .trace-connector-line { width: 2px; height: 16px; background: var(--border); margin-left: 10px; }
+  .trace-connector-text { font-size: 10px; color: var(--text-dim); font-family: var(--mono); padding: 1px 8px; background: var(--surface2); border-radius: 4px; margin-left: 10px; white-space: nowrap; }
+  .trace-stage.active + .trace-connector .trace-connector-line { background: var(--cyan); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <h1>CamBot Architecture</h1>
+    <div class="view-tabs" id="viewTabs"></div>
+    <div class="legend" id="legend"></div>
+    <div class="spacer"></div>
+    <span class="status" id="statusText"></span>
+    <button class="btn btn-sim" id="simBtn" onclick="simulateFlow()">Simulate Message</button>
+  </div>
+  <div class="main-area">
+    <div class="canvas-wrap" id="canvasWrap">
+      <svg id="diagram" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <div class="detail-panel" id="detailPanel">
+      <div class="empty-state">
+        <div class="icon">&#9776;</div>
+        <p>Click a component to inspect</p>
+      </div>
+    </div>
+  </div>
+  <div class="bottom-bar">
+    <div class="bottom-header">
+      <span>Architecture Summary</span>
+      <button class="btn btn-copy" id="copyBtn" onclick="copyPrompt()">Copy</button>
+    </div>
+    <div class="bottom-content" id="promptOutput"></div>
+  </div>
+</div>
+
+<script>
+// ─── STATE ─────────────────────────────────────────────
+const state = {
+  view: 'full-flow',
+  selected: null,
+  simulating: false,
+  simStep: -1,
+};
+
+// ─── DATA: COMPONENT DEFINITIONS ───────────────────────
+const COLORS = {
+  channel: { fill: '#1f6feb33', stroke: '#58a6ff', text: '#58a6ff' },
+  bus:     { fill: '#23883833', stroke: '#3fb950', text: '#3fb950' },
+  container: { fill: '#9e6a0333', stroke: '#d29922', text: '#d29922' },
+  credential: { fill: '#da363333', stroke: '#f85149', text: '#f85149' },
+  filesystem: { fill: '#8957e533', stroke: '#bc8cff', text: '#bc8cff' },
+  socket:  { fill: '#1b7c6d33', stroke: '#39d2c0', text: '#39d2c0' },
+};
+
+const VIEWS = {
+  'full-flow':  { label: 'Full Flow', description: 'End-to-end message journey through all components' },
+  'filesystem': { label: 'Filesystem', description: 'How disk files become container templates' },
+  'bus':        { label: 'Event Bus', description: 'Priority handler pipeline — click Simulate to walk through the cascade' },
+  'socket':     { label: 'Socket/IPC', description: 'TCP transport between host and containers' },
+  'credentials':{ label: 'Credentials', description: 'Auth paths and secret delivery' },
+  'agent-spawn':{ label: 'Agent Spawn', description: 'Container creation and context assembly' },
+  'message-trace':{ label: 'Message Trace', description: 'Watch JSON transform as "what is 2 + 2" flows through the system' },
+};
+
+const COMPONENTS = {
+  // Channels
+  'whatsapp': {
+    type: 'channel', label: 'WhatsApp', sublabel: 'Baileys',
+    file: 'src/channels/whatsapp.ts',
+    detail: {
+      description: 'WhatsApp channel using Baileys library for Web API connection.',
+      mechanism: 'QR code auth → persistent session in store/auth/. Receives messages via Baileys event stream, emits InboundMessage to bus.',
+      key_functions: ['connect() — QR auth + event binding', 'sendMessage(jid, text) — Baileys.sendMessage', 'ownsJid(jid) — checks WhatsApp JID format'],
+      data_flow: 'Baileys socket → message event → InboundMessage { channel: "whatsapp", jid, content, timestamp }',
+    }
+  },
+  'email': {
+    type: 'channel', label: 'Email', sublabel: 'workspace-mcp',
+    file: 'src/channels/email.ts',
+    detail: {
+      description: 'Email channel polling Gmail via Google Workspace MCP server.',
+      mechanism: 'Polls workspace-mcp every 30s for unread emails. Sends via send_gmail_message MCP tool. Thread tracking for reply chains.',
+      key_functions: ['pollEmails() — MCP search_gmail_messages', 'sendMessage() — MCP send_gmail_message', 'connect() — starts poll timer'],
+      data_flow: 'MCP poll → parse emails → InboundMessage { channel: "email", jid: "email:sender@...", content }',
+    }
+  },
+  'web': {
+    type: 'channel', label: 'Web UI', sublabel: ':3100 HTTP+WS',
+    file: 'src/channels/web.ts',
+    detail: {
+      description: 'Web channel with HTTP REST + WebSocket for real-time messaging.',
+      mechanism: 'Express server on port 3100. WebSocket for persistent connections. CORS via WEB_ALLOWED_ORIGINS.',
+      key_functions: ['POST /api/message — HTTP message send', 'WebSocket /api/ws — persistent bidirectional', 'GET /api/health — status check'],
+      data_flow: 'HTTP POST or WS message → InboundMessage { channel: "web", jid: "web:ui", content }',
+    }
+  },
+  'cli': {
+    type: 'channel', label: 'CLI', sublabel: 'stdin/stdout',
+    file: 'src/channels/cli.ts',
+    detail: {
+      description: 'Command-line channel for local development and testing.',
+      mechanism: 'Reads from process.stdin, writes to process.stdout. Simple line-based protocol.',
+      key_functions: ['readline interface — stdin parsing', 'sendMessage() — stdout.write'],
+      data_flow: 'stdin line → InboundMessage { channel: "cli", jid: "cli:local", content }',
+    }
+  },
+  'file-channel': {
+    type: 'channel', label: 'File', sublabel: 'filesystem IPC',
+    file: 'src/channels/file.ts',
+    detail: {
+      description: 'File-based channel for programmatic integration.',
+      mechanism: 'Watches a directory for incoming message files. Writes response files.',
+      key_functions: ['File watcher — polls for new .json files', 'sendMessage() — write response file'],
+      data_flow: 'File appears → parse JSON → InboundMessage → response file written',
+    }
+  },
+
+  // Bus
+  'event-bus': {
+    type: 'bus', label: 'Event Bus', sublabel: 'createMessageBus()',
+    file: 'src/bus/create-app-bus.ts',
+    detail: {
+      description: 'Central reactive event bus. All inter-component communication flows through here.',
+      mechanism: 'Priority-ordered handler registration. Middleware pipeline: dedup → injection scan → outbound guard → backpressure → journal.',
+      key_functions: ['createAppBus() — composition root', 'bus.emit(event) — dispatch to handlers', 'bus.use(middleware) — register middleware', 'bus.on(EventType, handler, priority) — register handler'],
+      data_flow: 'Event emitted → middleware pipeline → handlers by ascending priority → side effects',
+      event_types: ['InboundMessage — from channels', 'OutboundMessage — from containers', 'ChatMetadata — channel discovery', 'TypingUpdate — typing indicators', 'TaskPrompt — scheduled tasks', 'AgentTelemetry — cost tracking', 'AgentError — failure notification'],
+    }
+  },
+  'input-sanitizer': {
+    type: 'bus', label: 'Input Sanitizer', sublabel: 'Priority 15',
+    file: 'src/orchestrator/bus-handlers.ts',
+    detail: {
+      description: 'First handler in the pipeline. Strips null bytes, enforces message size limits.',
+      mechanism: 'Runs at priority 15 (first). Cleans dangerous characters, truncates oversized messages.',
+      key_functions: ['sanitize(content) — null bytes, control chars', 'enforceLimit(content, maxBytes) — truncation'],
+      data_flow: 'InboundMessage → sanitize content → pass to next handler',
+    }
+  },
+  'db-store': {
+    type: 'bus', label: 'DB Store', sublabel: 'Priority 16/100',
+    file: 'src/orchestrator/bus-handlers.ts',
+    detail: {
+      description: 'Persists messages to SQLite. Priority 16 for inbound, 100 for outbound.',
+      mechanism: 'Writes to chat_messages table. Stores sender, content, timestamp, channel, JID.',
+      key_functions: ['storeInbound (p16) — save user message', 'storeOutbound (p100) — save bot reply'],
+      data_flow: 'Message event → INSERT INTO chat_messages → message available for history queries',
+    }
+  },
+  'lifecycle-ingest': {
+    type: 'bus', label: 'Lifecycle Ingest', sublabel: 'Priority 17',
+    file: 'src/orchestrator/bus-handlers.ts',
+    detail: {
+      description: 'Feeds messages into the memory/lifecycle system for conversation tracking.',
+      mechanism: 'Priority 17. Updates conversation state, triggers memory operations.',
+      key_functions: ['ingestMessage() — feed to lifecycle system', 'updateConversationState() — track active conversations'],
+      data_flow: 'InboundMessage → lifecycle system → conversation state updated',
+    }
+  },
+  'agent-handler': {
+    type: 'bus', label: 'Agent Handler', sublabel: 'Priority 20',
+    file: 'src/orchestrator/bus-handlers.ts',
+    detail: {
+      description: 'Persistent agent handler. Claims messages for channels owned by persistent agents.',
+      mechanism: 'Priority 20. Checks if JID maps to a registered persistent agent. If so, claims the message and prevents default routing.',
+      key_functions: ['claimMessage() — check agent ownership', 'resolveAgent() — lookup in registry'],
+      data_flow: 'InboundMessage → check agent registry → claim or pass through',
+    }
+  },
+  'message-router': {
+    type: 'bus', label: 'Message Router', sublabel: 'Priority 110',
+    file: 'src/orchestrator/message-router.ts',
+    detail: {
+      description: 'Routes messages to containers. Tries socket first, falls back to queue for new spawn.',
+      mechanism: 'Priority 110. Checks socket connections, formats messages, manages trigger patterns.',
+      key_functions: ['routeMessage() — socket or enqueue', 'socketServer.hasConnection(folder) — check live socket', 'socketServer.send(folder, frame) — pipe to running container', 'queue.enqueueMessageCheck(jid) — trigger new container spawn'],
+      data_flow: 'InboundMessage → check socket → pipe via TCP or enqueue → container receives message',
+    }
+  },
+  'audit': {
+    type: 'bus', label: 'Audit', sublabel: 'Priority 200',
+    file: 'src/orchestrator/bus-handlers.ts',
+    detail: {
+      description: 'Final handler. Logs all events for security audit trail.',
+      mechanism: 'Priority 200 (last). Writes structured audit records.',
+      key_functions: ['auditLog() — structured security logging'],
+      data_flow: 'Any event → audit record written',
+    }
+  },
+  'middleware': {
+    type: 'bus', label: 'Middleware', sublabel: 'dedup + guard + journal',
+    file: 'src/bus/create-app-bus.ts',
+    detail: {
+      description: 'Bus middleware pipeline applied to all events before handlers.',
+      mechanism: 'Runs in registration order on every event: dedup filter (10k LRU), injection scanner, outbound guard (rate limits + loop detection), backpressure monitor (warn at 500+ in-flight), event journal (SQLite persistence).',
+      key_functions: ['createDedupFilter({ maxSize: 10000 }) — LRU duplicate detection', 'createInjectionScanner() — prompt injection detection', 'createOutboundGuard() — rate limits + loop prevention', 'createBackpressureMiddleware() — in-flight monitoring', 'createEventJournal(db) — persist all events to SQLite'],
+      data_flow: 'Event → dedup → injection scan → outbound guard → backpressure check → journal → handlers',
+    }
+  },
+
+  // Socket/IPC
+  'socket-server': {
+    type: 'socket', label: 'Socket Server', sublabel: ':9500 TCP',
+    file: 'src/cambot-socket/server.ts',
+    detail: {
+      description: 'CambotSocketServer — TCP server on port 9500 for container IPC.',
+      mechanism: 'One-time token registration (60s TTL) before spawn. Token consumed on handshake. Supersession: new container for same group replaces old connection.',
+      key_functions: ['registerToken(group, token, opts) — pre-auth', 'handleHandshake(frame, socket) — validate + consume token', 'send(group, frame) — dispatch to container', 'hasConnection(group) — check live socket'],
+      data_flow: 'Token registered → container connects → handshake → bidirectional frames',
+      frame_types: ['HANDSHAKE / ACK / REJECT — authentication', 'MESSAGE_INPUT — host → container', 'OUTPUT — container → host (result, telemetry)', 'LOG — container → host (structured logs)', 'HEARTBEAT / PING / PONG — keep-alive', 'SESSION_CLOSE — force exit'],
+    }
+  },
+  'socket-client': {
+    type: 'socket', label: 'Socket Client', sublabel: 'agent-runner',
+    file: 'agent-runner/src/cambot-socket-client.ts',
+    detail: {
+      description: 'Container-side TCP client. Connects to host socket server with exponential backoff.',
+      mechanism: 'Retries: 100ms, 200ms, 400ms, 800ms, 1600ms, 3200ms. Sends handshake with one-time token. Receives MESSAGE_INPUT frames for new user messages.',
+      key_functions: ['CambotSocketClient.connect(host, port, group, token) — with retries', 'request(frame, timeout) — send + await reply', 'waitForMessage() — block until MESSAGE_INPUT'],
+      data_flow: 'TCP connect → handshake frame → ACK → wait for MESSAGE_INPUT → process → send OUTPUT',
+    }
+  },
+
+  // Container / Agent
+  'gateway': {
+    type: 'container', label: 'Gateway Router', sublabel: 'Haiku classifier',
+    file: 'src/agents/gateway-router.ts',
+    detail: {
+      description: 'Lightweight routing via Claude Haiku. No container — just an API call with forced tool_use.',
+      mechanism: 'Haiku called with route tool constraint. Returns { action: delegate|respond, targetAgent, prompt }. Handoff sessions for conversation stickiness (1hr TTL).',
+      key_functions: ['spawnViaGateway() — Haiku API call', 'route tool — forced tool_use', 'handoff_sessions table — session stickiness', 'extractAgentKeywords() — local scoring before LLM'],
+      data_flow: 'Message → local keyword scoring → Haiku classify → delegate to target agent or respond directly',
+    }
+  },
+  'spawner': {
+    type: 'container', label: 'Agent Spawner', sublabel: 'PersistentAgentSpawner',
+    file: 'src/agents/persistent-agent-spawner.ts',
+    detail: {
+      description: 'Spawns agent containers with full context assembly. Manages registry cache (60s TTL).',
+      mechanism: 'Resolves agent from registry → builds context (assembleContextString) → resolves conversation (rotation/creation) → spawns Docker container with mounts + secrets.',
+      key_functions: ['spawn(agent, prompt, callerGroup, timeout) — main entry', 'assembleContext() — builds identity + soul + tools + agents + heartbeat', 'resolveActiveConversation() — memory mode rotation', 'registryCache — 60s TTL, invalidated on mutation'],
+      data_flow: 'Agent resolved → context assembled → conversation resolved → container spawned → output callback registered',
+      memory_modes: ['ephemeral — wipe SDK memory every spawn', 'conversation-scoped — rotate after idle/size limit', 'persistent — same conversation indefinitely'],
+    }
+  },
+  'container-runner': {
+    type: 'container', label: 'Container Runner', sublabel: 'Docker spawn',
+    file: 'src/container/runner.ts',
+    detail: {
+      description: 'Spawns Docker containers with precise mount architecture and stdin secret delivery.',
+      mechanism: 'Builds volume mounts → registers socket token → spawns container → writes secrets to stdin → deletes secrets from memory. Entrypoint.sh does smart recompilation via source hashing.',
+      key_functions: ['runContainerAgent() — main spawn function', 'buildMounts() — volume mount assembly', 'readSecrets(secretKeys) — env var extraction', 'registerOutputCallback() — streaming results'],
+      data_flow: 'Spawn request → build mounts → register token → docker run → stdin secrets → entrypoint → agent-runner starts',
+    }
+  },
+  'agent-runner': {
+    type: 'container', label: 'Agent Runner', sublabel: 'in-container loop',
+    file: 'agent-runner/src/agent-runner.ts',
+    detail: {
+      description: 'Runs inside the container. Query-wait-query loop with Claude SDK.',
+      mechanism: 'Reads ContainerInput from stdin → connects socket → builds context → enters loop: query SDK → emit output → wait for next message. Handles unconsumed messages (race condition) and session resumption.',
+      key_functions: ['run(input, sdkEnv) — main entry', 'queryRunner.run() — Claude SDK invocation', 'waitForMessage() — socket blocking read', 'outputWriter.write() — emit results via socket'],
+      data_flow: 'stdin JSON → socket connect → context build → SDK query loop → OUTPUT frames → idle wait → next MESSAGE_INPUT',
+    }
+  },
+  'context-builder': {
+    type: 'container', label: 'Context Builder', sublabel: 'assembleContextString',
+    file: 'src/utils/context-files.ts',
+    detail: {
+      description: 'Host-side context assembly. Builds a pre-assembled string from identity, soul, tools, agents, tasks, channels.',
+      mechanism: 'Called by spawner before container launch. Result passed via stdin as assembledContext. Container wraps it in <cambot-context> tags.',
+      key_functions: ['assembleContextString(deps) — main builder', 'generateToolsMd() — skills + MCP servers', 'generateAgentsMd() — agent registry listing', 'generateHeartbeatMd() — scheduled task status', 'generateChannelsMd() — connected channels'],
+      data_flow: 'Agent config → identity + soul + tools + agents + heartbeat + channels → single string → stdin → container wraps in XML',
+    }
+  },
+
+  // Filesystem
+  'groups-dir': {
+    type: 'filesystem', label: 'groups/', sublabel: 'per-group workspace',
+    file: 'groups/{name}/CLAUDE.md',
+    detail: {
+      description: 'Per-group persistent workspace directories. Each agent group gets isolated filesystem.',
+      mechanism: 'Mounted read-write at /workspace/group in containers. Contains CLAUDE.md (group memory), plus any files the agent creates.',
+      key_functions: ['Mount: groups/{folder} → /workspace/group (rw)', 'CLAUDE.md — persistent agent memory', 'Agent can read/write files here across sessions'],
+      data_flow: 'Host groups/{folder}/ ←→ Container /workspace/group/ (bidirectional, persistent)',
+    }
+  },
+  'container-templates': {
+    type: 'filesystem', label: 'container/', sublabel: 'templates + image',
+    file: 'container/',
+    detail: {
+      description: 'Container build context and templates. CLAUDE.md, skills, MCP config are synced on every spawn.',
+      mechanism: 'Dockerfile builds the agent image. On each spawn: CLAUDE.md → .claude/CLAUDE.md, skills/ → .claude/skills/, mcp-servers.json → .claude/mcp-servers.json (with host var substitution).',
+      key_functions: ['container/CLAUDE.md — agent instructions template', 'container/skills/ — skill files (filtered by whitelist)', 'container/mcp-servers.json — MCP config with ${VAR} substitution', 'container/Dockerfile — Node 22 + Chromium + agent-browser', 'container/entrypoint.sh — smart recompile via source hashing'],
+      data_flow: 'Templates on disk → copied to data/sessions/{folder}/.claude/ → mounted into container at /home/node/.claude/',
+    }
+  },
+  'sessions-dir': {
+    type: 'filesystem', label: 'data/sessions/', sublabel: '.claude/ per-group',
+    file: 'data/sessions/{folder}/.claude/',
+    detail: {
+      description: 'Per-group session directories. Stores the .claude/ config (skills, settings, MCP) synced fresh each spawn.',
+      mechanism: 'Created on first spawn. On every spawn: skills cleared and re-synced from container/skills/ (filtered by agent whitelist). settings.json written with Claude Code env flags.',
+      key_functions: ['CLAUDE.md — copied from container/CLAUDE.md', 'skills/ — synced from container/skills/ (whitelist filtered)', 'mcp-servers.json — from container/mcp-servers.json (vars substituted)', 'settings.json — generated with Claude Code env flags'],
+      data_flow: 'container/ templates → data/sessions/{folder}/.claude/ → mounted at /home/node/.claude/ in container',
+    }
+  },
+  'agent-runner-src': {
+    type: 'filesystem', label: 'agent-runner/src/', sublabel: 'mounted live',
+    file: 'agent-runner/src/',
+    detail: {
+      description: 'Agent runner source code. Mounted read-write into containers for hot-reload development.',
+      mechanism: 'Mounted at /app/src. Entrypoint.sh compares source hash with baked-in hash — if changed, recompiles TypeScript before starting.',
+      key_functions: ['index.ts — entry point, reads stdin', 'agent-runner.ts — query-wait-query loop', 'cambot-socket-client.ts — TCP client', 'context-builder.ts — wraps assembled context'],
+      data_flow: 'Host agent-runner/src/ → Container /app/src/ → entrypoint hashes → recompile if changed → node dist/index.js',
+    }
+  },
+  'store-dir': {
+    type: 'filesystem', label: 'store/', sublabel: 'SQLite + assets',
+    file: 'store/',
+    detail: {
+      description: 'Shared database and asset storage. Mounted read-only in containers.',
+      mechanism: 'Contains cambot.sqlite (groups, agents, messages, tasks, sessions, conversations). Mounted at /workspace/project/store (read-only for non-main).',
+      key_functions: ['cambot.sqlite — main database', 'auth/ — WhatsApp auth state', 'assets/ — shared files'],
+      data_flow: 'Host store/ → Container /workspace/project/store/ (read-only)',
+    }
+  },
+
+  // Credentials
+  'env-file': {
+    type: 'credential', label: '.env', sublabel: 'API keys',
+    file: '.env',
+    detail: {
+      description: 'Environment file with API keys and configuration. Never mounted into containers.',
+      mechanism: 'Read by host process on startup. Individual keys extracted by readSecrets() based on agent secretKeys config.',
+      key_functions: ['ANTHROPIC_API_KEY — Claude API (fallback)', 'GOOGLE_OAUTH_CLIENT_ID/SECRET — workspace-mcp', 'GEMINI_API_KEY → aliased as GOOGLE_API_KEY', 'OPENAI_API_KEY — for custom OpenAI agents'],
+      data_flow: '.env → process.env → readSecrets(secretKeys) → stdin JSON → container env vars',
+    }
+  },
+  'oauth-token': {
+    type: 'credential', label: 'OAuth Token', sublabel: '~/.claude/.credentials.json',
+    file: '~/.claude/.credentials.json',
+    detail: {
+      description: 'Claude Code OAuth token. Auto-refreshed by Claude Code. Preferred auth method.',
+      mechanism: 'AnthropicCredentialProvider reads from ~/.claude/.credentials.json. Returns as CLAUDE_CODE_OAUTH_TOKEN env var for containers.',
+      key_functions: ['readClaudeOAuthToken() — parse credentials file', 'getContainerSecret() — returns { envVar, value }', 'Token auto-refreshed by Claude Code'],
+      data_flow: '~/.claude/.credentials.json → AnthropicCredentialProvider → getContainerSecret() → stdin JSON → CLAUDE_CODE_OAUTH_TOKEN env var',
+    }
+  },
+  'credential-provider': {
+    type: 'credential', label: 'Credential Provider', sublabel: 'AnthropicCredentialProvider',
+    file: 'src/auth/anthropic-credential-provider.ts',
+    detail: {
+      description: 'Multi-source authentication. Checks API key and OAuth token, returns best option.',
+      mechanism: 'Priority: API key from .env first, then OAuth from ~/.claude/.credentials.json. getContainerSecret() returns the right env var name + value for containers.',
+      key_functions: ['getApiKey() — from .env ANTHROPIC_API_KEY', 'getOAuthToken() — from ~/.claude/.credentials.json', 'getContainerSecret() — best option for container delivery', 'getStatus() — log available auth sources'],
+      data_flow: 'Check .env → check OAuth file → return { envVar: "ANTHROPIC_API_KEY"|"CLAUDE_CODE_OAUTH_TOKEN", value: "..." }',
+    }
+  },
+  'stdin-delivery': {
+    type: 'credential', label: 'Stdin Delivery', sublabel: 'never written to disk',
+    file: 'src/container/runner.ts:443-461',
+    detail: {
+      description: 'Secrets passed to containers via stdin JSON. Never written to disk. Deleted from host memory immediately after.',
+      mechanism: 'ContainerInput JSON includes secrets + userCredential. Written to container.stdin, then deleted from the JS object. Container reads stdin, sets as env vars, deletes temp file.',
+      key_functions: ['container.stdin.write(JSON.stringify(input)) — deliver', 'delete input.secrets — scrub from host memory', 'delete input.userCredential — scrub', 'Container: process.stdin → JSON.parse → sdkEnv[key] = value'],
+      data_flow: 'Host memory → stdin pipe → container memory → env vars → SDK uses → process exits (memory gone)',
+    }
+  },
+};
+
+// ─── VIEW LAYOUTS ──────────────────────────────────────
+function getViewNodes(view) {
+  const W = 150, H = 48;
+  const layouts = {
+    'full-flow': () => {
+      const cx = 480, cW = W;
+      return [
+        // Channels (left column)
+        { id: 'whatsapp', x: 40, y: 30, w: W, h: H },
+        { id: 'email', x: 40, y: 100, w: W, h: H },
+        { id: 'web', x: 40, y: 170, w: W, h: H },
+        { id: 'cli', x: 40, y: 240, w: W, h: H },
+        { id: 'file-channel', x: 40, y: 310, w: W, h: H },
+        // Bus (center-left)
+        { id: 'event-bus', x: 270, y: 30, w: W+20, h: 56 },
+        { id: 'middleware', x: 270, y: 106, w: W+20, h: H },
+        { id: 'input-sanitizer', x: 270, y: 170, w: W+20, h: H },
+        { id: 'db-store', x: 270, y: 230, w: W+20, h: H },
+        { id: 'message-router', x: 270, y: 290, w: W+20, h: H },
+        { id: 'audit', x: 270, y: 350, w: W+20, h: H },
+        // Socket (center)
+        { id: 'socket-server', x: 520, y: 120, w: W, h: H },
+        { id: 'socket-client', x: 520, y: 200, w: W, h: H },
+        // Container (right)
+        { id: 'gateway', x: 720, y: 30, w: W, h: H },
+        { id: 'spawner', x: 720, y: 110, w: W, h: H },
+        { id: 'container-runner', x: 720, y: 190, w: W, h: H },
+        { id: 'context-builder', x: 720, y: 270, w: W, h: H },
+        { id: 'agent-runner', x: 720, y: 350, w: W, h: H },
+      ];
+    },
+    'filesystem': () => [
+      { id: 'container-templates', x: 60, y: 40, w: 170, h: 56 },
+      { id: 'groups-dir', x: 60, y: 140, w: 170, h: 56 },
+      { id: 'sessions-dir', x: 60, y: 240, w: 170, h: 56 },
+      { id: 'agent-runner-src', x: 60, y: 340, w: 170, h: 56 },
+      { id: 'store-dir', x: 60, y: 430, w: 170, h: 56 },
+      { id: 'container-runner', x: 380, y: 40, w: 170, h: 56 },
+      { id: 'context-builder', x: 380, y: 140, w: 170, h: 56 },
+      { id: 'agent-runner', x: 380, y: 260, w: 170, h: 56 },
+      { id: 'spawner', x: 380, y: 370, w: 170, h: 56 },
+      { id: 'env-file', x: 680, y: 40, w: 170, h: 56 },
+      { id: 'oauth-token', x: 680, y: 140, w: 170, h: 56 },
+      { id: 'credential-provider', x: 680, y: 260, w: 170, h: 56 },
+    ],
+    'bus': () => {
+      const pipeW = 240, pipeX = 330, chY = 25, chH = 42;
+      return [
+        // Channels across the top
+        { id: 'whatsapp', x: 50, y: chY, w: 130, h: chH },
+        { id: 'email', x: 200, y: chY, w: 130, h: chH },
+        { id: 'web', x: 500, y: chY, w: 130, h: chH },
+        { id: 'cli', x: 650, y: chY, w: 130, h: chH },
+        // Event Bus — wide bar
+        { id: 'event-bus', x: 180, y: 95, w: 440, h: 50 },
+        // Middleware — wide bar
+        { id: 'middleware', x: 180, y: 170, w: 440, h: 44 },
+        // Handler pipeline — centered vertical cascade
+        { id: 'input-sanitizer', x: pipeX, y: 240, w: pipeW, h: 44 },
+        { id: 'db-store', x: pipeX, y: 300, w: pipeW, h: 44 },
+        { id: 'lifecycle-ingest', x: pipeX, y: 360, w: pipeW, h: 44 },
+        { id: 'agent-handler', x: pipeX, y: 420, w: pipeW, h: 44 },
+        { id: 'message-router', x: pipeX, y: 480, w: pipeW, h: 44 },
+        { id: 'audit', x: pipeX, y: 540, w: pipeW, h: 44 },
+      ];
+    },
+    'socket': () => [
+      { id: 'socket-server', x: 100, y: 60, w: 200, h: 64 },
+      { id: 'socket-client', x: 500, y: 60, w: 200, h: 64 },
+      { id: 'message-router', x: 100, y: 200, w: 200, h: H },
+      { id: 'container-runner', x: 100, y: 290, w: 200, h: H },
+      { id: 'agent-runner', x: 500, y: 200, w: 200, h: H },
+      { id: 'spawner', x: 100, y: 380, w: 200, h: H },
+      { id: 'credential-provider', x: 340, y: 380, w: 200, h: H },
+    ],
+    'credentials': () => [
+      { id: 'env-file', x: 60, y: 50, w: 180, h: 64 },
+      { id: 'oauth-token', x: 60, y: 170, w: 180, h: 64 },
+      { id: 'credential-provider', x: 340, y: 110, w: 200, h: 64 },
+      { id: 'stdin-delivery', x: 340, y: 240, w: 200, h: 64 },
+      { id: 'container-runner', x: 620, y: 50, w: 180, h: 64 },
+      { id: 'agent-runner', x: 620, y: 170, w: 180, h: 64 },
+      { id: 'spawner', x: 620, y: 300, w: 180, h: 64 },
+    ],
+    'agent-spawn': () => [
+      { id: 'gateway', x: 60, y: 50, w: 180, h: 56 },
+      { id: 'spawner', x: 60, y: 160, w: 180, h: 56 },
+      { id: 'context-builder', x: 60, y: 270, w: 180, h: 56 },
+      { id: 'container-runner', x: 340, y: 50, w: 180, h: 56 },
+      { id: 'container-templates', x: 340, y: 160, w: 180, h: 56 },
+      { id: 'sessions-dir', x: 340, y: 270, w: 180, h: 56 },
+      { id: 'agent-runner', x: 620, y: 50, w: 180, h: 56 },
+      { id: 'socket-server', x: 620, y: 160, w: 180, h: 56 },
+      { id: 'socket-client', x: 620, y: 270, w: 180, h: 56 },
+      { id: 'groups-dir', x: 340, y: 380, w: 180, h: 56 },
+      { id: 'credential-provider', x: 60, y: 380, w: 180, h: 56 },
+    ],
+  };
+  return (layouts[view] || layouts['full-flow'])();
+}
+
+function getViewEdges(view) {
+  const edges = {
+    'full-flow': [
+      // Channels → Bus
+      { from: 'whatsapp', to: 'event-bus', label: 'InboundMessage' },
+      { from: 'email', to: 'event-bus', label: '' },
+      { from: 'web', to: 'event-bus', label: '' },
+      { from: 'cli', to: 'event-bus', label: '' },
+      { from: 'file-channel', to: 'event-bus', label: '' },
+      // Bus internal
+      { from: 'event-bus', to: 'middleware', label: 'pipeline' },
+      { from: 'middleware', to: 'input-sanitizer', label: '' },
+      { from: 'input-sanitizer', to: 'db-store', label: '' },
+      { from: 'db-store', to: 'message-router', label: '' },
+      { from: 'message-router', to: 'audit', label: '' },
+      // Router → Socket (pipe to running container OR enqueue new spawn)
+      { from: 'message-router', to: 'socket-server', label: 'pipe or enqueue' },
+      // Socket ↔ Client
+      { from: 'socket-server', to: 'socket-client', label: 'TCP frames' },
+      // Spawn flow (enqueue path triggers spawner)
+      { from: 'message-router', to: 'spawner', label: 'enqueue spawn' },
+      { from: 'spawner', to: 'gateway', label: 'route first' },
+      { from: 'gateway', to: 'spawner', label: 'delegate target' },
+      { from: 'spawner', to: 'context-builder', label: 'assemble' },
+      { from: 'spawner', to: 'container-runner', label: 'spawn' },
+      { from: 'container-runner', to: 'agent-runner', label: 'stdin+mounts' },
+    ],
+    'filesystem': [
+      { from: 'container-templates', to: 'container-runner', label: 'CLAUDE.md, skills, mcp-servers.json' },
+      { from: 'groups-dir', to: 'container-runner', label: '/workspace/group (rw)' },
+      { from: 'sessions-dir', to: 'container-runner', label: '/home/node/.claude/' },
+      { from: 'agent-runner-src', to: 'agent-runner', label: '/app/src (rw)' },
+      { from: 'store-dir', to: 'container-runner', label: '/workspace/project/store (ro)' },
+      { from: 'container-runner', to: 'agent-runner', label: 'Docker spawn' },
+      { from: 'context-builder', to: 'container-runner', label: 'assembledContext string' },
+      { from: 'spawner', to: 'context-builder', label: 'build context' },
+      { from: 'spawner', to: 'container-runner', label: 'spawn container' },
+      { from: 'env-file', to: 'credential-provider', label: 'ANTHROPIC_API_KEY' },
+      { from: 'oauth-token', to: 'credential-provider', label: 'CLAUDE_CODE_OAUTH_TOKEN' },
+      { from: 'credential-provider', to: 'container-runner', label: 'stdin secrets' },
+    ],
+    'bus': [
+      // Channels feed into bus
+      { from: 'whatsapp', to: 'event-bus', label: 'InboundMessage' },
+      { from: 'email', to: 'event-bus', label: '' },
+      { from: 'web', to: 'event-bus', label: '' },
+      { from: 'cli', to: 'event-bus', label: '' },
+      // Bus → middleware → handler chain (vertical pipeline)
+      { from: 'event-bus', to: 'middleware', label: '' },
+      { from: 'middleware', to: 'input-sanitizer', label: '' },
+      { from: 'input-sanitizer', to: 'db-store', label: '' },
+      { from: 'db-store', to: 'lifecycle-ingest', label: '' },
+      { from: 'lifecycle-ingest', to: 'agent-handler', label: '' },
+      { from: 'agent-handler', to: 'message-router', label: '' },
+      { from: 'message-router', to: 'audit', label: '' },
+    ],
+    'socket': [
+      { from: 'socket-server', to: 'socket-client', label: 'TCP :9500' },
+      { from: 'message-router', to: 'socket-server', label: 'send(folder, frame)' },
+      { from: 'container-runner', to: 'socket-server', label: 'registerToken()' },
+      { from: 'socket-client', to: 'agent-runner', label: 'MESSAGE_INPUT' },
+      { from: 'agent-runner', to: 'socket-client', label: 'OUTPUT frames' },
+      { from: 'spawner', to: 'container-runner', label: 'spawn + token' },
+      { from: 'credential-provider', to: 'spawner', label: 'getContainerSecret()' },
+    ],
+    'credentials': [
+      { from: 'env-file', to: 'credential-provider', label: 'ANTHROPIC_API_KEY' },
+      { from: 'oauth-token', to: 'credential-provider', label: 'readClaudeOAuthToken()' },
+      { from: 'credential-provider', to: 'stdin-delivery', label: '{ envVar, value }' },
+      { from: 'stdin-delivery', to: 'container-runner', label: 'stdin.write(JSON)' },
+      { from: 'container-runner', to: 'agent-runner', label: 'env vars set' },
+      { from: 'spawner', to: 'credential-provider', label: 'getContainerSecret()' },
+      { from: 'spawner', to: 'stdin-delivery', label: 'readSecrets(secretKeys)' },
+    ],
+    'agent-spawn': [
+      { from: 'gateway', to: 'spawner', label: 'delegate(targetAgent)' },
+      { from: 'spawner', to: 'context-builder', label: 'assembleContext()' },
+      { from: 'spawner', to: 'container-runner', label: 'runContainerAgent()' },
+      { from: 'container-runner', to: 'container-templates', label: 'sync templates' },
+      { from: 'container-runner', to: 'sessions-dir', label: 'write .claude/' },
+      { from: 'container-runner', to: 'agent-runner', label: 'docker run + stdin' },
+      { from: 'agent-runner', to: 'socket-client', label: 'connect + handshake' },
+      { from: 'socket-server', to: 'socket-client', label: 'HANDSHAKE_ACK' },
+      { from: 'container-runner', to: 'socket-server', label: 'registerToken()' },
+      { from: 'container-runner', to: 'groups-dir', label: 'mount /workspace/group' },
+      { from: 'credential-provider', to: 'spawner', label: 'secrets' },
+    ],
+  };
+  return edges[view] || edges['full-flow'];
+}
+
+function getViewGroups(view) {
+  const groups = {
+    'full-flow': [
+      { label: 'CHANNELS', x: 24, y: 10, w: 186, h: 365, color: COLORS.channel.stroke },
+      { label: 'EVENT BUS', x: 254, y: 10, w: 206, h: 405, color: COLORS.bus.stroke },
+      { label: 'SOCKET', x: 504, y: 100, w: 186, h: 168, color: COLORS.socket.stroke },
+      { label: 'CONTAINER', x: 704, y: 10, w: 186, h: 405, color: COLORS.container.stroke },
+    ],
+    'filesystem': [
+      { label: 'HOST DISK', x: 44, y: 16, w: 206, h: 488, color: COLORS.filesystem.stroke },
+      { label: 'CONTAINER PROCESS', x: 364, y: 16, w: 206, h: 428, color: COLORS.container.stroke },
+      { label: 'CREDENTIALS', x: 664, y: 16, w: 206, h: 328, color: COLORS.credential.stroke },
+    ],
+    'bus': [
+      { label: 'CHANNELS', x: 34, y: 6, w: 762, h: 72, color: COLORS.channel.stroke },
+      { label: 'BUS + MIDDLEWARE', x: 164, y: 80, w: 472, h: 148, color: COLORS.bus.stroke },
+      { label: 'HANDLER PIPELINE (by priority)', x: 314, y: 226, w: 272, h: 374, color: COLORS.bus.stroke },
+    ],
+    'socket': [
+      { label: 'HOST PROCESS', x: 84, y: 36, w: 236, h: 410, color: COLORS.bus.stroke },
+      { label: 'CONTAINER', x: 484, y: 36, w: 236, h: 236, color: COLORS.container.stroke },
+    ],
+    'credentials': [
+      { label: 'SOURCE', x: 44, y: 26, w: 216, h: 228, color: COLORS.credential.stroke },
+      { label: 'HOST PROCESS', x: 324, y: 86, w: 236, h: 238, color: COLORS.bus.stroke },
+      { label: 'CONTAINER', x: 604, y: 26, w: 216, h: 358, color: COLORS.container.stroke },
+    ],
+    'agent-spawn': [
+      { label: 'ROUTING + SPAWNING', x: 44, y: 26, w: 216, h: 428, color: COLORS.container.stroke },
+      { label: 'FILESYSTEM', x: 324, y: 26, w: 216, h: 428, color: COLORS.filesystem.stroke },
+      { label: 'IN-CONTAINER', x: 604, y: 26, w: 216, h: 318, color: COLORS.socket.stroke },
+    ],
+  };
+  return groups[view] || [];
+}
+
+// ─── SIMULATION FLOWS (per-view) ───────────────────────
+const SIM_STEPS_FULL = [
+  { node: 'whatsapp', msg: 'User sends WhatsApp message', detail: 'Baileys receives message event → extracts JID, sender, text, timestamp' },
+  { node: 'event-bus', msg: 'InboundMessage emitted on bus', detail: 'bus.emit(new InboundMessage("whatsapp", jid, { content, timestamp }))' },
+  { node: 'middleware', msg: 'Middleware pipeline runs', detail: 'dedup filter → injection scanner → outbound guard → backpressure → journal' },
+  { node: 'input-sanitizer', msg: 'Input sanitized (p15)', detail: 'Null bytes stripped, message truncated to max size' },
+  { node: 'db-store', msg: 'Stored in SQLite (p16)', detail: 'INSERT INTO chat_messages (jid, sender, content, channel, timestamp)' },
+  { node: 'message-router', msg: 'Router checks socket (p110)', detail: 'socketServer.hasConnection(folder) → no connection → enqueue for new spawn' },
+  { node: 'spawner', msg: 'Spawner receives enqueued message', detail: 'PersistentAgentSpawner.spawn() → gateway preset detected → route via Haiku first' },
+  { node: 'gateway', msg: 'Gateway routes via Haiku', detail: 'Local keyword scoring → Haiku classifier → { action: "delegate", targetAgent: "research-agent" }' },
+  { node: 'spawner', msg: 'Spawner resolves target agent context', detail: 'Gateway delegates back → registryCache.get() → assembleContext() → resolveActiveConversation()' },
+  { node: 'context-builder', msg: 'Context assembled', detail: 'identity + soul + tools + agents + heartbeat + channels → single string' },
+  { node: 'credential-provider', msg: 'Credentials resolved', detail: 'getContainerSecret() → { envVar: "CLAUDE_CODE_OAUTH_TOKEN", value: "..." }' },
+  { node: 'container-runner', msg: 'Docker container spawned', detail: 'buildMounts() → registerToken() → docker run → stdin.write(JSON) → delete secrets' },
+  { node: 'socket-server', msg: 'Token registered, waiting', detail: 'registerToken(group, token, { isMain, authorizedJids }) — 60s TTL' },
+  { node: 'socket-client', msg: 'Container connects + handshake', detail: 'Exponential backoff (100-3200ms) → HANDSHAKE frame → ACK received' },
+  { node: 'agent-runner', msg: 'Agent loop: Claude SDK query', detail: 'queryRunner.run(prompt, sdkEnv) → Claude processes → result' },
+  { node: 'socket-client', msg: 'OUTPUT frame sent to host', detail: 'outputWriter.write({ status: "success", result }) → TCP frame' },
+  { node: 'socket-server', msg: 'Output callback dispatched', detail: 'onOutput(payload) → emit OutboundMessage on bus' },
+  { node: 'event-bus', msg: 'OutboundMessage on bus', detail: 'bus.emit(new OutboundMessage("whatsapp", jid, responseText))' },
+  { node: 'db-store', msg: 'Bot reply stored (p100)', detail: 'INSERT INTO chat_messages (jid, sender: "bot", content, channel)' },
+  { node: 'audit', msg: 'Audit logged (p200)', detail: 'Structured log: { event: "outbound", channel, jid, agent, cost }' },
+  { node: 'whatsapp', msg: 'Reply sent to user', detail: 'sock.sendMessage(jid, { text: responseText }) — delivered to WhatsApp' },
+];
+
+const SIM_STEPS_BUS = [
+  { node: 'email', msg: '1. Email channel receives message', detail: 'workspace-mcp poll returns new email → channel parses sender, subject, body' },
+  { node: 'event-bus', msg: '2. InboundMessage emitted', detail: 'bus.emit(new InboundMessage("email", "email:user@example.com", { content, timestamp }))' },
+  { node: 'middleware', msg: '3. Middleware pipeline', detail: 'dedup filter (10k LRU) → injection scanner (prompt injection) → outbound guard (rate limits) → backpressure (500+ warn) → event journal (SQLite)' },
+  { node: 'input-sanitizer', msg: '4. Priority 15: Input Sanitizer', detail: 'First handler. Strips null bytes and control characters. Enforces max message size limit via truncation.' },
+  { node: 'db-store', msg: '5. Priority 16: DB Store Inbound', detail: 'INSERT INTO chat_messages (jid, sender, content, channel, timestamp). Message now queryable for history.' },
+  { node: 'lifecycle-ingest', msg: '6. Priority 17: Lifecycle Ingest', detail: 'Feeds message to memory system. Updates conversation state, triggers lifecycle operations.' },
+  { node: 'agent-handler', msg: '7. Priority 20: Agent Handler', detail: 'Checks if this JID is owned by a persistent agent. If claimed, prevents default routing. Agent gets the message.' },
+  { node: 'message-router', msg: '8. Priority 110: Message Router', detail: 'Checks socketServer.hasConnection(folder). If connected → pipe via TCP. If not → enqueue for new container spawn.' },
+  { node: 'audit', msg: '9. Priority 200: Audit', detail: 'Final handler. Writes structured audit record: { event, channel, jid, timestamp, handler_chain }' },
+];
+
+// ─── MESSAGE TRACE STAGES ──────────────────────────────
+const MESSAGE_TRACE_STAGES = [
+  {
+    id: 'user-input', label: 'User Types Message', sublabel: 'CLI channel',
+    file: 'src/channels/cli.ts',
+    description: 'Raw text typed by the user in the CLI.',
+    json: `"what is 2 + 2"`,
+    diff_keys: [],
+    ts_type: 'string',
+  },
+  {
+    id: 'new-message', label: 'Channel Creates NewMessage', sublabel: 'NewMessage interface',
+    file: 'src/types.ts:111-120',
+    description: 'Channel wraps raw text into a structured NewMessage object with metadata.',
+    json: `{
+  "id": "msg_a1b2c3d4",
+  "chat_jid": "cli:local",
+  "sender": "user",
+  "sender_name": "Cameron",
+  "content": "what is 2 + 2",
+  "timestamp": 1741891200000
+}`,
+    diff_keys: ['id', 'chat_jid', 'sender', 'sender_name', 'content', 'timestamp'],
+    ts_type: 'NewMessage',
+  },
+  {
+    id: 'inbound-event', label: 'InboundMessage Event', sublabel: 'BusEvent',
+    file: 'src/bus/events/inbound-message.ts',
+    description: 'NewMessage wrapped in a typed bus event with source channel metadata.',
+    json: `{
+  "type": "message.inbound",
+  "source": "cli",
+  "id": "evt_x9y8z7",
+  "jid": "cli:local",
+  "channel": "cli",
+  "message": {
+    "id": "msg_a1b2c3d4",
+    "chat_jid": "cli:local",
+    "sender": "user",
+    "sender_name": "Cameron",
+    "content": "what is 2 + 2",
+    "timestamp": 1741891200000
+  }
+}`,
+    diff_keys: ['type', 'source', 'id', 'jid', 'channel', 'message'],
+    ts_type: 'InboundMessage extends BusEvent',
+  },
+  {
+    id: 'middleware', label: 'Middleware Pipeline', sublabel: 'dedup + guard + journal',
+    file: 'src/bus/create-app-bus.ts',
+    description: 'Event passes through dedup, injection scanner, outbound guard, backpressure, and journal. Shape unchanged.',
+    json: `{
+  "type": "message.inbound",
+  "source": "cli",
+  "id": "evt_x9y8z7",
+  "jid": "cli:local",
+  "channel": "cli",
+  "message": { ... }
+}
+// dedup: not a duplicate ✓
+// injection: clean ✓
+// backpressure: 1 in-flight ✓
+// journal: persisted to event_journal ✓`,
+    diff_keys: [],
+    ts_type: 'InboundMessage (unchanged)',
+  },
+  {
+    id: 'sanitizer', label: 'Input Sanitizer', sublabel: 'Priority 15',
+    file: 'src/orchestrator/bus-handlers.ts',
+    description: 'Content field sanitized — null bytes stripped, size limit enforced. In this case, no changes needed.',
+    json: `{
+  ...event,
+  "message": {
+    ...message,
+    "content": "what is 2 + 2"
+  }
+}
+// null bytes: none found ✓
+// size: 14 bytes (limit: 50KB) ✓`,
+    diff_keys: [],
+    ts_type: 'InboundMessage (content sanitized)',
+  },
+  {
+    id: 'db-store', label: 'DB Store', sublabel: 'Priority 16 — SQLite row',
+    file: 'src/db/message-repository.ts',
+    description: 'Message persisted to SQLite chat_messages table.',
+    json: `{
+  "id": 1842,
+  "jid": "cli:local",
+  "sender": "user",
+  "sender_name": "Cameron",
+  "content": "what is 2 + 2",
+  "channel": "cli",
+  "timestamp": "2026-03-15T12:00:00.000Z",
+  "created_at": "2026-03-15T12:00:00.123Z"
+}`,
+    diff_keys: ['id', 'created_at'],
+    ts_type: 'chat_messages row (SQLite)',
+  },
+  {
+    id: 'router-format', label: 'Router Formats Message', sublabel: 'XML wrapping',
+    file: 'src/orchestrator/message-router.ts',
+    description: 'Message content wrapped in XML format for the agent prompt.',
+    json: `<messages>
+  <message sender="Cameron" timestamp="12:00:00">
+    what is 2 + 2
+  </message>
+</messages>`,
+    diff_keys: [],
+    ts_type: 'string (XML)',
+  },
+  {
+    id: 'socket-frame', label: 'Socket MESSAGE_INPUT', sublabel: 'TCP frame',
+    file: 'src/cambot-socket/protocol/types.ts',
+    description: 'XML prompt wrapped in a typed socket frame for TCP transport to container.',
+    json: `{
+  "type": "message.input",
+  "id": "frame_k4m5n6",
+  "payload": {
+    "text": "<messages>\\n  <message sender=\\"Cameron\\"...>\\n    what is 2 + 2\\n  </message>\\n</messages>",
+    "chatJid": "cli:local"
+  }
+}`,
+    diff_keys: ['type', 'id', 'payload'],
+    ts_type: 'SocketFrame<MessageInputPayload>',
+  },
+  {
+    id: 'container-input', label: 'ContainerInput', sublabel: 'stdin JSON',
+    file: 'agent-runner/src/types.ts:65-89',
+    description: 'Full input object written to container stdin on first spawn. Includes prompt, secrets, context, model config.',
+    json: `{
+  "prompt": "<messages>\\n  <message ...>what is 2 + 2</message>\\n</messages>",
+  "assembledContext": "# CamBot Identity\\n...",
+  "groupFolder": "main",
+  "chatJid": "cli:local",
+  "socketPort": 9500,
+  "socketToken": "tok_r3s4t5",
+  "model": "claude-sonnet-4-20250514",
+  "maxTurns": 30,
+  "secrets": { "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-..." },
+  "userCredential": { "envVar": "CLAUDE_CODE_OAUTH_TOKEN", "value": "sk-ant-..." },
+  "sessionId": "sess_p7q8r9",
+  "permissionMode": "full"
+}`,
+    diff_keys: ['prompt', 'assembledContext', 'groupFolder', 'chatJid', 'socketPort', 'socketToken', 'model', 'maxTurns', 'secrets', 'userCredential', 'sessionId', 'permissionMode'],
+    ts_type: 'ContainerInput',
+  },
+  {
+    id: 'sdk-query', label: 'Claude SDK Query', sublabel: 'sdkQueryRunner.run()',
+    file: 'agent-runner/src/sdk-query-runner.ts',
+    description: 'Agent runner invokes Claude Agent SDK with the prompt, system context, and tools.',
+    json: `{
+  "prompt": "what is 2 + 2",
+  "systemPrompt": "# CamBot Identity\\nYou are CamBot...\\n<cambot-context>...</cambot-context>",
+  "tools": ["Bash", "Read", "Write", "Edit", ...],
+  "sessionId": "sess_p7q8r9",
+  "model": "claude-sonnet-4-20250514",
+  "maxTurns": 30,
+  "permissionMode": "full"
+}`,
+    diff_keys: ['systemPrompt', 'tools', 'permissionMode'],
+    ts_type: 'SDK query parameters',
+  },
+  {
+    id: 'sdk-response', label: 'SDK Response', sublabel: 'Claude returns result',
+    file: 'agent-runner/src/sdk-query-runner.ts',
+    description: 'Claude SDK returns the result with usage telemetry.',
+    json: `{
+  "type": "result",
+  "result": "The answer to 2 + 2 is **4**.",
+  "usage": {
+    "input_tokens": 1247,
+    "output_tokens": 18
+  },
+  "telemetry": {
+    "costUsd": 0.0041,
+    "durationMs": 1823,
+    "model": "claude-sonnet-4-20250514"
+  }
+}`,
+    diff_keys: ['type', 'result', 'usage', 'telemetry'],
+    ts_type: 'SDKResult',
+  },
+  {
+    id: 'output-frame', label: 'OUTPUT Socket Frame', sublabel: 'container → host',
+    file: 'agent-runner/src/cambot-socket-client.ts',
+    description: 'Result wrapped in an OUTPUT socket frame and sent back to host over TCP.',
+    json: `{
+  "type": "output",
+  "id": "frame_u1v2w3",
+  "payload": {
+    "status": "success",
+    "result": "The answer to 2 + 2 is **4**.",
+    "newSessionId": "sess_p7q8r9",
+    "telemetry": {
+      "costUsd": 0.0041,
+      "durationMs": 1823,
+      "model": "claude-sonnet-4-20250514"
+    }
+  }
+}`,
+    diff_keys: ['type', 'id', 'payload'],
+    ts_type: 'SocketFrame<OutputPayload>',
+  },
+  {
+    id: 'outbound-frame', label: 'message.outbound Frame', sublabel: 'agent-runner',
+    file: 'agent-runner/src/cambot-socket-client.ts',
+    description: 'Agent runner also sends the text as a message.outbound frame for delivery.',
+    json: `{
+  "type": "message.outbound",
+  "id": "frame_x4y5z6",
+  "payload": {
+    "chatJid": "cli:local",
+    "text": "The answer to 2 + 2 is **4**."
+  }
+}`,
+    diff_keys: ['type', 'payload'],
+    ts_type: 'SocketFrame<OutboundPayload>',
+  },
+  {
+    id: 'outbound-event', label: 'OutboundMessage Event', sublabel: 'BusEvent',
+    file: 'src/bus/events/outbound-message.ts',
+    description: 'Socket server receives the frame and emits an OutboundMessage event on the bus.',
+    json: `{
+  "type": "message.outbound",
+  "source": "ipc",
+  "id": "evt_m2n3o4",
+  "jid": "cli:local",
+  "text": "The answer to 2 + 2 is **4**.",
+  "groupFolder": "main"
+}`,
+    diff_keys: ['type', 'source', 'id', 'jid', 'text', 'groupFolder'],
+    ts_type: 'OutboundMessage extends BusEvent',
+  },
+  {
+    id: 'channel-send', label: 'Channel Sends Reply', sublabel: 'CLI stdout',
+    file: 'src/channels/cli.ts',
+    description: 'Channel receives OutboundMessage from bus and sends reply to user.',
+    json: `sendMessage("cli:local", "The answer to 2 + 2 is **4**.")
+
+// → stdout: "The answer to 2 + 2 is **4**."
+// User sees the response ✓`,
+    diff_keys: [],
+    ts_type: 'void',
+  },
+];
+
+const TRACE_TRANSFORMS = [
+  'text → NewMessage struct',
+  'add bus event envelope',
+  'dedup + guard + journal',
+  'sanitize content field',
+  'persist to SQLite',
+  'wrap in XML format',
+  'wrap in socket frame',
+  'full stdin JSON with secrets',
+  'extract prompt + tools for SDK',
+  'Claude returns result',
+  'wrap result in OUTPUT frame',
+  'send as outbound frame',
+  'emit as bus event',
+  'deliver to channel',
+];
+
+const SIM_STEPS_TRACE = MESSAGE_TRACE_STAGES.map((stage, i) => ({
+  node: stage.id,
+  msg: `${i + 1}. ${stage.label}`,
+  detail: stage.description,
+}));
+
+const VIEW_SIM_STEPS = {
+  'full-flow': SIM_STEPS_FULL,
+  'bus': SIM_STEPS_BUS,
+  'message-trace': SIM_STEPS_TRACE,
+};
+
+function getSimSteps() {
+  return VIEW_SIM_STEPS[state.view] || SIM_STEPS_FULL;
+}
+
+// ─── RENDER ────────────────────────────────────────────
+function render() {
+  renderTabs();
+  renderDiagram();
+  renderDetail();
+  renderPrompt();
+  renderLegend();
+  updateStatus();
+}
+
+function renderTabs() {
+  const el = document.getElementById('viewTabs');
+  el.innerHTML = Object.entries(VIEWS).map(([id, v]) =>
+    `<button class="btn ${state.view === id ? 'active' : ''}" onclick="setView('${id}')">${v.label}</button>`
+  ).join('');
+}
+
+function renderLegend() {
+  const el = document.getElementById('legend');
+  if (state.view === 'message-trace') {
+    el.innerHTML = `<div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div>data transform</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>string value</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div>number</div>`;
+    return;
+  }
+  const types = new Set();
+  getViewNodes(state.view).forEach(n => types.add(COMPONENTS[n.id].type));
+  el.innerHTML = [...types].map(t => {
+    const c = COLORS[t];
+    return `<div class="legend-item"><div class="legend-dot" style="background:${c.stroke}"></div>${t}</div>`;
+  }).join('');
+}
+
+function renderMessageTrace() {
+  const wrap = document.getElementById('canvasWrap');
+  const svg = document.getElementById('diagram');
+  svg.style.display = 'none';
+
+  // Remove old timeline if exists
+  let timeline = document.getElementById('traceTimeline');
+  if (!timeline) {
+    timeline = document.createElement('div');
+    timeline.id = 'traceTimeline';
+    timeline.className = 'trace-timeline';
+    wrap.appendChild(timeline);
+  }
+  timeline.style.display = '';
+
+  const steps = getSimSteps();
+  const visitedSet = new Set();
+  if (state.simulating && state.simStep >= 0) {
+    for (let i = 0; i < state.simStep; i++) visitedSet.add(steps[i].node);
+  }
+
+  let html = '';
+  MESSAGE_TRACE_STAGES.forEach((stage, i) => {
+    const isActive = state.simulating && state.simStep >= 0 && steps[state.simStep]?.node === stage.id;
+    const isVisited = state.simulating && visitedSet.has(stage.id) && !isActive;
+    const isSelected = state.selected === stage.id;
+    const cls = [
+      'trace-stage',
+      isActive ? 'active' : '',
+      isVisited ? 'visited' : '',
+      isSelected ? 'active' : '',
+    ].filter(Boolean).join(' ');
+
+    html += `<div class="${cls}" onclick="selectTraceStage('${stage.id}')" data-stage="${stage.id}">`;
+    html += `<div class="trace-left">`;
+    html += `<div class="trace-step-num">${i + 1}</div>`;
+    html += `<div class="trace-label">${stage.label}</div>`;
+    html += `<div class="trace-sublabel">${stage.sublabel}</div>`;
+    html += `</div>`;
+    html += `<div class="trace-json-panel">${highlightJson(stage.json, stage.diff_keys)}</div>`;
+    html += `</div>`;
+
+    // Connector between stages
+    if (i < MESSAGE_TRACE_STAGES.length - 1) {
+      const connActive = isActive || (state.simulating && state.simStep === i + 1);
+      html += `<div class="trace-connector${connActive ? ' active' : ''}">`;
+      html += `<div class="trace-connector-line"></div>`;
+      html += `<div class="trace-connector-text">${TRACE_TRANSFORMS[i] || ''}</div>`;
+      html += `</div>`;
+    }
+  });
+
+  timeline.innerHTML = html;
+
+  // Scroll active stage into view
+  if (state.simulating && state.simStep >= 0) {
+    const activeEl = timeline.querySelector('.trace-stage.active');
+    if (activeEl) activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+function highlightJson(text, diffKeys) {
+  // Escape HTML
+  let s = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Highlight JSON syntax
+  // Keys (quoted before colon)
+  s = s.replace(/"([^"]+)"(\s*:)/g, (match, key, colon) => {
+    const cls = diffKeys.includes(key) ? 'json-new' : 'json-key';
+    return `<span class="${cls}">"${key}"</span>${colon}`;
+  });
+
+  // String values (quoted after colon, but not keys we already matched)
+  s = s.replace(/:\s*"([^"]*(?:\\.[^"]*)*)"/g, (match, val) => {
+    return `: <span class="json-str">"${val}"</span>`;
+  });
+
+  // Numbers
+  s = s.replace(/:\s*(\d+(?:\.\d+)?)/g, (match, num) => {
+    return `: <span class="json-num">${num}</span>`;
+  });
+
+  // Booleans
+  s = s.replace(/:\s*(true|false)/g, (match, bool) => {
+    return `: <span class="json-bool">${bool}</span>`;
+  });
+
+  // null
+  s = s.replace(/:\s*(null)/g, ': <span class="json-null">null</span>');
+
+  // Brackets
+  s = s.replace(/([{}\[\]])/g, '<span class="json-bracket">$1</span>');
+
+  // Comments (// ...)
+  s = s.replace(/(\/\/.+)/g, '<span class="json-key" style="opacity:0.5;font-style:italic">$1</span>');
+
+  return s;
+}
+
+function selectTraceStage(id) {
+  state.selected = state.selected === id ? null : id;
+  renderMessageTrace();
+  renderDetail();
+  renderPrompt();
+}
+
+function renderDiagram() {
+  // Handle message-trace view separately
+  if (state.view === 'message-trace') {
+    renderMessageTrace();
+    return;
+  }
+
+  // Hide timeline if switching away from trace view
+  const timeline = document.getElementById('traceTimeline');
+  if (timeline) timeline.style.display = 'none';
+  const svg = document.getElementById('diagram');
+  svg.style.display = '';
+
+  const nodes = getViewNodes(state.view);
+  const edges = getViewEdges(state.view);
+  const groups = getViewGroups(state.view);
+
+  // Calculate viewBox
+  let maxX = 0, maxY = 0;
+  nodes.forEach(n => { maxX = Math.max(maxX, n.x + n.w + 40); maxY = Math.max(maxY, n.y + n.h + 40); });
+  groups.forEach(g => { maxX = Math.max(maxX, g.x + g.w + 20); maxY = Math.max(maxY, g.y + g.h + 20); });
+  svg.setAttribute('viewBox', `0 0 ${Math.max(maxX, 900)} ${Math.max(maxY, 500)}`);
+
+  let html = '<defs>';
+  html += '<marker id="arrow" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6 z" fill="#484f58"/></marker>';
+  html += '<marker id="arrow-active" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6 z" fill="#39d2c0"/></marker>';
+  html += '<marker id="arrow-visited" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto"><path d="M0,0 L10,3 L0,6 z" fill="#39d2c044"/></marker>';
+  html += '</defs>';
+
+  // Track visited nodes for sim trail effect
+  const steps = getSimSteps();
+  const visitedNodes = new Set();
+  if (state.simulating && state.simStep >= 0) {
+    for (let i = 0; i < state.simStep; i++) visitedNodes.add(steps[i].node);
+  }
+
+  // Groups
+  groups.forEach(g => {
+    html += `<rect class="group-box" x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" style="stroke:${g.color}40"/>`;
+    html += `<text class="group-label" x="${g.x + 12}" y="${g.y + 18}" style="fill:${g.color}80">${g.label}</text>`;
+  });
+
+  // Edges
+  const isBusView = state.view === 'bus';
+  edges.forEach((e, i) => {
+    const fromN = nodes.find(n => n.id === e.from);
+    const toN = nodes.find(n => n.id === e.to);
+    if (!fromN || !toN) return;
+    const { sx, sy, ex, ey } = smartAnchors(fromN, toN);
+    const isActive = state.simulating && state.simStep >= 0 && isEdgeInSimStep(e);
+    const wasTraversed = state.simulating && visitedNodes.has(e.from) && visitedNodes.has(e.to);
+    const cls = isActive ? 'edge flow-trail' : wasTraversed ? 'edge' : 'edge';
+    const edgeStroke = isActive ? '' : wasTraversed ? ' stroke="#39d2c044" stroke-width="2"' : '';
+    const marker = isActive ? 'url(#arrow-active)' : wasTraversed ? 'url(#arrow-visited)' : 'url(#arrow)';
+
+    // Bus pipeline: straight vertical lines for the handler chain
+    const isVerticalPipe = isBusView && Math.abs(fromN.x + fromN.w/2 - (toN.x + toN.w/2)) < 20;
+    if (isVerticalPipe) {
+      const mx = (fromN.x + fromN.w/2 + toN.x + toN.w/2) / 2;
+      html += `<path class="${cls}"${edgeStroke} d="M${mx},${sy} L${mx},${ey}" marker-end="${marker}" data-edge="${i}"/>`;
+      if (e.label) {
+        html += `<text class="edge-label" x="${mx + 8}" y="${(sy+ey)/2}" dominant-baseline="middle">${e.label}</text>`;
+      }
+    } else {
+      // Curved path for non-pipeline edges
+      const dx = ex - sx, dy = ey - sy;
+      const cx1 = sx + dx * 0.4, cy1 = sy;
+      const cx2 = sx + dx * 0.6, cy2 = ey;
+      html += `<path class="${cls}"${edgeStroke} d="M${sx},${sy} C${cx1},${cy1} ${cx2},${cy2} ${ex},${ey}" marker-end="${marker}" data-edge="${i}"/>`;
+      if (e.label) {
+        const mx = (sx + ex) / 2, my = (sy + ey) / 2 - 6;
+        html += `<text class="edge-label" x="${mx}" y="${my}" text-anchor="middle">${e.label}</text>`;
+      }
+    }
+  });
+
+  // Priority badges for bus view handlers
+  const BUS_PRIORITIES = {
+    'input-sanitizer': 15, 'db-store': '16/100', 'lifecycle-ingest': 17,
+    'agent-handler': 20, 'message-router': 110, 'audit': 200,
+  };
+
+  // Nodes
+  nodes.forEach(n => {
+    const comp = COMPONENTS[n.id];
+    const c = COLORS[comp.type];
+    const selected = state.selected === n.id;
+    const simActive = state.simulating && state.simStep >= 0 && steps[state.simStep]?.node === n.id;
+    const wasVisited = state.simulating && visitedNodes.has(n.id) && !simActive;
+    const stroke = simActive ? '#39d2c0' : wasVisited ? '#39d2c066' : c.stroke;
+    const fill = simActive ? '#39d2c033' : wasVisited ? '#39d2c011' : c.fill;
+    const sw = selected ? 3 : simActive ? 2.5 : 1.5;
+    const glow = (selected || simActive) ? `filter: drop-shadow(0 0 8px ${stroke})` : wasVisited ? `filter: drop-shadow(0 0 3px #39d2c044)` : '';
+    html += `<g class="node ${selected ? 'selected' : ''} ${wasVisited ? 'sim-visited' : ''}" onclick="selectNode('${n.id}')" data-id="${n.id}">`;
+    html += `<rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="8" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" style="${glow}"/>`;
+    html += `<text class="node-label" x="${n.x + n.w/2}" y="${n.y + (n.h > 50 ? 24 : 20)}" text-anchor="middle" fill="${simActive ? '#39d2c0' : wasVisited ? '#39d2c0aa' : c.text}">${comp.label}</text>`;
+    if (comp.sublabel) {
+      html += `<text class="node-sublabel" x="${n.x + n.w/2}" y="${n.y + (n.h > 50 ? 42 : 36)}" text-anchor="middle">${comp.sublabel}</text>`;
+    }
+    // Priority badge for bus view
+    if (isBusView && BUS_PRIORITIES[n.id] !== undefined) {
+      const bx = n.x + n.w - 4, by = n.y + 2;
+      html += `<rect x="${bx - 22}" y="${by}" width="26" height="16" rx="4" fill="#3fb95022" stroke="#3fb95066" stroke-width="1"/>`;
+      html += `<text class="priority-badge" x="${bx - 9}" y="${by + 12}" text-anchor="middle" fill="#3fb950">p${BUS_PRIORITIES[n.id]}</text>`;
+    }
+    html += '</g>';
+    // Sim pulse
+    if (simActive) {
+      html += `<circle cx="${n.x + n.w/2}" cy="${n.y + n.h/2}" r="6" fill="none" stroke="#39d2c0" stroke-width="2" class="pulse"/>`;
+    }
+  });
+
+  svg.innerHTML = html;
+}
+
+function smartAnchors(from, to) {
+  const fcx = from.x + from.w/2, fcy = from.y + from.h/2;
+  const tcx = to.x + to.w/2, tcy = to.y + to.h/2;
+  const dx = tcx - fcx, dy = tcy - fcy;
+  let sx, sy, ex, ey;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    // Horizontal-dominant
+    if (dx > 0) { sx = from.x + from.w; ex = to.x; }
+    else { sx = from.x; ex = to.x + to.w; }
+    sy = fcy; ey = tcy;
+  } else {
+    // Vertical-dominant
+    if (dy > 0) { sy = from.y + from.h; ey = to.y; }
+    else { sy = from.y; ey = to.y + to.h; }
+    sx = fcx; ex = tcx;
+  }
+  return { sx, sy, ex, ey };
+}
+
+function isEdgeInSimStep(edge) {
+  if (state.simStep < 0) return false;
+  const steps = getSimSteps();
+  const step = steps[state.simStep];
+  const prev = state.simStep > 0 ? steps[state.simStep - 1] : null;
+  return (prev && edge.from === prev.node && edge.to === step.node) ||
+         (edge.from === step.node) || (edge.to === step.node);
+}
+
+function renderDetail() {
+  const panel = document.getElementById('detailPanel');
+  if (!state.selected) {
+    panel.innerHTML = '<div class="empty-state"><div class="icon">&#9776;</div><p>Click a component to inspect</p></div>';
+    return;
+  }
+
+  // Handle trace stage detail
+  if (state.view === 'message-trace') {
+    const stage = MESSAGE_TRACE_STAGES.find(s => s.id === state.selected);
+    if (stage) {
+      renderTraceDetail(panel, stage);
+      return;
+    }
+  }
+
+  const comp = COMPONENTS[state.selected];
+  const c = COLORS[comp.type];
+  let html = `<h2 style="color:${c.text}">${comp.label}</h2>`;
+  html += `<span class="file-ref">${comp.file}</span>`;
+  const d = comp.detail;
+  if (d.description) {
+    html += `<div class="detail-section"><div class="detail-item">${d.description}</div></div>`;
+  }
+  if (d.mechanism) {
+    html += `<h3>How it works</h3><div class="detail-section"><div class="detail-item">${d.mechanism}</div></div>`;
+  }
+  if (d.key_functions) {
+    html += '<h3>Key Functions</h3><div class="detail-section">';
+    d.key_functions.forEach(f => {
+      const [name, ...desc] = f.split(' — ');
+      html += `<div class="detail-item"><code>${name}</code>${desc.length ? '<br><span class="label">' + desc.join(' — ') + '</span>' : ''}</div>`;
+    });
+    html += '</div>';
+  }
+  if (d.data_flow) {
+    html += `<h3>Data Flow</h3><div class="detail-section"><div class="detail-item" style="font-family:var(--mono);font-size:11px;">${d.data_flow}</div></div>`;
+  }
+  if (d.event_types) {
+    html += '<h3>Event Types</h3><div class="detail-section">';
+    d.event_types.forEach(e => {
+      const [name, ...desc] = e.split(' — ');
+      html += `<div class="detail-item"><code>${name}</code>${desc.length ? ' <span class="label">' + desc.join(' — ') + '</span>' : ''}</div>`;
+    });
+    html += '</div>';
+  }
+  if (d.frame_types) {
+    html += '<h3>Frame Types</h3><div class="detail-section">';
+    d.frame_types.forEach(f => {
+      const [name, ...desc] = f.split(' — ');
+      html += `<div class="detail-item"><code>${name}</code>${desc.length ? ' <span class="label">' + desc.join(' — ') + '</span>' : ''}</div>`;
+    });
+    html += '</div>';
+  }
+  if (d.memory_modes) {
+    html += '<h3>Memory Modes</h3><div class="detail-section">';
+    d.memory_modes.forEach(m => {
+      const [name, ...desc] = m.split(' — ');
+      html += `<div class="detail-item"><strong>${name}</strong>${desc.length ? ' — ' + desc.join(' — ') : ''}</div>`;
+    });
+    html += '</div>';
+  }
+  // Show sim step info if active
+  if (state.simulating && state.simStep >= 0) {
+    const steps = getSimSteps();
+    const step = steps[state.simStep];
+    if (step.node === state.selected) {
+      html += `<h3 style="color:#39d2c0">Simulation Step ${state.simStep + 1}/${steps.length}</h3>`;
+      html += `<div class="detail-section"><div class="detail-item" style="border-left:3px solid #39d2c0;padding-left:12px"><strong>${step.msg}</strong><br><span class="label">${step.detail}</span></div></div>`;
+    }
+  }
+  panel.innerHTML = html;
+}
+
+function renderTraceDetail(panel, stage) {
+  const idx = MESSAGE_TRACE_STAGES.indexOf(stage);
+  let html = `<h2 style="color:var(--cyan)">Stage ${idx + 1}: ${stage.label}</h2>`;
+  html += `<span class="file-ref">${stage.file}</span>`;
+
+  html += `<div class="detail-section"><div class="detail-item">${stage.description}</div></div>`;
+
+  html += `<h3>TypeScript Type</h3>`;
+  html += `<div class="detail-section"><div class="detail-item"><code>${stage.ts_type}</code></div></div>`;
+
+  if (stage.diff_keys.length > 0) {
+    html += `<h3>New / Changed Fields</h3><div class="detail-section">`;
+    stage.diff_keys.forEach(k => {
+      html += `<div class="detail-item"><code style="color:var(--cyan)">${k}</code></div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Transform from previous
+  if (idx > 0) {
+    const prev = MESSAGE_TRACE_STAGES[idx - 1];
+    html += `<h3>Transform</h3>`;
+    html += `<div class="detail-section"><div class="detail-item" style="border-left:3px solid var(--cyan);padding-left:12px">`;
+    html += `<span class="label">From:</span> ${prev.label}<br>`;
+    html += `<span class="label">Change:</span> ${TRACE_TRANSFORMS[idx - 1] || 'shape preserved'}`;
+    html += `</div></div>`;
+  }
+
+  // Transform to next
+  if (idx < MESSAGE_TRACE_STAGES.length - 1) {
+    const next = MESSAGE_TRACE_STAGES[idx + 1];
+    html += `<h3>Next Stage</h3>`;
+    html += `<div class="detail-section"><div class="detail-item">`;
+    html += `<span class="label">To:</span> ${next.label}<br>`;
+    html += `<span class="label">Change:</span> ${TRACE_TRANSFORMS[idx] || ''}`;
+    html += `</div></div>`;
+  }
+
+  // Sim step info
+  if (state.simulating && state.simStep >= 0) {
+    const steps = getSimSteps();
+    const step = steps[state.simStep];
+    if (step && step.node === state.selected) {
+      html += `<h3 style="color:var(--cyan)">Simulation Step ${state.simStep + 1}/${steps.length}</h3>`;
+      html += `<div class="detail-section"><div class="detail-item" style="border-left:3px solid var(--cyan);padding-left:12px"><strong>${step.msg}</strong><br><span class="label">${step.detail}</span></div></div>`;
+    }
+  }
+
+  panel.innerHTML = html;
+}
+
+function renderPrompt() {
+  const el = document.getElementById('promptOutput');
+  const view = VIEWS[state.view];
+  let parts = [`View: ${view.label} — ${view.description}`];
+
+  if (state.selected && state.view === 'message-trace') {
+    const stage = MESSAGE_TRACE_STAGES.find(s => s.id === state.selected);
+    if (stage) {
+      const idx = MESSAGE_TRACE_STAGES.indexOf(stage);
+      parts.push(`\nSelected: Stage ${idx + 1} — ${stage.label}`);
+      parts.push(`File: ${stage.file}`);
+      parts.push(`Type: ${stage.ts_type}`);
+      parts.push(`${stage.description}`);
+      parts.push(`\nJSON shape:\n${stage.json}`);
+    }
+  } else if (state.selected) {
+    const comp = COMPONENTS[state.selected];
+    parts.push(`\nSelected: ${comp.label} (${comp.type})`);
+    parts.push(`File: ${comp.file}`);
+    parts.push(`${comp.detail.description}`);
+    if (comp.detail.mechanism) parts.push(`Mechanism: ${comp.detail.mechanism}`);
+    if (comp.detail.data_flow) parts.push(`Data flow: ${comp.detail.data_flow}`);
+  }
+
+  if (state.simulating && state.simStep >= 0) {
+    const steps = getSimSteps();
+    const step = steps[state.simStep];
+    parts.push(`\n--- Simulation Step ${state.simStep + 1}/${steps.length} ---`);
+    parts.push(`Component: ${COMPONENTS[step.node]?.label || step.node}`);
+    parts.push(`Action: ${step.msg}`);
+    parts.push(`Detail: ${step.detail}`);
+  }
+
+  // Connected components summary (skip for trace view)
+  if (state.view === 'message-trace') { el.textContent = parts.join('\n'); return; }
+  const nodes = getViewNodes(state.view);
+  const edges = getViewEdges(state.view);
+  if (state.selected) {
+    const connected = edges
+      .filter(e => e.from === state.selected || e.to === state.selected)
+      .map(e => {
+        const other = e.from === state.selected ? e.to : e.from;
+        const dir = e.from === state.selected ? '→' : '←';
+        const otherComp = COMPONENTS[other];
+        return `  ${dir} ${otherComp?.label || other}${e.label ? ' (' + e.label + ')' : ''}`;
+      });
+    if (connected.length) {
+      parts.push(`\nConnections:`);
+      parts.push(connected.join('\n'));
+    }
+  }
+
+  el.textContent = parts.join('\n');
+}
+
+function updateStatus() {
+  const el = document.getElementById('statusText');
+  if (state.simulating) {
+    const steps = getSimSteps();
+    el.innerHTML = `Step <span class="highlight">${state.simStep + 1}</span>/${steps.length} — ${steps[state.simStep]?.msg || 'ready'}`;
+  } else if (state.view === 'message-trace') {
+    el.innerHTML = `${MESSAGE_TRACE_STAGES.length} stages`;
+  } else {
+    const nodes = getViewNodes(state.view);
+    el.innerHTML = `${nodes.length} components`;
+  }
+}
+
+// ─── ACTIONS ───────────────────────────────────────────
+function setView(view) {
+  state.view = view;
+  state.selected = null;
+  state.simulating = false;
+  state.simStep = -1;
+  document.getElementById('simBtn').disabled = false;
+  render();
+}
+
+function selectNode(id) {
+  state.selected = state.selected === id ? null : id;
+  renderDetail();
+  renderDiagram();
+  renderPrompt();
+}
+
+let simTimer = null;
+function simulateFlow() {
+  const steps = getSimSteps();
+  if (state.simulating) {
+    // Advance step
+    if (state.simStep < steps.length - 1) {
+      state.simStep++;
+      const step = steps[state.simStep];
+      state.selected = step.node;
+      // Auto-switch view if step node isn't in current view (skip for trace — all stages are in view)
+      if (state.view !== 'message-trace') {
+        const nodes = getViewNodes(state.view);
+        if (!nodes.find(n => n.id === step.node)) {
+          if (!VIEW_SIM_STEPS[state.view]) {
+            state.view = 'full-flow';
+          }
+          renderTabs();
+          renderLegend();
+        }
+      }
+      render();
+      // Auto-advance
+      simTimer = setTimeout(simulateFlow, 1800);
+    } else {
+      // End simulation
+      state.simulating = false;
+      state.simStep = -1;
+      document.getElementById('simBtn').textContent = 'Simulate Message';
+      document.getElementById('simBtn').disabled = false;
+      render();
+    }
+    return;
+  }
+
+  // Start simulation — use current view's steps if available, else switch to full-flow
+  if (!VIEW_SIM_STEPS[state.view]) {
+    state.view = 'full-flow';
+  }
+  const startSteps = getSimSteps();
+  state.simulating = true;
+  state.simStep = 0;
+  state.selected = startSteps[0].node;
+  document.getElementById('simBtn').textContent = 'Next Step';
+  clearTimeout(simTimer);
+  renderTabs();
+  renderLegend();
+  render();
+  simTimer = setTimeout(simulateFlow, 2000);
+}
+
+function copyPrompt() {
+  const text = document.getElementById('promptOutput').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+// Click on canvas background deselects
+document.getElementById('canvasWrap').addEventListener('click', (e) => {
+  const isBackground = e.target === document.getElementById('diagram') || e.target === document.getElementById('canvasWrap');
+  const isTimeline = e.target === document.getElementById('traceTimeline');
+  if (isBackground || isTimeline) {
+    state.selected = null;
+    renderDetail();
+    renderDiagram();
+    renderPrompt();
+  }
+});
+
+// Stop auto-advance on manual interaction during sim
+document.getElementById('simBtn').addEventListener('click', () => {
+  clearTimeout(simTimer);
+});
+
+// ─── INIT ──────────────────────────────────────────────
+render();
+</script>
+</body>
+</html>
