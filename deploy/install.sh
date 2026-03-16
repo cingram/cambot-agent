@@ -401,7 +401,7 @@ step "Step 5/8: Install Dependencies"
 for pkg in cambot-integrations cambot-channels cambot-core cambot-workflows cambot-llm cambot-agent; do
   if [ -d "$CAMBOT_HOME/$pkg" ] && [ -f "$CAMBOT_HOME/$pkg/package.json" ]; then
     info "Installing dependencies for $pkg..."
-    (cd "$CAMBOT_HOME/$pkg" && bun install --production 2>&1 | tail -1)
+    (cd "$CAMBOT_HOME/$pkg" && bun install --production --no-frozen-lockfile 2>&1 | tail -1)
   fi
 done
 
