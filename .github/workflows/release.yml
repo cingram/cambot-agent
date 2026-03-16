@@ -118,14 +118,7 @@ jobs:
         run: cd "$WORKSPACE/cambot-llm" && bun install && bun run build
 
       - name: Install and build cambot-agent
-        run: |
-          cd "$WORKSPACE/cambot-agent"
-          bun install
-          # Build with --diagnostics to debug, skip test files for release
-          npx tsc --listFiles 2>&1 | grep "cambot-core/dist" | head -5 || true
-          ls -la node_modules/cambot-core/dist/security/ 2>/dev/null || echo "No cambot-core dist found"
-          grep "queryByCorrelation" node_modules/cambot-core/dist/security/security-events.d.ts 2>/dev/null || echo "queryByCorrelation NOT in d.ts"
-          bun run build
+        run: cd "$WORKSPACE/cambot-agent" && bun install && bun run build
 
       - name: Build agent-runner
         run: cd "$WORKSPACE/cambot-agent/agent-runner" && bun install && bun run build
