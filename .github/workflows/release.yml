@@ -184,8 +184,9 @@ jobs:
           [ -d "$AGENT_SRC/agent-runner/dist" ] && \
             cp -r "$AGENT_SRC/agent-runner/dist" "$AGENT_DST/agent-runner/dist"
 
-          # Deploy scripts
+          # Deploy scripts (ensure Unix line endings)
           cp -r "$AGENT_SRC/deploy" "$AGENT_DST/deploy"
+          find "$AGENT_DST/deploy" -name '*.sh' -exec sed -i 's/\r$//' {} +
 
           # Version stamp
           cat > "$STAGE/VERSION" <<EOF
