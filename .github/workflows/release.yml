@@ -11,17 +11,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          repositories: >-
-            cambot-agent,cambot-core,cambot-integrations,cambot-channels,cambot-workflows,cambot-llm,cambot-core-ui
-
       - uses: actions/checkout@v4
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
 
       - name: Read version manifest
         id: versions
@@ -38,42 +30,42 @@ jobs:
         with:
           repository: cingram/cambot-integrations
           ref: ${{ steps.versions.outputs.integrations }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
           path: cambot-integrations
 
       - uses: actions/checkout@v4
         with:
           repository: cingram/cambot-core
           ref: ${{ steps.versions.outputs.core }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
           path: cambot-core
 
       - uses: actions/checkout@v4
         with:
           repository: cingram/cambot-channels
           ref: ${{ steps.versions.outputs.channels }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
           path: cambot-channels
 
       - uses: actions/checkout@v4
         with:
           repository: cingram/cambot-workflows
           ref: ${{ steps.versions.outputs.workflows }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
           path: cambot-workflows
 
       - uses: actions/checkout@v4
         with:
           repository: cingram/cambot-llm
           ref: ${{ steps.versions.outputs.llm }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
           path: cambot-llm
 
       - uses: actions/checkout@v4
         with:
           repository: cingram/cambot-core-ui
           ref: ${{ steps.versions.outputs.ui }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.GH_PAT }}
           path: cambot-core-ui
 
       - uses: actions/setup-node@v4
