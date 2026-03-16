@@ -95,12 +95,13 @@ start_ui() {
   # Build if .next doesn't exist
   if [ ! -d "$UI_DIR/.next" ]; then
     info "Building UI (first run)..."
-    (cd "$UI_DIR" && npm run build)
+    (cd "$UI_DIR" && bun run build)
   fi
 
   info "Starting cambot-core-ui on port $UI_PORT..."
-  (cd "$UI_DIR" && node_modules/.bin/next start -p "$UI_PORT" >> "$CAMBOT_HOME/logs/cambot-ui.log" 2>&1 &)
+  cd "$UI_DIR" && node_modules/.bin/next start -p "$UI_PORT" >> "$CAMBOT_HOME/logs/cambot-ui.log" 2>&1 &
   local pid=$!
+  cd - > /dev/null
   echo "$pid" > "$UI_PID_FILE"
   sleep 2
 
@@ -173,9 +174,10 @@ start_bridge() {
     || fail "Native bridge not found. Run: cd $CHANNELS_DIR && bun run build"
 
   info "Starting native iMessage bridge on port $BRIDGE_PORT..."
-  (cd "$CHANNELS_DIR" && BRIDGE_PORT="$BRIDGE_PORT" bun run dist/channels/imessage/bridge/native-bridge.js \
-    >> "$CAMBOT_HOME/logs/cambot-bridge.log" 2>&1 &)
+  cd "$CHANNELS_DIR" && BRIDGE_PORT="$BRIDGE_PORT" bun run dist/channels/imessage/bridge/native-bridge.js \
+    >> "$CAMBOT_HOME/logs/cambot-bridge.log" 2>&1 &
   local pid=$!
+  cd - > /dev/null
   echo "$pid" > "$BRIDGE_PID_FILE"
   sleep 1
 
