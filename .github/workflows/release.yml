@@ -187,6 +187,11 @@ jobs:
           # Deploy scripts
           cp -r "$AGENT_SRC/deploy" "$AGENT_DST/deploy"
 
+          # Seed data and import script
+          [ -d "$AGENT_SRC/seed" ] && cp -r "$AGENT_SRC/seed" "$AGENT_DST/seed"
+          mkdir -p "$AGENT_DST/scripts"
+          cp "$AGENT_SRC/scripts/import-seed.mjs" "$AGENT_DST/scripts/"
+
           # Strip Windows line endings from all shell scripts in the artifact
           find "$STAGE" -name '*.sh' -exec sed -i 's/\r$//' {} +
 

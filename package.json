@@ -16,7 +16,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:audit": "tsx scripts/test-audit-qa.ts",
-    "test:e2e": "npx playwright test"
+    "test:e2e": "npx playwright test",
+    "seed:export": "node scripts/export-seed.mjs",
+    "seed:import": "node scripts/import-seed.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.63",

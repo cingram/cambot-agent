@@ -453,6 +453,20 @@ fi
 
 ok "All dependencies installed"
 
+# Seed database with agent definitions, tasks, and configuration
+if [ -f "$AGENT_DIR/seed/db-seed.json" ]; then
+  DB_FILE="$AGENT_DIR/store/cambot.sqlite"
+  if [ -f "$DB_FILE" ]; then
+    info "Importing seed data (agents, tasks, groups)..."
+    node "$AGENT_DIR/scripts/import-seed.mjs" \
+      --db "$DB_FILE" \
+      --seed "$AGENT_DIR/seed/db-seed.json" 2>&1 | sed 's/^/    /'
+    ok "Seed data imported"
+  else
+    info "Database not yet created — seed will import on first update"
+  fi
+fi
+
 # ===========================================================================
 # Step 6: Build Agent Container
 # ===========================================================================
