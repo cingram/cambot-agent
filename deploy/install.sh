@@ -564,6 +564,7 @@ CAMBOT_DB_PATH=${AGENT_DIR}/store/cambot.sqlite
 CAMBOT_UI_SECRET=${UI_SECRET}
 CAMBOT_WEB_AUTH_TOKEN=${WEB_AUTH_TOKEN}
 CAMBOT_WEB_CHANNEL_URL=http://localhost:3100
+CAMBOT_WORKFLOWS_DIR=${AGENT_DIR}/data/workflows
 UIENV
   if [ -n "$WEB_AUTH_TOKEN" ]; then
     ok "Created $UI_ENV (DB path + secret + auth token synced)"

@@ -246,6 +246,15 @@ if [ -f "$AGENT_DIR/seed/db-seed.json" ]; then
   fi
 fi
 
+# Patch UI .env with any missing required variables
+UI_ENV="$UI_DIR/.env"
+if [ -f "$UI_ENV" ]; then
+  if ! grep -q '^CAMBOT_WORKFLOWS_DIR=' "$UI_ENV"; then
+    echo "CAMBOT_WORKFLOWS_DIR=${AGENT_DIR}/data/workflows" >> "$UI_ENV"
+    ok "Patched UI .env: added CAMBOT_WORKFLOWS_DIR"
+  fi
+fi
+
 info "Rebuilding agent container image..."
 (cd "$AGENT_DIR/container" && bash build.sh)
 ok "Container image rebuilt"
