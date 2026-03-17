@@ -422,6 +422,10 @@ if [ -d "$EXTRACT_DIR/cambot-agent" ]; then
   [ -d "$EXTRACT_DIR/cambot-agent/scripts" ] && \
     mkdir -p "$AGENT_DIR/scripts" && \
     cp -r "$EXTRACT_DIR/cambot-agent/scripts/." "$AGENT_DIR/scripts/"
+
+  # Bundled workflows
+  [ -d "$EXTRACT_DIR/cambot-agent/workflows" ] && \
+    cp -r "$EXTRACT_DIR/cambot-agent/workflows" "$AGENT_DIR/workflows"
 fi
 
 # Version stamp
@@ -473,6 +477,21 @@ if [ -f "$AGENT_DIR/seed/db-seed.json" ]; then
   else
     warn "Database not yet created — run start.sh once, then re-run install.sh to seed agents"
   fi
+fi
+
+# Copy bundled workflows — only adds new files, never overwrites existing ones
+if [ -d "$AGENT_DIR/workflows" ]; then
+  mkdir -p "$AGENT_DIR/data/workflows"
+  copied=0
+  for src in "$AGENT_DIR/workflows/"*.yaml; do
+    [ -f "$src" ] || continue
+    dest="$AGENT_DIR/data/workflows/$(basename "$src")"
+    if [ ! -f "$dest" ]; then
+      cp "$src" "$dest"
+      copied=$((copied + 1))
+    fi
+  done
+  [ "$copied" -gt 0 ] && ok "Installed $copied new workflow(s)" || info "Workflows already present — skipped"
 fi
 
 # ===========================================================================

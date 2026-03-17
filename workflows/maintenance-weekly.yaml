@@ -1,0 +1,74 @@
+id: maintenance-weekly
+name: Weekly Maintenance
+description: Weekly deep maintenance — full backup, quality purge, orphan cleanup, FTS check
+version: "1.0"
+hash: fd993670fb28b7f8f31c77ce6bd44cd5de06e736225bc7312fbfaba8f0f01ba0
+schedule:
+  cron: 0 4 * * 0
+  timezone: America/New_York
+policy:
+  maxCostUsd: 1
+  maxTokens: 100000
+  maxOutputSizeBytes: 524288
+  piiAction: redact
+  secretPatterns:
+    - sk-[a-zA-Z0-9]{32,}
+    - ghp_[a-zA-Z0-9]{36}
+  network:
+    allowed_domains: []
+    block_paywalled: false
+steps:
+  - id: full-backup
+    type: tool
+    name: Full SQLite Backup
+    config:
+      tool: maintenance-full-backup
+  - id: quality-purge
+    type: tool
+    name: Fact Quality Purge
+    config:
+      tool: maintenance-quality-purge
+  - id: orphan-cleanup
+    type: tool
+    name: Orphan Junction Cleanup
+    config:
+      tool: maintenance-orphan-cleanup
+  - id: fts-check
+    type: tool
+    name: FTS5 Integrity Check
+    config:
+      tool: maintenance-fts-check
+      rebuildOnFailure: true
+  - id: compile-report
+    type: message
+    name: Weekly Maintenance Report
+    config:
+      systemPrompt: You are a system maintenance reporter for CamBot.
+      instruction: |
+        Compile the weekly maintenance results into a brief report.
+        Include: backup status, facts purged/reviewed, orphans cleaned,
+        FTS integrity result. Keep it concise with bullet points.
+      channel: file
+      model: claude-haiku-4-5-20251001
+      filePath: cambot-folder/weekly-maint-{{date}}.md
+    timeout: 30000
+layout:
+  trigger-1:
+    x: 80
+    y: 330
+  full-backup:
+    x: 400
+    y: 330
+  quality-purge:
+    x: 720
+    y: 330
+  orphan-cleanup:
+    x: 1040
+    y: 330
+  fts-check:
+    x: 1360
+    y: 330
+  compile-report:
+    x: 1680
+    y: 330
+enabled: false

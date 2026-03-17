@@ -192,6 +192,9 @@ jobs:
           mkdir -p "$AGENT_DST/scripts"
           cp "$AGENT_SRC/scripts/import-seed.mjs" "$AGENT_DST/scripts/"
 
+          # Bundled workflows
+          [ -d "$AGENT_SRC/workflows" ] && cp -r "$AGENT_SRC/workflows" "$AGENT_DST/workflows"
+
           # Strip Windows line endings from all shell scripts in the artifact
           find "$STAGE" -name '*.sh' -exec sed -i 's/\r$//' {} +
 

@@ -1,0 +1,186 @@
+id: daily-research
+name: Daily CU News Research Workflow
+description: Every morning, deep research a topic, validate URLs, filter, deliver via iMessage
+version: "1.0"
+hash: d6fe48a7fa1c352db62c4253cd906903596385c499272e33713d661b2fc17f0d
+schedule:
+  cron: 44 9 * * 6
+  timezone: America/New_York
+policy:
+  maxCostUsd: 0.5
+  maxTokens: 100000
+  maxOutputSizeBytes: 1048576
+  piiAction: redact
+  secretPatterns:
+    - sk-[a-zA-Z0-9]{32,}
+    - ghp_[a-zA-Z0-9]{36}
+  network:
+    allowed_domains:
+      - arxiv.org
+      - github.com
+      - en.wikipedia.org
+    block_paywalled: true
+steps:
+  - id: parallel-7
+    type: parallel
+    name: New Parallel
+    config: {}
+  - id: sonnet-1
+    type: agent
+    name: Deep Research
+    config:
+      prompt: Research the latest developments in Credit Union technology news include notable announcements.
+      model: claude-sonnet-4-6
+    retries: 2
+    retryBaseDelayMs: 2000
+    retryMaxDelayMs: 15000
+  - id: grok-1
+    type: agent
+    name: X Deep Research
+    config:
+      prompt: Search X for the latest posts about Credit Union technology news, fintech partnerships, and AI adoption. Include
+        notable announcements and link to the original X posts.
+      model: grok-4-1-fast
+      provider: xai
+      systemPrompt: You are a research agent. Search X for recent posts and threads about credit union technology. Return
+        actual X post content with links.
+      tools:
+        - x_search
+    after:
+      - parallel-7
+    retries: 3
+    timeout: 180000
+  - id: sync-8
+    type: sync
+    name: New Sync
+    config: {}
+    after:
+      - sonnet-1
+      - grok-1
+  - id: validate-urls
+    type: tool
+    name: URL Validation
+    config:
+      tool: url-health-check
+  - id: filter
+    type: tool
+    name: Allowlist Filter
+    config:
+      tool: domain-allowlist
+  - id: parallel-13
+    type: parallel
+    name: New Parallel
+    config: {}
+  - id: message-11
+    type: message
+    name: Write File
+    config:
+      channel: file
+      filePath: cambot-folder/daily-research-{{date}}.md
+      model: claude-haiku-4-5-20251001
+      systemPrompt: |-
+        You are a Research Synthesis Agent that produces clean, scannable news reports.
+
+        ## Formatting Rules
+        - Use standard Markdown syntax
+        - Organize into two main sections: "## Industry News" and "## From X"
+        - Within each section, group items by theme (AI, Partnerships, Digital Banking, Fraud, Regulatory, etc.)
+        - Each theme: bold header, then 2-3 sentence summaries per item
+        - Keep it concise — no filler, no commentary, no analysis
+        - Include source attribution as linked text when URLs are provided
+        - End with a "## Key Takeaways" section (3-5 bullet points max) covering both sources
+
+        ## Rules
+        - Never fabricate information not present in the upstream context
+        - If sources contradict each other, present both perspectives and flag the conflict
+        - Prefer primary sources over secondary when both are available
+        - Deduplicate overlapping findings — merge them into a single entry
+        - Return ONLY the formatted report. No preamble, no explanation.
+      instruction: >-
+        - A web research agent (general news and articles)
+
+        - An X/Twitter research agent (social media posts and threads)
+
+
+        Synthesize both into a single unified credit union technology news brief formatted for iMessage delivery.
+
+
+        Write the final report to a file. Use the file path provided in the task context. The file must contain ONLY the
+        formatted brief — no preamble, no explanation, no wrapper.
+  - id: message-12
+    type: message
+    name: Write Imessage
+    config:
+      channel: imessage
+      recipient: "17276563714"
+      systemPrompt: >-
+        You are a Research Synthesis Agent that produces clean, scannable news briefs formatted for iMessage.
+
+
+        ## Formatting Rules
+
+        - Use plain text only — no Markdown, no HTML, no rich formatting
+
+        - Use emoji as section headers (e.g., 🤖 AI, 🤝 Partnerships, 🏦 Digital Banking, 🛡️ Fraud, 📋 Regulatory)
+
+        - Separate sections with a blank line
+
+        - Each item: emoji header on its own line, then 1-2 sentence summary beneath
+
+        - Keep total message under 1500 characters when possible — split into multiple messages if needed
+
+        - Use line breaks and bullet points liberally for readability on small screens
+
+        - Include source attribution as plain text (e.g., "via Reuters") — no URLs (links render poorly in iMessage)
+
+        - End with a "⚡ Key Takeaways" section (3-5 short bullet points using • character)
+
+
+        ## Rules
+
+        - Never fabricate information not present in the upstream context
+
+        - If sources contradict each other, present both perspectives and flag the conflict
+
+        - Prefer primary sources over secondary when both are available
+
+        - Deduplicate overlapping findings — merge them into a single entry
+
+        - Return ONLY the formatted brief. No preamble, no explanation
+
+        - If content exceeds comfortable iMessage length, indicate split points with "..." at the end and
+        "(...continued)" at the start of the next message
+      instruction: You will receive a message send it to the imessage channel.
+    after:
+      - parallel-13
+layout:
+  trigger-1:
+    x: 78
+    y: 320
+  parallel-7:
+    x: 400
+    y: 330
+  sonnet-1:
+    x: 720
+    y: 255
+  grok-1:
+    x: 720
+    y: 405
+  sync-8:
+    x: 1040
+    y: 330
+  validate-urls:
+    x: 1334
+    y: 320
+  filter:
+    x: 1670
+    y: 320
+  parallel-13:
+    x: 1962
+    y: 330
+  message-11:
+    x: 2284
+    y: 202
+  message-12:
+    x: 2284
+    y: 424

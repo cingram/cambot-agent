@@ -1,0 +1,90 @@
+id: maintenance-nightly
+name: Nightly Maintenance
+description: Daily database maintenance — backup, decay refresh, telemetry pruning
+version: "1.0"
+hash: 591f9abfedec97033b9b2c0a9b84782658161284fb011c93b1a649e4dd3908e6
+schedule:
+  cron: 0 3 * * *
+  timezone: America/New_York
+policy:
+  maxCostUsd: 0.5
+  maxTokens: 50000
+  maxOutputSizeBytes: 524288
+  piiAction: redact
+  secretPatterns:
+    - sk-[a-zA-Z0-9]{32,}
+    - ghp_[a-zA-Z0-9]{36}
+  network:
+    allowed_domains: []
+    block_paywalled: false
+steps:
+  - id: nightly-backup
+    type: tool
+    name: Incremental Backup + Rotation
+    config:
+      tool: maintenance-nightly-backup
+  - id: parallel-17
+    type: parallel
+    name: New Parallel
+    config: {}
+  - id: decay-update
+    type: tool
+    name: Fact Decay Batch Update
+    config:
+      tool: maintenance-decay-update
+  - id: telemetry-prune
+    type: tool
+    name: Telemetry & Log Pruning
+    config:
+      tool: maintenance-telemetry-prune
+      apiCallsDays: 90
+      toolInvocationsDays: 90
+      eventsDays: 90
+      taskRunLogsDays: 90
+      logsDays: 30
+      accessLogDays: 365
+    after:
+      - parallel-17
+  - id: sync-18
+    type: sync
+    name: New Sync
+    config: {}
+    after:
+      - decay-update
+      - telemetry-prune
+  - id: compile-report
+    type: message
+    name: Nightly Maintenance Report
+    config:
+      systemPrompt: You are a system maintenance reporter for CamBot.
+      instruction: |
+        Compile the nightly maintenance results into a brief report.
+        Include: backup status, decay updates, rows pruned per table.
+        Keep it to a few bullet points. Only flag issues.
+      channel: file
+      model: claude-haiku-4-5-20251001
+      filePath: cambot-folder/nightly-maint-{{date}}.md
+    timeout: 30000
+layout:
+  trigger-1:
+    x: 78
+    y: 320
+  nightly-backup:
+    x: 403
+    y: 320
+  parallel-17:
+    x: 720
+    y: 330
+  decay-update:
+    x: 1040
+    y: 255
+  telemetry-prune:
+    x: 1040
+    y: 405
+  sync-18:
+    x: 1360
+    y: 330
+  compile-report:
+    x: 1608
+    y: 320
+enabled: false

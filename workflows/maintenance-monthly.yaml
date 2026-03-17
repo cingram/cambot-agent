@@ -1,0 +1,100 @@
+id: maintenance-monthly
+name: Monthly Maintenance
+description: Monthly deep cleanup — dedup, hard delete, message archive, VACUUM, ANALYZE
+version: "1.0"
+hash: 3587c6a3dc3db8c7a83f04fea4e1850d2d07ec41bfbdc37fc7dc4b003c1d28fc
+schedule:
+  cron: 0 5 1 * *
+  timezone: America/New_York
+policy:
+  maxCostUsd: 1
+  maxTokens: 100000
+  maxOutputSizeBytes: 1048576
+  piiAction: redact
+  secretPatterns:
+    - sk-[a-zA-Z0-9]{32,}
+    - ghp_[a-zA-Z0-9]{36}
+  network:
+    allowed_domains:
+      - generativelanguage.googleapis.com
+      - api.anthropic.com
+    block_paywalled: false
+steps:
+  - id: dedup-run
+    type: tool
+    name: Fact Deduplication
+    config:
+      tool: maintenance-dedup-run
+      mergeModel: gemini-2.0-flash
+    timeout: 300000
+  - id: parallel-15
+    type: parallel
+    name: New Parallel
+    config: {}
+  - id: hard-delete
+    type: tool
+    name: Hard Delete Inactive Facts
+    config:
+      tool: maintenance-hard-delete
+      inactiveDays: 90
+      backupLogRetentionDays: 365
+  - id: message-archive
+    type: tool
+    name: Message Archival
+    config:
+      tool: maintenance-message-archive
+      archiveDays: 180
+    after:
+      - parallel-15
+  - id: sync-16
+    type: sync
+    name: New Sync
+    config: {}
+    after:
+      - hard-delete
+      - message-archive
+  - id: sqlite-optimize
+    type: tool
+    name: SQLite VACUUM + ANALYZE
+    config:
+      tool: maintenance-sqlite-optimize
+  - id: compile-report
+    type: message
+    name: Monthly Maintenance Report
+    config:
+      systemPrompt: You are a system maintenance reporter for CamBot.
+      instruction: |
+        Compile the monthly maintenance results into a comprehensive report.
+        Include: dedup stats (facts merged, errors), hard-deleted facts,
+        messages archived, VACUUM space savings.
+        Flag any errors or concerns. Keep it organized with sections.
+      channel: file
+      model: claude-haiku-4-5-20251001
+      filePath: cambot-folder/monthly-maint-{{date}}.md
+    timeout: 30000
+layout:
+  trigger-1:
+    x: 75
+    y: 316
+  dedup-run:
+    x: 402
+    y: 318
+  parallel-15:
+    x: 720
+    y: 330
+  hard-delete:
+    x: 1040
+    y: 255
+  message-archive:
+    x: 1040
+    y: 405
+  sync-16:
+    x: 1360
+    y: 330
+  sqlite-optimize:
+    x: 1644
+    y: 320
+  compile-report:
+    x: 1993
+    y: 320
+enabled: false

@@ -1,0 +1,48 @@
+id: calendar-check-workflow
+name: Calendar Check Routine
+description: Check calendar for upcoming events and notify
+version: "1.0"
+hash: 12d7a7619fe50ca33ca1b7a6688bc7e74eccf98b61c6cb39884e9917d9e561c5
+schedule:
+  cron: "*/30 * * * *"
+  timezone: UTC
+policy:
+  maxCostUsd: 1
+  maxTokens: 0
+  maxOutputSizeBytes: 1048576
+  piiAction: redact
+  secretPatterns:
+    - sk-[a-zA-Z0-9]{32,}
+    - ghp_[a-zA-Z0-9]{36}
+  network:
+    allowed_domains: []
+    block_paywalled: true
+steps:
+  - id: agent-2
+    type: agent
+    name: New Agent
+    config:
+      prompt: Describe the task
+      model: ""
+      provider: openai
+      systemPrompt: ""
+    retries: 3
+    timeout: 30000
+  - id: message-4
+    type: message
+    name: New Message
+    config:
+      template: Hello {{name}}
+      channel: file
+    after: []
+layout:
+  trigger-1:
+    x: 18
+    y: 264
+  agent-2:
+    x: 342
+    y: 264
+  message-4:
+    x: 619
+    y: 264
+enabled: false

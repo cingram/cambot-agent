@@ -1,0 +1,286 @@
+id: heartbeat
+name: System Heartbeat
+description: Hourly system health check, maintenance, and awareness digest
+version: "1.0"
+hash: 60623f00bbb9886ab71717be9e45cf4858da30a75da2625aa495778f96b4af77
+schedule:
+  cron: 0 */1 * * *
+  timezone: America/New_York
+policy:
+  maxCostUsd: 0.25
+  maxTokens: 50000
+  maxOutputSizeBytes: 524288
+  piiAction: redact
+  secretPatterns:
+    - sk-[a-zA-Z0-9]{32,}
+    - ghp_[a-zA-Z0-9]{36}
+  network:
+    allowed_domains: []
+    block_paywalled: false
+steps:
+  - id: container-cleanup
+    type: tool
+    name: Container Cleanup
+    config:
+      tool: heartbeat-container-cleanup
+      staleMaxAgeMs: 3600000
+  - id: mcp-health
+    type: tool
+    name: Workspace MCP Health
+    config:
+      tool: heartbeat-mcp-health
+      port: 8000
+      timeoutMs: 5000
+    after: []
+  - id: channel-check
+    type: tool
+    name: Channel Connectivity
+    config:
+      tool: heartbeat-channel-check
+    after: []
+  - id: disk-space
+    type: tool
+    name: Disk Space Check
+    config:
+      tool: heartbeat-disk-space
+      paths:
+        - data
+        - store
+        - data/ipc
+      warnThresholdBytes: 1073741824
+    after: []
+  - id: wal-checkpoint
+    type: tool
+    name: SQLite WAL Checkpoint
+    config:
+      tool: heartbeat-wal-checkpoint
+    after:
+      - container-cleanup
+      - mcp-health
+      - channel-check
+      - disk-space
+  - id: stuck-workflows
+    type: tool
+    name: Stuck Workflow Scan
+    config:
+      tool: heartbeat-stuck-workflows
+      staleThresholdMs: 7200000
+    after:
+      - container-cleanup
+      - mcp-health
+      - channel-check
+      - disk-space
+  - id: ipc-cleanup
+    type: tool
+    name: Orphaned IPC Cleanup
+    config:
+      tool: heartbeat-ipc-cleanup
+      ipcBasePath: data/ipc
+      staleAgeMs: 3600000
+      errorStaleAgeMs: 86400000
+    after:
+      - container-cleanup
+      - mcp-health
+      - channel-check
+      - disk-space
+  - id: stale-tasks
+    type: tool
+    name: Stale Task Scan
+    config:
+      tool: heartbeat-stale-tasks
+      failureThreshold: 3
+      overdueMinutes: 60
+    after:
+      - container-cleanup
+      - mcp-health
+      - channel-check
+      - disk-space
+  - id: email-scan
+    type: agent
+    name: Priority Email Scan
+    config:
+      prompt: |
+        Search for unread important or flagged emails from the last 24 hours
+        using the gmail tools available to you.
+
+        For each email found:
+        1. Summarize in 1-2 sentences
+        2. Classify as URGENT (needs reply today), IMPORTANT (needs reply this week), or FYI
+
+        Return your response as JSON only:
+        {
+          "emails": [
+            { "sender": "...", "subject": "...", "summary": "...", "classification": "URGENT|IMPORTANT|FYI" }
+          ],
+          "urgentCount": 0
+        }
+
+        If no important unread emails exist, return:
+        { "emails": [], "urgentCount": 0 }
+      model: claude-haiku-4-5-20251001
+      tools:
+        - gmail_search_messages
+    after:
+      - wal-checkpoint
+      - stuck-workflows
+      - ipc-cleanup
+      - stale-tasks
+    timeout: 30000
+  - id: calendar-lookahead
+    type: agent
+    name: Calendar Lookahead
+    config:
+      prompt: |
+        List all calendar events for the next 24 hours using the calendar
+        tools available to you.
+
+        For each event provide:
+        1. Title, start time, end time, location (if any)
+        2. Attendee list
+        3. Any preparation needed based on the event description
+
+        Flag any time conflicts (overlapping events).
+
+        Return your response as JSON only:
+        {
+          "events": [
+            { "title": "...", "start": "...", "end": "...", "location": "...", "attendees": ["..."] }
+          ],
+          "conflicts": [],
+          "nextEventMinutes": null
+        }
+
+        If no upcoming events, return:
+        { "events": [], "conflicts": [], "nextEventMinutes": null }
+      model: claude-haiku-4-5-20251001
+      tools:
+        - gmail_list_events
+    after:
+      - wal-checkpoint
+      - stuck-workflows
+      - ipc-cleanup
+      - stale-tasks
+    timeout: 30000
+  - id: message-backlog
+    type: tool
+    name: Message Backlog Check
+    config:
+      tool: heartbeat-message-backlog
+      alertThreshold: 10
+    after:
+      - wal-checkpoint
+      - stuck-workflows
+      - ipc-cleanup
+      - stale-tasks
+  - id: cost-summary
+    type: tool
+    name: Cost Usage Summary
+    config:
+      tool: heartbeat-cost-summary
+      budgetAlertUsd: 5
+    after:
+      - email-scan
+      - calendar-lookahead
+      - message-backlog
+  - id: chain-verify
+    type: tool
+    name: Audit Chain Verification
+    config:
+      tool: heartbeat-chain-verify
+      workflowRunLimit: 50
+      stepRunLimit: 100
+    after:
+      - email-scan
+      - calendar-lookahead
+      - message-backlog
+  - id: sync-20
+    type: sync
+    name: New Sync
+    config: {}
+    after:
+      - cost-summary
+      - chain-verify
+  - id: message-19
+    type: message
+    name: New Message
+    config:
+      template: Hello {{name}}
+      channel: file
+      systemPrompt: |
+        You are a system health reporter for CamBot. You receive structured
+        JSON outputs from multiple health check steps. Compile a concise
+        heartbeat report.
+
+        ## Report Structure
+        1. **Status**: Overall system health — HEALTHY, DEGRADED, or CRITICAL
+           - HEALTHY: no alerts from any check
+           - DEGRADED: warnings present but system functional
+           - CRITICAL: channel down, tamper detected, or DB integrity failure
+        2. **Alerts**: Items needing attention, sorted by severity
+        3. **Maintenance**: Actions taken (containers killed, files cleaned, WAL checkpointed)
+        4. **Email**: Priority email summary (if any)
+        5. **Calendar**: Upcoming events (if any)
+        6. **Costs**: Spending summary and trend
+
+        ## Rules
+        - Keep it brief — bullet points, not paragraphs
+        - Flag the alert count in the first line so it's scannable
+        - Omit sections with nothing to report
+
+        Return your response as JSON only:
+        {
+          "report": "the formatted report text",
+          "has_alerts": true,
+          "alert_count": 0
+        }
+      filePath: cambot-folder/heartbeat-{{date}}.md
+layout:
+  trigger-1:
+    x: -153
+    y: 616
+  container-cleanup:
+    x: 301
+    y: 616
+  mcp-health:
+    x: 80
+    y: 180
+  channel-check:
+    x: 80
+    y: 330
+  disk-space:
+    x: 80
+    y: 480
+  wal-checkpoint:
+    x: 720
+    y: 105
+  stuck-workflows:
+    x: 720
+    y: 255
+  ipc-cleanup:
+    x: 720
+    y: 405
+  stale-tasks:
+    x: 720
+    y: 555
+  email-scan:
+    x: 1040
+    y: 180
+  calendar-lookahead:
+    x: 1040
+    y: 330
+  message-backlog:
+    x: 1040
+    y: 480
+  cost-summary:
+    x: 1360
+    y: 255
+  chain-verify:
+    x: 1360
+    y: 405
+  sync-20:
+    x: 1693
+    y: 332
+  message-19:
+    x: 1983
+    y: 322
+enabled: false
