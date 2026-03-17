@@ -21,7 +21,7 @@ if [[ -f "${BASH_SOURCE[0]}" ]] && grep -qP '\r' "${BASH_SOURCE[0]}" 2>/dev/null
   exec bash "${BASH_SOURCE[0]}" "$@"
 fi
 
-set -euo pipefail
+set -eo pipefail
 
 CAMBOT_HOME="${CAMBOT_HOME:-/opt/cambot}"
 AGENT_DIR="$CAMBOT_HOME/cambot-agent"
