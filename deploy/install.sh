@@ -489,6 +489,18 @@ else
   ok ".env file already exists (preserved)"
 fi
 
+# Create/update UI .env (always — UI needs DB path and secret from agent .env)
+if [ -d "$UI_DIR" ]; then
+  UI_ENV="$UI_DIR/.env"
+  # Read CAMBOT_UI_SECRET from agent .env (or use default)
+  UI_SECRET=$(grep '^CAMBOT_UI_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "0218")
+  cat > "$UI_ENV" <<UIENV
+CAMBOT_DB_PATH=${AGENT_DIR}/store/cambot.sqlite
+CAMBOT_UI_SECRET=${UI_SECRET}
+UIENV
+  ok "Created $UI_ENV (DB path + secret synced from agent)"
+fi
+
 ok "Runtime directories and configuration ready"
 
 # ===========================================================================
