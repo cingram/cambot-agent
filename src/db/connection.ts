@@ -40,6 +40,21 @@ export function initDatabase(): void {
   const schema = createSchemaManager();
   schema.initialize(db);
 
+  // Create agent-specific tables not managed by cambot-core schema
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS provider_images (
+      provider TEXT PRIMARY KEY,
+      container_image TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_definitions (
+      id TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      personality TEXT,
+      secret_keys TEXT NOT NULL DEFAULT '[]'
+    );
+  `);
+
   // Ensure agent tables and run migrations
   const agentRepo = createAgentRepository(db);
   agentRepo.ensureTable();
