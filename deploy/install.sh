@@ -415,6 +415,13 @@ if [ -d "$EXTRACT_DIR/cambot-agent" ]; then
   # Deploy scripts
   [ -d "$EXTRACT_DIR/cambot-agent/deploy" ] && \
     cp -r "$EXTRACT_DIR/cambot-agent/deploy" "$AGENT_DIR/deploy"
+
+  # Seed data and import script
+  [ -d "$EXTRACT_DIR/cambot-agent/seed" ] && \
+    cp -r "$EXTRACT_DIR/cambot-agent/seed" "$AGENT_DIR/seed"
+  [ -d "$EXTRACT_DIR/cambot-agent/scripts" ] && \
+    mkdir -p "$AGENT_DIR/scripts" && \
+    cp -r "$EXTRACT_DIR/cambot-agent/scripts/." "$AGENT_DIR/scripts/"
 fi
 
 # Version stamp
