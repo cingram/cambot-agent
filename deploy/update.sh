@@ -230,12 +230,12 @@ if [ -f "$AGENT_DIR/seed/db-seed.json" ]; then
   DB_FILE="$AGENT_DIR/store/cambot.sqlite"
   if [ -f "$DB_FILE" ]; then
     info "Importing seed data (agents, tasks, groups)..."
-    node "$AGENT_DIR/scripts/import-seed.mjs" \
+    (cd "$AGENT_DIR" && node scripts/import-seed.mjs \
       --db "$DB_FILE" \
-      --seed "$AGENT_DIR/seed/db-seed.json" 2>&1 | sed 's/^/    /'
+      --seed seed/db-seed.json)
     ok "Seed data imported"
   else
-    info "Database not yet created — seed will import on next restart"
+    warn "Database not yet created — seed will import on next update after first run"
   fi
 fi
 
