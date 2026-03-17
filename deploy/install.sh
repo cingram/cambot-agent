@@ -14,12 +14,13 @@
 # ===========================================================================
 
 # Fix Windows line endings if present (self-heal for CRLF contamination)
-if [[ -f "${BASH_SOURCE[0]}" ]] && grep -qP '\r' "${BASH_SOURCE[0]}" 2>/dev/null; then
-  sed -i'' -e 's/\r$//' "${BASH_SOURCE[0]}"
+# Note: uses printf instead of grep -P which macOS doesn't support
+if [[ -f "${BASH_SOURCE[0]}" ]] && [[ "$(cat "${BASH_SOURCE[0]}")" == *$'\r'* ]]; then
+  sed -i'' -e $'s/\r$//' "${BASH_SOURCE[0]}"
   exec bash "${BASH_SOURCE[0]}" "$@"
 fi
 
-set -euo pipefail
+set -eo pipefail
 
 # ---------------------------------------------------------------------------
 # Defaults & argument parsing
