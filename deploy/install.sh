@@ -251,6 +251,35 @@ install_gh() {
   fi
 }
 
+install_claude_code() {
+  if command -v claude &>/dev/null; then
+    ok "Claude Code already installed"
+  else
+    info "Installing Claude Code..."
+    npm install -g @anthropic-ai/claude-code
+  fi
+
+  # Check for existing credentials
+  CREDS_FILE="$HOME/.claude/.credentials.json"
+  if [ -f "$CREDS_FILE" ] && grep -q "accessToken" "$CREDS_FILE" 2>/dev/null; then
+    ok "Claude Code OAuth credentials found"
+  else
+    warn "No Claude Code credentials found. Starting login..."
+    echo ""
+    echo "  A browser window will open for Anthropic OAuth login."
+    echo "  After authenticating, return here and press Enter."
+    echo ""
+    claude auth login 2>/dev/null || claude --login 2>/dev/null || claude 2>/dev/null || true
+    # Re-check
+    if [ -f "$CREDS_FILE" ] && grep -q "accessToken" "$CREDS_FILE" 2>/dev/null; then
+      ok "Claude Code authenticated"
+    else
+      warn "Claude Code authentication not completed."
+      warn "Run 'claude' manually after install to authenticate."
+    fi
+  fi
+}
+
 install_build_tools() {
   if [ "$PLATFORM" = "macos" ]; then
     if ! xcode-select -p &>/dev/null; then
@@ -282,6 +311,7 @@ install_bun
 install_docker
 install_uv
 install_gh
+install_claude_code
 
 # Verify gh authentication
 step "Step 2b/8: GitHub Authentication"
@@ -495,16 +525,31 @@ else
   ok ".env file already exists (preserved)"
 fi
 
-# Create/update UI .env (always — UI needs DB path and secret from agent .env)
+# Create/update UI .env (always — UI needs DB path, secret, and auth token from agent)
 if [ -d "$UI_DIR" ]; then
   UI_ENV="$UI_DIR/.env"
   # Read CAMBOT_UI_SECRET from agent .env (or use default)
   UI_SECRET=$(grep '^CAMBOT_UI_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || echo "0218")
+  # Read WEB_AUTH_TOKEN — agent auto-generates this on first run and writes to store/web-auth-token
+  WEB_AUTH_TOKEN=""
+  if [ -f "$AGENT_DIR/store/web-auth-token" ]; then
+    WEB_AUTH_TOKEN=$(cat "$AGENT_DIR/store/web-auth-token")
+  elif grep -q '^WEB_AUTH_TOKEN=' "$ENV_FILE" 2>/dev/null; then
+    WEB_AUTH_TOKEN=$(grep '^WEB_AUTH_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
+  fi
   cat > "$UI_ENV" <<UIENV
 CAMBOT_DB_PATH=${AGENT_DIR}/store/cambot.sqlite
 CAMBOT_UI_SECRET=${UI_SECRET}
+CAMBOT_WEB_AUTH_TOKEN=${WEB_AUTH_TOKEN}
+CAMBOT_WEB_CHANNEL_URL=http://localhost:3100
 UIENV
-  ok "Created $UI_ENV (DB path + secret synced from agent)"
+  if [ -n "$WEB_AUTH_TOKEN" ]; then
+    ok "Created $UI_ENV (DB path + secret + auth token synced)"
+  else
+    warn "Created $UI_ENV — WEB_AUTH_TOKEN not yet available."
+    warn "Start the agent once, then re-run install or manually add:"
+    warn "  echo \"CAMBOT_WEB_AUTH_TOKEN=\$(cat $AGENT_DIR/store/web-auth-token)\" >> $UI_ENV"
+  fi
 fi
 
 ok "Runtime directories and configuration ready"
