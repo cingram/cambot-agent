@@ -92,14 +92,23 @@ start_ui() {
 
   [ -d "$UI_DIR" ] || fail "UI directory not found at $UI_DIR"
 
-  # Build if .next doesn't exist
-  if [ ! -d "$UI_DIR/.next" ]; then
-    info "Building UI (first run)..."
-    (cd "$UI_DIR" && bun run build)
+  # Determine how to start: standalone (node server.js) or full (next start)
+  local ui_cmd
+  if [ -f "$UI_DIR/server.js" ]; then
+    ui_cmd="PORT=$UI_PORT HOSTNAME=0.0.0.0 exec node server.js"
+  elif [ -f "$UI_DIR/node_modules/.bin/next" ]; then
+    # Build if .next doesn't exist
+    if [ ! -d "$UI_DIR/.next" ]; then
+      info "Building UI (first run)..."
+      (cd "$UI_DIR" && bun run build)
+    fi
+    ui_cmd="exec node_modules/.bin/next start -p $UI_PORT"
+  else
+    fail "No UI entrypoint found (no server.js or next binary in $UI_DIR)"
   fi
 
   info "Starting cambot-core-ui on port $UI_PORT..."
-  bash -c "cd \"$UI_DIR\" && exec node_modules/.bin/next start -p \"$UI_PORT\"" >> "$CAMBOT_HOME/logs/cambot-ui.log" 2>&1 &
+  bash -c "cd \"$UI_DIR\" && $ui_cmd" >> "$CAMBOT_HOME/logs/cambot-ui.log" 2>&1 &
   local pid=$!
   echo "$pid" > "$UI_PID_FILE"
   sleep 2
