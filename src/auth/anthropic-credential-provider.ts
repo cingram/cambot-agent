@@ -1,12 +1,14 @@
 /**
  * Anthropic Credential Provider — manages credentials for Claude.
  *
- * Two authentication methods:
- *   1. OAuth token — read fresh from ~/.claude/.credentials.json each time
- *      (auto-refreshed by Claude Code). Works via the Claude Code SDK.
- *   2. API key — from ANTHROPIC_API_KEY env var. Works for direct API calls.
+ * Authentication methods (checked in order):
+ *   1. API key — from ANTHROPIC_API_KEY env var. Works for direct API calls.
+ *   2. OAuth token from CLAUDE_CODE_OAUTH_TOKEN env var.
+ *   3. OAuth token from ~/.claude/.credentials.json (Linux, older Claude Code).
+ *   4. OAuth token from macOS Keychain (macOS, current Claude Code).
  */
 
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -37,7 +39,7 @@ export class AnthropicCredentialProvider {
 
     const status = this.getStatus();
     if (status.hasOAuthToken && !status.hasApiKey) {
-      logger.info('Anthropic auth: OAuth token from ~/.claude/.credentials.json');
+      logger.info('Anthropic auth: OAuth token available');
     } else if (status.hasApiKey && status.hasOAuthToken) {
       logger.info('Anthropic auth: API key + OAuth token available');
     } else if (status.hasApiKey) {
@@ -82,13 +84,38 @@ export class AnthropicCredentialProvider {
   }
 }
 
-/** Read the OAuth token from Claude Code's credentials file. */
+/**
+ * Read the OAuth token from all known sources:
+ *   1. CLAUDE_CODE_OAUTH_TOKEN env var
+ *   2. ~/.claude/.credentials.json (Linux, older Claude Code)
+ *   3. macOS Keychain (current Claude Code on macOS)
+ */
 function readClaudeOAuthToken(): string | undefined {
+  // 1. Env var (set explicitly or by install script)
+  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (envToken) return envToken;
+
+  // 2. Credentials file (Linux, older Claude Code versions)
   try {
     const raw = fs.readFileSync(CREDENTIALS_PATH, 'utf-8');
     const data = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string } };
-    return data.claudeAiOauth?.accessToken || undefined;
+    if (data.claudeAiOauth?.accessToken) return data.claudeAiOauth.accessToken;
   } catch {
-    return undefined;
+    // File doesn't exist or isn't valid JSON — try next source
   }
+
+  // 3. macOS Keychain (current Claude Code stores tokens here)
+  if (process.platform === 'darwin') {
+    try {
+      const token = execSync('security find-generic-password -s "claude" -w 2>/dev/null', {
+        encoding: 'utf-8',
+        timeout: 5000,
+      }).trim();
+      if (token) return token;
+    } catch {
+      // Not in Keychain
+    }
+  }
+
+  return undefined;
 }
