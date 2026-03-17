@@ -266,10 +266,10 @@ install_claude_code() {
   else
     warn "No Claude Code credentials found. Starting login..."
     echo ""
-    echo "  A browser window will open for Anthropic OAuth login."
-    echo "  After authenticating, return here and press Enter."
+    echo "  A browser window should open for Anthropic OAuth login."
+    echo "  If no browser opens, copy the URL printed below into any browser."
     echo ""
-    claude auth login 2>/dev/null || claude --login 2>/dev/null || claude 2>/dev/null || true
+    claude auth login 2>&1 || true
     # Re-check
     if [ -f "$CREDS_FILE" ] && grep -q "accessToken" "$CREDS_FILE" 2>/dev/null; then
       ok "Claude Code authenticated"
