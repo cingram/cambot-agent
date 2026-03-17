@@ -415,10 +415,10 @@ for pkg in cambot-integrations cambot-channels cambot-core cambot-workflows camb
   fi
 done
 
-# Rebuild native modules for the current platform (CI builds on Linux x64)
+# Reinstall native modules for the current platform (CI builds on Linux x64)
 if [ -d "$UI_DIR/node_modules/better-sqlite3" ]; then
-  info "Rebuilding native modules for $(uname -s) $(uname -m)..."
-  (cd "$UI_DIR" && npm rebuild better-sqlite3 2>&1 | tail -1)
+  info "Installing native modules for $(uname -s) $(uname -m)..."
+  (cd "$UI_DIR" && npm install better-sqlite3 2>&1 | tail -1)
 fi
 
 ok "All dependencies installed"
