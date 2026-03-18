@@ -287,6 +287,68 @@ export class CambotSocketClient {
     }, 300_000);
   }
 
+  // ── iMessage Rich Capabilities ──────────────────────────────
+
+  async imessageSendAttachment(
+    chatJid: string,
+    filePath: string,
+    opts?: { mimeType?: string; filename?: string; text?: string },
+  ): Promise<SocketFrame> {
+    return this.request({
+      type: FRAME_TYPES.IMESSAGE_SEND_ATTACHMENT,
+      id: uuid(),
+      payload: { requestId: uuid(), chatJid, filePath, ...opts },
+    }, 60_000);
+  }
+
+  async imessageSendReaction(
+    chatJid: string,
+    messageId: string,
+    reaction: string,
+  ): Promise<SocketFrame> {
+    return this.request({
+      type: FRAME_TYPES.IMESSAGE_SEND_REACTION,
+      id: uuid(),
+      payload: { requestId: uuid(), chatJid, messageId, reaction },
+    });
+  }
+
+  async imessageRemoveReaction(
+    chatJid: string,
+    messageId: string,
+    reaction: string,
+  ): Promise<SocketFrame> {
+    return this.request({
+      type: FRAME_TYPES.IMESSAGE_REMOVE_REACTION,
+      id: uuid(),
+      payload: { requestId: uuid(), chatJid, messageId, reaction },
+    });
+  }
+
+  async imessageMarkRead(chatJid: string): Promise<SocketFrame> {
+    return this.request({
+      type: FRAME_TYPES.IMESSAGE_MARK_READ,
+      id: uuid(),
+      payload: { requestId: uuid(), chatJid },
+    });
+  }
+
+  async imessageGetAttachment(attachmentId: string): Promise<SocketFrame> {
+    return this.request({
+      type: FRAME_TYPES.IMESSAGE_GET_ATTACHMENT,
+      id: uuid(),
+      payload: { requestId: uuid(), attachmentId },
+    }, 60_000);
+  }
+
+  async imessageCapabilities(): Promise<SocketFrame> {
+    return this.request({
+      type: FRAME_TYPES.IMESSAGE_CAPABILITIES,
+      id: uuid(),
+      payload: { requestId: uuid() },
+    });
+  }
+
   // ── Notifications ─────────────────────────────────────────
 
   /** Submit a notification to the admin inbox. */

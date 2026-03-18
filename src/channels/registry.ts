@@ -42,7 +42,7 @@ const IMESSAGE_ENV_KEYS = [
 ];
 
 /** Read iMessage env vars from .env file, falling back to process.env. */
-function getImessageEnv(key: string): string | undefined {
+export function getImessageEnv(key: string): string | undefined {
   if (process.env[key]) return process.env[key];
   const fromFile = readEnvFile([key]);
   return fromFile[key] || undefined;

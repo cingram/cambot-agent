@@ -24,6 +24,7 @@ import { registerIntegrationTools } from './mcp-tools/integration-tools.js';
 import { registerContextTools } from './mcp-tools/context-tools.js';
 import { registerNotificationTools } from './mcp-tools/notification-tools.js';
 import { registerMaintenanceTools } from './mcp-tools/maintenance-tools.js';
+import { registerImessageTools } from './mcp-tools/imessage-tools.js';
 
 // ── Environment Context ─────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ registerIntegrationTools(ctx);
 registerContextTools(ctx);
 registerNotificationTools(ctx);
 registerMaintenanceTools(ctx);
+registerImessageTools(ctx);
 
 // ── Start Transport ─────────────────────────────────────────────────
 

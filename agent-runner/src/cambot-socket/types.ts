@@ -245,6 +245,15 @@ export const FRAME_TYPES = {
   MCP_ADD: 'mcp.add',
   MCP_REMOVE: 'mcp.remove',
   // Email
+  // iMessage rich capabilities
+  IMESSAGE_SEND_ATTACHMENT: 'imessage.send_attachment',
+  IMESSAGE_SEND_REACTION: 'imessage.send_reaction',
+  IMESSAGE_REMOVE_REACTION: 'imessage.remove_reaction',
+  IMESSAGE_MARK_READ: 'imessage.mark_read',
+  IMESSAGE_GET_ATTACHMENT: 'imessage.get_attachment',
+  IMESSAGE_CAPABILITIES: 'imessage.capabilities',
+  IMESSAGE_RESULT: 'imessage.result',
+  // Email
   EMAIL_CHECK: 'email.check',
   EMAIL_READ: 'email.read',
   EMAIL_RESULT: 'email.result',

@@ -9,9 +9,10 @@ import path from 'path';
 import type { McpServerConfig } from 'cambot-integrations';
 
 import { STORE_DIR, WORKSPACE_MCP_PORT } from '../config/config.js';
-import { channelDefinitions } from '../channels/registry.js';
+import { channelDefinitions, getImessageEnv } from '../channels/registry.js';
 import { readEnvFile } from '../config/env.js';
 import { createWorkspaceMcpService, type WorkspaceMcpService } from '../utils/workspace-mcp-service.js';
+import { createNativeBridgeService } from '../utils/native-bridge-service.js';
 import type { IntegrationDefinition, IntegrationContext, IntegrationHandle } from './types.js';
 
 /** Build the built-in integration definitions from channels + known MCP servers. */
@@ -36,6 +37,9 @@ export function buildIntegrationDefinitions(): IntegrationDefinition[] {
     });
   }
 
+  // Native iMessage bridge (must start before the iMessage channel)
+  defs.push(buildNativeBridgeDef());
+
   // Google Workspace MCP server
   defs.push(buildGoogleWorkspaceDef());
 
@@ -55,6 +59,35 @@ function buildChannelRequirements(name: string): IntegrationDefinition['requirem
     default:
       return [];
   }
+}
+
+function buildNativeBridgeDef(): IntegrationDefinition {
+  let service: ReturnType<typeof createNativeBridgeService> | null = null;
+  const isNative = () => getImessageEnv('IMESSAGE_PROVIDER') === 'native';
+
+  return {
+    id: 'service:native-imessage-bridge',
+    name: 'Native iMessage Bridge',
+    type: 'mcp-server', // lifecycle-managed service (not a channel)
+    description: 'AppleScript HTTP bridge for sending iMessages (native provider)',
+    builtIn: true,
+    requirements: [
+      { name: 'IMESSAGE_PROVIDER=native', check: isNative },
+    ],
+    isConfigured: isNative,
+    async start() {
+      const port = parseInt(getImessageEnv('NATIVE_BRIDGE_PORT') || '9876', 10);
+      service = createNativeBridgeService({ port });
+      await service.start();
+      return {
+        stop: () => service!.stop(),
+      };
+    },
+    async healthCheck() {
+      if (!service) return false;
+      return service.isRunning();
+    },
+  };
 }
 
 function buildGoogleWorkspaceDef(): IntegrationDefinition {

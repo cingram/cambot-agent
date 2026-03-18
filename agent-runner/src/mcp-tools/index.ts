@@ -13,3 +13,4 @@ export { registerEmailTools } from './email-tools.js';
 export { registerIntegrationTools } from './integration-tools.js';
 export { registerContextTools } from './context-tools.js';
 export { registerNotificationTools } from './notification-tools.js';
+export { registerImessageTools } from './imessage-tools.js';

@@ -608,6 +608,7 @@ export class CamBotApp {
       agentRepo.ensureTable();
       this.seedSystemGateway(agentRepo);
       this.seedSystemOps(agentRepo);
+      this.seedImessageFormatter(agentRepo);
 
       this.agentRepo = agentRepo;
       const spawner = this.createAgentSpawner();
@@ -765,6 +766,71 @@ Rules:
       skills: [], // No skills needed
     });
     logger.info('Seeded system ops agent');
+  }
+
+  private seedImessageFormatter(agentRepo: import('../db/agent-repository.js').AgentRepository): void {
+    const AGENT_ID = 'imessage-formatter';
+    const existing = agentRepo.getById(AGENT_ID);
+    if (existing) {
+      logger.debug({ agentId: AGENT_ID }, 'iMessage formatter agent already exists');
+      return;
+    }
+
+    agentRepo.create({
+      id: AGENT_ID,
+      name: 'iMessage Formatter',
+      description: 'Formats and delivers rich iMessage content for other agents. '
+        + 'Handles iMessage tapback reactions (love, like, laugh, emphasize, question), '
+        + 'sends image and file attachments via iMessage, sends read receipts, '
+        + 'and checks iMessage provider capabilities. '
+        + 'Other agents delegate to this agent when they need to send photos, files, '
+        + 'react to messages, or use any iMessage-specific feature beyond plain text. '
+        + 'Converts markdown, long-form text, and structured data into clean, '
+        + 'mobile-friendly iMessage formatting.',
+      folder: 'imessage-formatter',
+      channels: [],
+      mcpServers: [],
+      capabilities: [
+        'imessage', 'formatting', 'attachments', 'reactions', 'tapback',
+        'images', 'photos', 'files', 'read-receipts', 'rich-messaging',
+      ],
+      isSystem: true,
+      model: 'claude-haiku-4-5-20251001',
+      memoryStrategy: { mode: 'ephemeral' },
+      toolPolicy: {
+        preset: 'minimal',
+        mcp: {
+          allow: [
+            'send_message',
+            'imessage_send_attachment',
+            'imessage_send_reaction',
+            'imessage_remove_reaction',
+            'imessage_mark_read',
+            'imessage_capabilities',
+          ],
+        },
+      },
+      systemPrompt: `You are the iMessage formatting agent. Your only job is to take content from other agents and deliver it beautifully via iMessage.
+
+When you receive a request:
+1. First call imessage_capabilities to check what the current provider supports.
+2. Format the content for iMessage — keep it concise, mobile-friendly, no markdown syntax (iMessage doesn't render it).
+3. Use the appropriate tool to deliver:
+   - Plain text → send_message
+   - Files/images → imessage_send_attachment
+   - Reactions → imessage_send_reaction or imessage_remove_reaction
+   - Read receipts → imessage_mark_read
+
+Formatting rules:
+- No markdown — iMessage renders plain text only. Use line breaks and emoji for structure.
+- Keep messages under 500 characters when possible — long messages are hard to read on phones.
+- If content is too long, split into multiple messages with send_message.
+- For lists, use simple bullet characters (•) not markdown (-).
+- For emphasis, use CAPS sparingly or emoji, not *asterisks*.
+- If the provider doesn't support a requested capability, explain this clearly and offer the best alternative.`,
+      skills: [],
+    });
+    logger.info('Seeded iMessage formatter agent');
   }
 
   private async initSocketServer(): Promise<void> {

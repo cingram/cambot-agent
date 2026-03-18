@@ -142,6 +142,38 @@ export interface McpAddPayload {
 
 export interface McpRemovePayload { targetId: string }
 
+// ── iMessage Rich Payloads ──────────────────────────────────────────
+
+export interface ImessageSendAttachmentPayload {
+  requestId: string;
+  chatJid: string;
+  filePath: string;
+  mimeType?: string;
+  filename?: string;
+  text?: string;
+}
+
+export interface ImessageSendReactionPayload {
+  requestId: string;
+  chatJid: string;
+  messageId: string;
+  reaction: string;
+}
+
+export interface ImessageMarkReadPayload {
+  requestId: string;
+  chatJid: string;
+}
+
+export interface ImessageGetAttachmentPayload {
+  requestId: string;
+  attachmentId: string;
+}
+
+export interface ImessageCapabilitiesPayload {
+  requestId: string;
+}
+
 // ── Email Payloads ──────────────────────────────────────────────────
 
 export interface EmailCheckPayload {
@@ -270,6 +302,14 @@ export const FRAME_TYPES = {
   INTEGRATION_DISABLE: 'integration.disable',
   MCP_ADD: 'mcp.add',
   MCP_REMOVE: 'mcp.remove',
+  // iMessage rich capabilities
+  IMESSAGE_SEND_ATTACHMENT: 'imessage.send_attachment',
+  IMESSAGE_SEND_REACTION: 'imessage.send_reaction',
+  IMESSAGE_REMOVE_REACTION: 'imessage.remove_reaction',
+  IMESSAGE_MARK_READ: 'imessage.mark_read',
+  IMESSAGE_GET_ATTACHMENT: 'imessage.get_attachment',
+  IMESSAGE_CAPABILITIES: 'imessage.capabilities',
+  IMESSAGE_RESULT: 'imessage.result',
   // Email
   EMAIL_CHECK: 'email.check',
   EMAIL_READ: 'email.read',

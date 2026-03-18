@@ -23,6 +23,7 @@ import { registerLogHandler } from './handlers/log.js';
 import { registerWorkflowQuery } from './handlers/workflow-query.js';
 import { registerNotificationHandlers } from './handlers/notification.js';
 import { registerMaintenanceHandlers } from './handlers/maintenance.js';
+import { registerImessageHandlers } from './handlers/imessage.js';
 
 /** Register all cambot-socket command handlers with the given registry. */
 export function registerAllHandlers(registry: CommandRegistry): void {
@@ -46,4 +47,5 @@ export function registerAllHandlers(registry: CommandRegistry): void {
   registerLogHandler(registry);
   registerNotificationHandlers(registry);
   registerMaintenanceHandlers(registry);
+  registerImessageHandlers(registry);
 }
