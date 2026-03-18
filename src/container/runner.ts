@@ -347,7 +347,7 @@ export async function runContainerAgent(
     // gateway delegation where a non-main agent sends to the caller's JID).
     const authorizedJids = input.chatJid ? new Set([input.chatJid]) : undefined;
     socketServer.registerToken(execution.folder, socketToken, { authorizedJids, isMain: execution.isMain });
-    socketServer.registerToken(mcpGroup, mcpSocketToken, { isMain: execution.isMain });
+    socketServer.registerToken(mcpGroup, mcpSocketToken, { authorizedJids, isMain: execution.isMain });
   }
 
   input.socketToken = socketToken;
