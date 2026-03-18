@@ -106,14 +106,30 @@ function readClaudeOAuthToken(): string | undefined {
 
   // 3. macOS Keychain (current Claude Code stores tokens here)
   if (process.platform === 'darwin') {
-    try {
-      const token = execSync('security find-generic-password -s "claude" -w 2>/dev/null', {
-        encoding: 'utf-8',
-        timeout: 5000,
-      }).trim();
-      if (token) return token;
-    } catch {
-      // Not in Keychain
+    // Try known Keychain service names — Claude Code has used different names across versions
+    const keychainServices = ['Claude Code-credentials', 'claude'];
+    for (const svc of keychainServices) {
+      try {
+        const raw = execSync(`security find-generic-password -s "${svc}" -w 2>/dev/null`, {
+          encoding: 'utf-8',
+          timeout: 5000,
+        }).trim();
+        if (!raw) continue;
+
+        // Value may be a raw token or JSON containing the token
+        if (raw.startsWith('{')) {
+          try {
+            const data = JSON.parse(raw) as { claudeAiOauth?: { accessToken?: string } };
+            if (data.claudeAiOauth?.accessToken) return data.claudeAiOauth.accessToken;
+          } catch {
+            // Invalid JSON — skip
+          }
+        } else if (raw.startsWith('sk-')) {
+          return raw;
+        }
+      } catch {
+        // Not in Keychain under this service name
+      }
     }
   }
 
