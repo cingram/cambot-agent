@@ -89,6 +89,8 @@ export interface ContainerInput {
   assembledContext?: string;
   /** In-process SDK subagents the container agent can spawn. Keys are subagent names. */
   subagents?: Record<string, SubagentDefinition>;
+  /** Extra JIDs this container is authorized to send messages to (beyond its own chatJid). */
+  authorizedJids?: string[];
 }
 
 export interface ContainerTelemetry {
@@ -238,27 +240,32 @@ function buildVolumeMounts(execution: ExecutionContext, skills?: string[]): Volu
       recursive: true,
       filter: (src) => !src.endsWith('.test.ts'),
     });
+    mounts.push({
+      hostPath: groupAgentRunnerDir,
+      containerPath: '/app/src',
+      readonly: false,
+    });
   }
-  mounts.push({
-    hostPath: groupAgentRunnerDir,
-    containerPath: '/app/src',
-    readonly: false,
-  });
 
   // Sync cambot-llm source. Clean first to remove stale files.
-  const cambotAgentsSrc = path.resolve(projectRoot, '..', 'cambot-llm', 'src');
+  // Detect layout: monorepo (../../packages/llm) or flat deploy (../cambot-llm)
+  const cambotLlmCandidates = [
+    path.resolve(projectRoot, '..', 'cambot-llm', 'src'),
+    path.resolve(projectRoot, '..', '..', 'packages', 'llm', 'src'),
+  ];
+  const cambotAgentsSrc = cambotLlmCandidates.find((p) => fs.existsSync(p));
   const groupCambotAgentsDir = path.join(DATA_DIR, 'sessions', execution.folder, 'cambot-llm-src');
-  if (fs.existsSync(cambotAgentsSrc)) {
+  if (cambotAgentsSrc) {
     if (fs.existsSync(groupCambotAgentsDir)) {
       fs.rmSync(groupCambotAgentsDir, { recursive: true, force: true });
     }
     fs.cpSync(cambotAgentsSrc, groupCambotAgentsDir, { recursive: true });
+    mounts.push({
+      hostPath: groupCambotAgentsDir,
+      containerPath: '/cambot-llm/src',
+      readonly: false,
+    });
   }
-  mounts.push({
-    hostPath: groupCambotAgentsDir,
-    containerPath: '/cambot-llm/src',
-    readonly: false,
-  });
 
   // Additional mounts validated against external allowlist
   if (execution.containerConfig?.additionalMounts) {
@@ -343,9 +350,13 @@ export async function runContainerAgent(
   const mcpSocketToken = `cambot-socket-mcp-${safeName}-${ts}`;
   const mcpGroup = `${execution.folder}:mcp`;
   if (socketServer) {
-    // Authorize the container to send messages to its chatJid (needed for
-    // gateway delegation where a non-main agent sends to the caller's JID).
-    const authorizedJids = input.chatJid ? new Set([input.chatJid]) : undefined;
+    // Authorize the container to send messages to its chatJid and any
+    // extra JIDs passed in via input.authorizedJids (e.g. cross-channel targets).
+    const authorizedJids = new Set<string>();
+    if (input.chatJid) authorizedJids.add(input.chatJid);
+    if (input.authorizedJids) {
+      for (const jid of input.authorizedJids) authorizedJids.add(jid);
+    }
     socketServer.registerToken(execution.folder, socketToken, { authorizedJids, isMain: execution.isMain });
     socketServer.registerToken(mcpGroup, mcpSocketToken, { authorizedJids, isMain: execution.isMain });
   }

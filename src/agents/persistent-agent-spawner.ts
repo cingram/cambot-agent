@@ -79,6 +79,8 @@ export interface PersistentAgentSpawnerDeps {
   handoffRepo?: HandoffRepository;
   /** Returns the best Anthropic credential for containers. */
   getContainerSecret?: () => { envVar: string; value: string } | undefined;
+  /** Returns all registered group JIDs (for cross-channel authorization). */
+  getRegisteredGroupJids?: () => string[];
 }
 
 // ── Agent Registry Cache ───────────────────────────────────────
@@ -106,6 +108,23 @@ function createRegistryCache(getAgentRegistry?: () => AgentRegistryEntry[]) {
       cache = null;
     },
   };
+}
+
+/**
+ * Build extra authorized JIDs for agents with cross-channel tools.
+ * Agents with iMessage tools get authorized to send to all im: JIDs.
+ */
+function buildAuthorizedJids(
+  agent: RegisteredAgent,
+  deps: PersistentAgentSpawnerDeps,
+): string[] | undefined {
+  const mcpTools = resolveMcpToolList(agent.toolPolicy ?? { preset: 'readonly' });
+  const hasImessageTools = mcpTools.some((t) => t.startsWith('imessage_'));
+  if (!hasImessageTools) return undefined;
+
+  const allJids = deps.getRegisteredGroupJids?.() ?? [];
+  const imJids = allJids.filter((jid) => jid.startsWith('im:'));
+  return imJids.length > 0 ? imJids : undefined;
 }
 
 // ── Factory ────────────────────────────────────────────────────
@@ -218,6 +237,7 @@ export function createPersistentAgentSpawner(deps: PersistentAgentSpawnerDeps): 
             ),
             assembledContext,
             subagents: isCustomProvider ? undefined : agent.subagents,
+            authorizedJids: buildAuthorizedJids(agent, deps),
             userCredential: deps.getContainerSecret?.(),
           },
           (_proc, containerName) => {

@@ -584,6 +584,7 @@ export class CamBotApp {
       getAgentById: (id) => agentRepo.getById(id),
       handoffRepo,
       getContainerSecret: () => this.anthropicCredential?.getContainerSecret(),
+      getRegisteredGroupJids: () => Object.keys(this.state.getRegisteredGroups()),
     });
   }
 
