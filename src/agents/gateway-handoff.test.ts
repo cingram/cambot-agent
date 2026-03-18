@@ -20,6 +20,7 @@ vi.mock('../logger.js', () => ({
 vi.mock('../config/config.js', () => ({
   HANDOFF_IDLE_TIMEOUT_MS: 600_000,
   HANDOFF_FREE_TURNS: 3,
+  HANDOFF_REEVAL_INTERVAL: 4,
   HANDOFF_CONFIDENCE_THRESHOLD: 0.7,
   GATEWAY_PRESET: 'gateway',
 }));

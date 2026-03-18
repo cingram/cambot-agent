@@ -22,7 +22,7 @@ import { resolveActiveConversation, setConversationSession, updatePreview } from
 import type { GatewayRouter, AgentRegistryEntry, RoutingDecision } from './gateway-router.js';
 import { scoreRoute, scoreContinuation } from './gateway-router.js';
 import type { HandoffRepository, HandoffSession } from '../db/handoff-repository.js';
-import { HANDOFF_FREE_TURNS, HANDOFF_CONFIDENCE_THRESHOLD, GATEWAY_PRESET } from '../config/config.js';
+import { HANDOFF_FREE_TURNS, HANDOFF_CONFIDENCE_THRESHOLD, HANDOFF_REEVAL_INTERVAL, GATEWAY_PRESET } from '../config/config.js';
 
 // ── Public types ───────────────────────────────────────────────
 
@@ -425,7 +425,21 @@ async function handleActiveHandoff(
     return routeToHandoffAgent(spawner, deps, gateway, prompt, callerGroup, startTime, handoff);
   }
 
-  // Past free turns — try local scoring, defer to Haiku if low confidence
+  // Between re-evaluation intervals — skip classification, stay sticky
+  const turnsSinceSticky = handoff.turnCount - HANDOFF_FREE_TURNS;
+  if (HANDOFF_REEVAL_INTERVAL > 0 && turnsSinceSticky % HANDOFF_REEVAL_INTERVAL !== 0) {
+    logger.info(
+      { gateway: gateway.id, agent: handoff.activeAgent, turn: handoff.turnCount, callerGroup },
+      `[gateway] Sticky turn ${handoff.turnCount}, skipping re-evaluation`,
+    );
+    return routeToHandoffAgent(spawner, deps, gateway, prompt, callerGroup, startTime, handoff);
+  }
+
+  // Re-evaluation turn — try local scoring, defer to Haiku if low confidence
+  logger.info(
+    { gateway: gateway.id, agent: handoff.activeAgent, turn: handoff.turnCount, callerGroup },
+    `[gateway] Re-evaluation turn ${handoff.turnCount}, checking routing`,
+  );
   const agents = cache.get();
   const localCont = scoreContinuation(prompt, handoff.activeAgent, handoff.intent, agents);
 

@@ -186,10 +186,13 @@ export const HANDOFF_IDLE_TIMEOUT_MS = parseInt(
   process.env.HANDOFF_IDLE_TIMEOUT_MS || '600000', 10,  // 10 minutes
 );
 export const HANDOFF_FREE_TURNS = parseInt(
-  process.env.HANDOFF_FREE_TURNS || '0', 10,
+  process.env.HANDOFF_FREE_TURNS || '2', 10,
 );
 export const HANDOFF_CONFIDENCE_THRESHOLD = parseFloat(
   process.env.HANDOFF_CONFIDENCE_THRESHOLD || '0.7',
+);
+export const HANDOFF_REEVAL_INTERVAL = parseInt(
+  process.env.HANDOFF_REEVAL_INTERVAL || '4', 10,  // re-evaluate routing every N turns after sticky
 );
 
 /** Tool policy preset name that identifies a gateway agent. */
