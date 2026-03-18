@@ -72,6 +72,11 @@ export const CAMBOT_MCP_TOOLS = [
   'get_notifications',
   'acknowledge_notifications',
   'run_maintenance',
+  'imessage_send_attachment',
+  'imessage_send_reaction',
+  'imessage_remove_reaction',
+  'imessage_mark_read',
+  'imessage_capabilities',
 ] as const;
 
 /** Workflow-builder MCP tools (conceptual grouping — subset of CAMBOT_MCP_TOOLS). */
