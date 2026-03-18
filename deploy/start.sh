@@ -64,6 +64,35 @@ is_ui_running() {
   return 1
 }
 
+start_bluebubbles() {
+  # Start BlueBubbles if installed (macOS only)
+  if [ -d "/Applications/BlueBubbles.app" ]; then
+    if pgrep -f "BlueBubbles.app" > /dev/null 2>&1; then
+      ok "BlueBubbles is already running"
+      return
+    fi
+
+    info "Starting BlueBubbles..."
+    local bb_plist="$HOME/Library/LaunchAgents/com.bluebubbles.server.plist"
+    if [ -f "$bb_plist" ]; then
+      launchctl load "$bb_plist" 2>/dev/null || true
+      ok "BlueBubbles started (via launchd)"
+    else
+      /Applications/BlueBubbles.app/Contents/MacOS/BlueBubbles > "$CAMBOT_HOME/logs/bluebubbles.log" 2>&1 &
+      # Poll for startup (up to 3s) instead of fixed sleep
+      for i in $(seq 1 30); do
+        pgrep -f "BlueBubbles.app" > /dev/null 2>&1 && break
+        sleep 0.1
+      done
+      if pgrep -f "BlueBubbles.app" > /dev/null 2>&1; then
+        ok "BlueBubbles started"
+      else
+        warn "BlueBubbles may have failed to start"
+      fi
+    fi
+  fi
+}
+
 start_agent() {
   if is_agent_running; then
     ok "Agent is already running"
@@ -71,6 +100,8 @@ start_agent() {
   fi
 
   [ -f "$PLIST_PATH" ] || fail "Launchd plist not found. Run install.sh first."
+
+  start_bluebubbles
 
   info "Starting cambot-agent..."
   launchctl load "$PLIST_PATH"

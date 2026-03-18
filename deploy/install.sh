@@ -31,13 +31,16 @@ INSTALL_SERVICE=true
 GITHUB_OWNER="cingram"
 GITHUB_REPO="cambot-agent"
 
+INSTALL_IMESSAGE=false
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version)  INSTALL_VERSION="$2"; shift 2 ;;
     --home)     CAMBOT_HOME="$2"; shift 2 ;;
     --no-service) INSTALL_SERVICE=false; shift ;;
+    --imessage) INSTALL_IMESSAGE=true; shift ;;
     --help|-h)
-      echo "Usage: install.sh [--version v1.2.3] [--home /opt/cambot] [--no-service]"
+      echo "Usage: install.sh [--version v1.2.3] [--home /opt/cambot] [--no-service] [--imessage]"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -64,6 +67,23 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 fail()  { echo -e "${RED}[FAIL]${NC}  $*"; exit 1; }
 step()  { echo -e "\n${CYAN}── $*${NC}"; }
+
+# Set KEY=val in a file (overwrites if exists, appends if not)
+env_set() {
+  local key="$1" val="$2" file="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i.bak "s/^${key}=.*/${key}=${val}/" "$file"
+    rm -f "$file.bak"
+  else
+    echo "${key}=${val}" >> "$file"
+  fi
+}
+
+# Add KEY=val only if KEY is not already present
+env_ensure() {
+  local key="$1" val="$2" file="$3"
+  grep -q "^${key}=" "$file" 2>/dev/null || echo "${key}=${val}" >> "$file"
+}
 
 # ---------------------------------------------------------------------------
 # Banner
@@ -174,36 +194,38 @@ install_bun() {
   fi
 }
 
-install_docker() {
+install_container_runtime() {
   if command -v docker &>/dev/null; then
     if docker info &>/dev/null 2>&1; then
-      ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',') is running"
+      ok "Container runtime: $(docker --version | cut -d' ' -f1-3 | tr -d ',')"
       return
     fi
-    warn "Docker is installed but not running."
+    warn "docker CLI found but daemon not running."
     if [ "$PLATFORM" = "macos" ]; then
-      open -a Docker 2>/dev/null || true
+      # Try OrbStack first, then Docker Desktop
+      open -a OrbStack 2>/dev/null || open -a Docker 2>/dev/null || true
     fi
-    fail "Start Docker and re-run this script."
+    fail "Start your container runtime (OrbStack or Docker) and re-run this script."
   fi
 
-  info "Installing Docker..."
   if [ "$PLATFORM" = "macos" ]; then
-    brew install --cask docker
+    info "Installing OrbStack (lightweight container runtime for macOS)..."
+    brew install --cask orbstack
     echo ""
-    warn "Docker Desktop installed. Please:"
-    warn "  1. Open Docker Desktop from Applications"
-    warn "  2. Complete the setup wizard"
-    warn "  3. Re-run this installer once Docker is running"
+    warn "OrbStack installed. Please:"
+    warn "  1. Open OrbStack from Applications"
+    warn "  2. Complete the one-time setup"
+    warn "  3. Re-run this installer once OrbStack is running"
     echo ""
-    echo "  Open Docker now? (y/n)"
+    echo "  Open OrbStack now? (y/n)"
     read -r ans
     if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-      open -a Docker
+      open -a OrbStack
     fi
-    fail "Re-run this script after Docker Desktop is running."
+    fail "Re-run this script after OrbStack is running."
   else
-    # Linux: install via convenience script
+    # Linux: install Docker via convenience script
+    info "Installing Docker..."
     curl -fsSL https://get.docker.com | sudo sh
     sudo usermod -aG docker "$USER"
     warn "Docker installed. You may need to log out and back in for group changes."
@@ -308,7 +330,7 @@ fi
 install_build_tools
 install_node
 install_bun
-install_docker
+install_container_runtime
 install_uv
 install_gh
 install_claude_code
@@ -504,6 +526,101 @@ info "Building cambot-agent-claude Docker image (this takes a few minutes)..."
 ok "Agent container image built"
 
 # ===========================================================================
+# Step 6b: BlueBubbles (macOS iMessage bridge — optional)
+# ===========================================================================
+# Auto-prompt for iMessage on macOS if not explicitly set via --imessage
+if ! $INSTALL_IMESSAGE && [ "$PLATFORM" = "macos" ]; then
+  echo ""
+  echo "  Enable iMessage integration? (installs BlueBubbles bridge)"
+  echo -n "  [y/N] "
+  read -r IMESSAGE_ANSWER
+  if [[ "$IMESSAGE_ANSWER" =~ ^[Yy] ]]; then
+    INSTALL_IMESSAGE=true
+  fi
+fi
+
+if $INSTALL_IMESSAGE && [ "$PLATFORM" = "macos" ]; then
+  step "Step 6b: BlueBubbles iMessage Bridge"
+
+  if [ -d "/Applications/BlueBubbles.app" ]; then
+    ok "BlueBubbles already installed"
+  else
+    info "Installing BlueBubbles via Homebrew..."
+    if ! brew install --cask bluebubbles 2>/dev/null; then
+      warn "BlueBubbles installation failed — skipping iMessage setup"
+      INSTALL_IMESSAGE=false
+    else
+      xattr -cr /Applications/BlueBubbles.app 2>/dev/null || true
+      ok "BlueBubbles installed"
+    fi
+  fi
+
+  # Generate a password if not already set
+  BB_CONFIG_DB="$HOME/Library/Application Support/bluebubbles-server/config.db"
+  BB_PASSWORD=""
+
+  if $INSTALL_IMESSAGE; then
+    if [ -f "$BB_CONFIG_DB" ]; then
+      BB_PASSWORD=$(sqlite3 "$BB_CONFIG_DB" "SELECT value FROM config WHERE name='password';" 2>/dev/null || echo "")
+    fi
+
+    if [ -z "$BB_PASSWORD" ]; then
+      BB_PASSWORD=$(openssl rand -hex 16)
+      info "Generated BlueBubbles password"
+
+      # Create config DB directly if it doesn't exist (avoids launching the app just to init)
+      mkdir -p "$(dirname "$BB_CONFIG_DB")"
+      sqlite3 "$BB_CONFIG_DB" "CREATE TABLE IF NOT EXISTS config (name TEXT PRIMARY KEY NOT NULL, value TEXT);"
+      sqlite3 "$BB_CONFIG_DB" "INSERT OR REPLACE INTO config (name, value) VALUES ('password', '$BB_PASSWORD');"
+      ok "BlueBubbles password configured"
+    else
+      ok "BlueBubbles password already set"
+    fi
+  fi
+
+  # Install BlueBubbles launchd service (auto-start on login)
+  BB_PLIST="$HOME/Library/LaunchAgents/com.bluebubbles.server.plist"
+  if [ ! -f "$BB_PLIST" ]; then
+    cat > "$BB_PLIST" <<BBPLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bluebubbles.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/BlueBubbles.app/Contents/MacOS/BlueBubbles</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${CAMBOT_HOME}/logs/bluebubbles.log</string>
+    <key>StandardErrorPath</key>
+    <string>${CAMBOT_HOME}/logs/bluebubbles.error.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
+BBPLIST
+    launchctl load "$BB_PLIST" 2>/dev/null || true
+    ok "BlueBubbles launchd service installed (auto-starts on login)"
+  else
+    ok "BlueBubbles launchd service already installed"
+  fi
+
+  # Export for use in Step 7 (.env configuration)
+  export IMESSAGE_CONFIGURED=true
+  export BB_PASSWORD
+  ok "BlueBubbles ready (localhost:1234)"
+
+elif $INSTALL_IMESSAGE && [ "$PLATFORM" != "macos" ]; then
+  warn "iMessage (--imessage) is only supported on macOS — skipping"
+fi
+
+# ===========================================================================
 # Step 7: Configure
 # ===========================================================================
 step "Step 7/8: Configuration"
@@ -541,12 +658,7 @@ if [ ! -f "$ENV_FILE" ]; then
 
   # Auto-generate CAMBOT_UI_SECRET
   UI_SECRET=$(openssl rand -hex 32)
-  if grep -q '^CAMBOT_UI_SECRET=' "$ENV_FILE" 2>/dev/null; then
-    sed -i.bak "s/^CAMBOT_UI_SECRET=.*/CAMBOT_UI_SECRET=$UI_SECRET/" "$ENV_FILE"
-    rm -f "$ENV_FILE.bak"
-  else
-    echo "CAMBOT_UI_SECRET=$UI_SECRET" >> "$ENV_FILE"
-  fi
+  env_set "CAMBOT_UI_SECRET" "$UI_SECRET" "$ENV_FILE"
 
   # Prompt for Anthropic API key
   echo ""
@@ -554,11 +666,27 @@ if [ ! -f "$ENV_FILE" ]; then
   echo -n "  ANTHROPIC_API_KEY="
   read -r API_KEY
   if [ -n "$API_KEY" ]; then
-    sed -i.bak "s/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=$API_KEY/" "$ENV_FILE"
-    rm -f "$ENV_FILE.bak"
+    env_set "ANTHROPIC_API_KEY" "$API_KEY" "$ENV_FILE"
     ok "API key saved"
   else
     warn "Skipped — edit $ENV_FILE before starting"
+  fi
+
+  # Add iMessage config if BlueBubbles was set up
+  if [ "${IMESSAGE_CONFIGURED:-}" = "true" ] && [ -n "${BB_PASSWORD:-}" ]; then
+    # Append imessage to CHANNELS if not already present
+    if grep -q '^CHANNELS=' "$ENV_FILE"; then
+      CURRENT_CHANNELS=$(grep '^CHANNELS=' "$ENV_FILE" | cut -d= -f2-)
+      if [[ "$CURRENT_CHANNELS" != *"imessage"* ]]; then
+        env_set "CHANNELS" "${CURRENT_CHANNELS},imessage" "$ENV_FILE"
+      fi
+    else
+      env_set "CHANNELS" "cli,web,imessage" "$ENV_FILE"
+    fi
+    env_ensure "IMESSAGE_PROVIDER" "bluebubbles" "$ENV_FILE"
+    env_ensure "BLUEBUBBLES_SERVER_URL" "http://localhost:1234" "$ENV_FILE"
+    env_ensure "BLUEBUBBLES_PASSWORD" "${BB_PASSWORD}" "$ENV_FILE"
+    ok "iMessage channel configured (BlueBubbles provider)"
   fi
 
   ok "Created $ENV_FILE from template"
